@@ -10,19 +10,24 @@ their copyright and license notices.
   `source/package-lock.json`; native dependencies in `source/src-tauri/Cargo.lock`.
 - `source/src/licenses.json` preserves collected dependency metadata and original
   license texts and is displayed in the application's **About → Licenses** tab.
-  It is an existing snapshot, not a claim that all dependencies are MIT or that
-  every build-time package is distributed in the application.
+  All 560 entries in the beta.6 snapshot have license texts. The inventory includes
+  build-time and other-platform packages; it does not imply that every component
+  is distributed in the Windows executable or licensed under MIT.
+- Both binary editions include `THIRD-PARTY-LICENSES.txt` with the full collected
+  license texts, copyright notices, exact versions and source URLs.
 - Main dependencies include React (MIT), Tauri (MIT OR Apache-2.0), Lucide
   (ISC, including Feather attribution), and egs-api (MIT, acheta-games).
 - Some transitive Rust packages use MPL-2.0, including cssparser,
   cssparser-macros, dtoa-short, option-ext, and selectors. Their original licenses
-  continue to apply. Sources are available from the exact crate versions
-  identified by Cargo.lock via <https://crates.io/>.
-- Dependencies are not vendored here. Before distributing a new binary, review
-  notices against the resolved dependency graph, include required license texts
-  and attributions, and satisfy applicable source-availability requirements for
-  components included in that binary. Entries without collected texts in the
-  existing snapshot must be resolved for the corresponding distributed component.
+  continue to apply. Unmodified source packages matching Cargo.lock checksums
+  are attached to [beta.6 as ThirdPartySources.zip](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.6/UnrealManager-0.2.0-beta.6-ThirdPartySources.zip).
+  The archive includes exact versions, SHA-256 values, original license notices
+  and extraction instructions. The same sources are available via the exact
+  <https://crates.io/> URLs in the notices.
+- `verification/generate-licenses.py` validates the inventory against both lock
+  files, checks cached crate archives, and records upstream license provenance.
+  It is development tooling. Review and regenerate notices and corresponding
+  source packages when dependencies change for a future binary release.
 
 ## Microsoft WebView2
 
