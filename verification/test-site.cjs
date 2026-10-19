@@ -13,6 +13,11 @@ process.env.TMP = temporaryDirectory;
 const {playwright, browserLaunchOptions} = require('./test-env.cjs');
 const docsRoot = fs.realpathSync(path.resolve(__dirname, '..', 'docs'));
 const prefix = '/UnrealManager/';
+const releaseBase = 'https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.6/';
+const releaseDownloads = {
+  installer: releaseBase+'UnrealManager-0.2.0-beta.6-Windows-x64-Setup.exe',
+  portable: releaseBase+'UnrealManager-0.2.0-beta.6-Windows-x64-Portable.zip',
+};
 const locales = {
   ru: {html:'ru',language:'Язык',theme:'Тема',options:['Системная','Светлая','Тёмная'],title:'Unreal Manager — Ваше рабочее пространство Unreal под вашим контролем'},
   en: {html:'en',language:'Language',theme:'Theme',options:['System','Light','Dark'],title:'Unreal Manager — Your Unreal workspace, under your control'},
@@ -88,8 +93,16 @@ async function validateLocale(page,locale) {
   assert.equal(await page.title(),expected.title,`${locale}: title`);
   assert.equal(await page.locator('#language').inputValue(),locale);
   assert.equal(await page.locator('#language').getAttribute('aria-label'),expected.language);
-  assert.equal(await page.locator('#theme').getAttribute('aria-label'),expected.theme);
-  assert.deepEqual(await page.locator('#theme option').allTextContents(),expected.options);
+  assert.equal(await page.getByRole('group',{name:expected.theme,exact:true}).count(),1);
+  assert.equal(await page.locator('#theme button[data-theme-choice]').count(),3);
+  for(const [index,choice] of ['system','light','dark'].entries()){
+    const button=page.locator(`#theme button[data-theme-choice="${choice}"]`);
+    assert.equal(await button.getAttribute('type'),'button');
+    assert.equal(await button.getAttribute('aria-label'),expected.options[index]);
+    assert.equal(await button.getAttribute('title'),expected.options[index]);
+    assert(['true','false'].includes(await button.getAttribute('aria-pressed')));
+    assert.equal(await page.getByRole('button',{name:expected.options[index],exact:true}).count(),1);
+  }
   assert.deepEqual((await page.locator('#language option').evaluateAll(options=>options.map(option=>option.value))).sort(),Object.keys(locales).sort());
   const problems=await page.evaluate(locale=>{
     const copy=globalThis.UM_TRANSLATIONS[locale];
@@ -109,11 +122,35 @@ async function validateLocale(page,locale) {
   assert.deepEqual(problems,[],`${locale}: all visible copy/metadata/alt/aria/title markers must be translated without English fallback`);
 }
 
-async function validateTheme(page,theme) {
+async function validateTheme(page,theme,selection=theme) {
   assert.equal(await page.locator('html').getAttribute('data-theme'),theme);
+  assert.equal(await page.locator('#theme button[aria-pressed="true"]').count(),1);
+  assert.equal(await page.locator('#theme button[aria-pressed="true"]').getAttribute('data-theme-choice'),selection);
   const colors=await page.evaluate(()=>({background:getComputedStyle(document.body).backgroundColor,text:getComputedStyle(document.body).color}));
   assert.equal(await page.locator('meta[name="theme-color"]').getAttribute('content'),theme==='dark'?'#101820':'#f5f6f2');
   return colors;
+}
+
+async function chooseTheme(page,theme){await page.locator(`#theme button[data-theme-choice="${theme}"]`).click();}
+
+async function validateDownloadsAndControls(page,mobile){
+  for(const [kind,url] of Object.entries(releaseDownloads)){
+    const links=page.locator(`a[href="${url}"]`);
+    assert.equal(await links.count(),2,`${kind}: hero and get-started download links`);
+    for(const link of await links.all())assert((await link.innerText()).trim(),`${kind}: localized download text`);
+  }
+  const assetLinks=await page.locator('a[href*="/releases/download/"]').evaluateAll(links=>links.map(link=>link.href));
+  const checksumUrl=releaseBase+'SHA256SUMS.txt';
+  assert(assetLinks.every(url=>[...Object.values(releaseDownloads),checksumUrl].includes(url)),'no stale or unversioned release downloads');
+  assert.equal(await page.locator(`a[href="${checksumUrl}"]`).count(),1,'versioned checksum file is linked');
+  if(mobile){
+    for(const selector of ['#language','#theme button[data-theme-choice="system"]','#theme button[data-theme-choice="light"]','#theme button[data-theme-choice="dark"]']){
+      const target=page.locator(selector);
+      const box=await target.boundingBox();
+      assert(box&&box.height>=44&&box.width>=44,`${selector}: mobile target >=44px`);
+      assert(box.x>=0&&box.x+box.width<=390+1,`${selector}: fits mobile viewport`);
+    }
+  }
 }
 
 async function check(name,action) {
@@ -136,6 +173,7 @@ async function main() {
         await go(page,`?lang=${locale}&theme=${theme}`);
         await validateLocale(page,locale);
         themeColors[theme]=await validateTheme(page,theme);
+        await validateDownloadsAndControls(page,viewport.name==='mobile');
         const layout=await page.evaluate(()=>({viewport:innerWidth,width:document.documentElement.scrollWidth,images:Array.from(document.images).map(image=>({src:image.getAttribute('src'),loaded:image.complete&&image.naturalWidth>0,width:image.naturalWidth,height:image.naturalHeight}))}));
         assert(layout.width<=layout.viewport+1,`horizontal overflow: ${JSON.stringify(layout)}`);
         assert(layout.images.every(image=>image.loaded),'all image assets must load');
@@ -160,7 +198,7 @@ async function main() {
     const value=await context({viewport:{width:1280,height:900},colorScheme:'dark'});
     try {
       const page=await value.newPage();await go(page);
-      await page.locator('#language').selectOption('zh');await page.locator('#theme').selectOption('light');
+      await page.locator('#language').selectOption('zh');await chooseTheme(page,'light');
       assert.deepEqual(await page.evaluate(()=>[localStorage.getItem('um.site.language'),localStorage.getItem('um.site.theme')]),['zh','light']);
       await page.reload();await validateLocale(page,'zh');await validateTheme(page,'light');
       await go(page);await validateLocale(page,'zh');await validateTheme(page,'light');
@@ -168,19 +206,18 @@ async function main() {
       assert.deepEqual(await page.evaluate(()=>[localStorage.getItem('um.site.language'),localStorage.getItem('um.site.theme')]),['zh','light'],'deep link overrides do not silently overwrite saved preferences');
       await page.locator('#language').selectOption('de');
       assert.equal(new URL(page.url()).hash,'#screenshots');assert.equal(new URL(page.url()).searchParams.get('lang'),'de');
-      await page.locator('#theme').selectOption('system');
-      assert.equal(new URL(page.url()).searchParams.has('theme'),false);await validateTheme(page,'dark');
-      assert.equal(await page.locator('#theme').inputValue(),'system');
+      await chooseTheme(page,'system');
+      assert.equal(new URL(page.url()).searchParams.has('theme'),false);await validateTheme(page,'dark','system');
       await page.emulateMedia({colorScheme:'light'});await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
-      await validateTheme(page,'light');
-      await go(page);await validateLocale(page,'de');await validateTheme(page,'light');assert.equal(await page.locator('#theme').inputValue(),'system');
+      await validateTheme(page,'light','system');
+      await go(page);await validateLocale(page,'de');await validateTheme(page,'light','system');
       await page.emulateMedia({colorScheme:'dark'});await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
-      await page.reload();await validateLocale(page,'de');await validateTheme(page,'dark');
-      await go(page,'?lang=__proto__&theme=invalid');await validateLocale(page,'en');assert.equal(await page.locator('#theme').inputValue(),'system');await validateTheme(page,'dark');
+      await page.reload();await validateLocale(page,'de');await validateTheme(page,'dark','system');
+      await go(page,'?lang=__proto__&theme=invalid');await validateLocale(page,'en');await validateTheme(page,'dark','system');
     } finally {await value.close();}
   });
 
-  await check('keyboard-skip-navigation-and-selects',async()=>{
+  await check('keyboard-skip-navigation-and-theme-buttons',async()=>{
     const value=await context({viewport:{width:1280,height:900}});
     try {
       const page=await value.newPage();await go(page,'?lang=en&theme=dark');
@@ -190,7 +227,12 @@ async function main() {
       await page.locator('.primary-nav a[href="#features"]').focus();await page.keyboard.press('Enter');assert.equal(new URL(page.url()).hash,'#features');
       assert((await page.locator('#features').boundingBox()).y>=-1,'keyboard anchor brings section into view');
       await page.locator('#language').focus();await page.keyboard.press('Home');await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');await validateLocale(page,'ru');
-      await page.locator('#theme').focus();await page.keyboard.press('Home');await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');assert.equal(await page.locator('#theme').inputValue(),'light');await validateTheme(page,'light');
+      await page.locator('#theme button[data-theme-choice="system"]').focus();await page.keyboard.press('Space');await validateTheme(page,'light','system');
+      await page.keyboard.press('Tab');assert.equal(await page.locator('#theme button[data-theme-choice="light"]').evaluate(element=>document.activeElement===element),true);
+      const focus=await page.locator('#theme button[data-theme-choice="light"]').evaluate(element=>({style:getComputedStyle(element).outlineStyle,width:parseFloat(getComputedStyle(element).outlineWidth)}));
+      assert(focus.style!=='none'&&focus.width>0,'theme button has visible keyboard focus');
+      await page.keyboard.press('Enter');await validateTheme(page,'light');
+      await page.locator('#theme button[data-theme-choice="dark"]').focus();await page.keyboard.press('Space');await validateTheme(page,'dark');
     } finally {await value.close();}
   });
 
@@ -198,8 +240,8 @@ async function main() {
     const value=await context({locale:'ja-JP',colorScheme:'dark',viewport:{width:390,height:844}});
     try {
       await value.addInitScript(()=>Object.defineProperty(window,'localStorage',{get(){throw new DOMException('Storage disabled for regression','SecurityError');}}));
-      const page=await value.newPage();await go(page);await validateLocale(page,'ja');await validateTheme(page,'dark');
-      await page.locator('#language').selectOption('fr');await page.locator('#theme').selectOption('light');
+      const page=await value.newPage();await go(page);await validateLocale(page,'ja');await validateTheme(page,'dark','system');
+      await page.locator('#language').selectOption('fr');await chooseTheme(page,'light');
       await validateLocale(page,'fr');await validateTheme(page,'light');
       await page.reload();await validateLocale(page,'fr');await validateTheme(page,'light');
     } finally {await value.close();}

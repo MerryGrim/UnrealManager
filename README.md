@@ -51,6 +51,17 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
+## Download beta.6
+
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.6/UnrealManager-0.2.0-beta.6-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.6/UnrealManager-0.2.0-beta.6-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.2.0-beta.6)
+
+The installer installs for the current user. For portable use, extract the ZIP to
+a writable directory and keep `portable.marker` beside `unreal-manager.exe`.
+Both editions require Microsoft WebView2 Runtime; the installer can install it
+when missing. The portable edition stores its data in the adjacent `Data` folder.
+
 ## Build from source
 
 The application requires Windows 10/11 x64 and Microsoft WebView2 Runtime.

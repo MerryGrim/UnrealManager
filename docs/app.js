@@ -3,7 +3,8 @@
 (() => {
   const root = document.documentElement;
   const localeSelect = document.querySelector("#language");
-  const themeSelect = document.querySelector("#theme");
+  const themeControl = document.querySelector("#theme");
+  const themeButtons = themeControl.querySelectorAll("[data-theme-choice]");
   const translations = globalThis.UM_TRANSLATIONS;
   const attributes = { "data-i18n": null, "data-i18n-alt": "alt", "data-i18n-aria": "aria-label", "data-i18n-title": "title" };
   const english = translations.en;
@@ -43,7 +44,7 @@
       }
     }
     localeSelect.setAttribute("aria-label", copy.language ?? english.language);
-    themeSelect.setAttribute("aria-label", copy.theme ?? english.theme);
+    themeControl.setAttribute("aria-label", copy.theme ?? english.theme);
     document.title = copy.metaTitle;
     document.querySelector('meta[name="description"]').content = copy.metaDescription;
     document.querySelector('meta[property="og:title"]').content = copy.metaTitle;
@@ -53,7 +54,7 @@
   function applyTheme() {
     const resolvedTheme = theme === "system" ? (systemTheme.matches ? "dark" : "light") : theme;
     root.dataset.theme = resolvedTheme;
-    themeSelect.value = theme;
+    for (const button of themeButtons) button.setAttribute("aria-pressed", String(button.dataset.themeChoice === theme));
     document.querySelector('meta[name="theme-color"]').content = resolvedTheme === "dark" ? "#101820" : "#f5f6f2";
   }
 
@@ -63,12 +64,14 @@
     applyLanguage();
     updateAddress();
   });
-  themeSelect.addEventListener("change", () => {
-    theme = themeSelect.value;
-    write("um.site.theme", theme);
-    applyTheme();
-    updateAddress();
-  });
+  for (const button of themeButtons) {
+    button.addEventListener("click", () => {
+      theme = button.dataset.themeChoice;
+      write("um.site.theme", theme);
+      applyTheme();
+      updateAddress();
+    });
+  }
   systemTheme.addEventListener("change", () => { if (theme === "system") applyTheme(); });
   applyLanguage();
   applyTheme();

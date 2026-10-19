@@ -71,8 +71,11 @@ This script serves `docs` through its own temporary HTTP server on
 `127.0.0.1` under `/UnrealManager/`, then stops that server and its headless
 Edge browser. It checks all nine languages in light/dark themes at 1280 px and
 390 px, translated content/metadata/controls, image loading, keyboard navigation,
-system theme changes, preference persistence, query links, denied browser
-storage, horizontal overflow, console errors and unexpected network requests.
+system/light/dark icon buttons with localized accessible names and pressed
+states, mobile touch targets, system theme changes, preference persistence,
+query links, denied browser storage, horizontal overflow, console errors and
+unexpected network requests. Installer, portable ZIP and checksum links must
+match the exact versioned GitHub Release asset URLs.
 Logs, a JSON report and representative screenshots are saved into a new
 `verification/current/site-...` directory. GPU flags configure the test browser;
 these checks do not measure hardware GPU activity.
@@ -98,3 +101,23 @@ remain in the evidence directory. Capture after updating source artwork so the
 screenshots match the current application. The application screenshots use its
 actual dark appearance; the website's separate light theme does not modify the
 application UI.
+
+## Static release artifact validation
+
+After creating a fresh release staging directory, compare its portable ZIP to
+the newly built executable without launching either package:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verification\verify-release.ps1 -ReleaseDirectory 'D:\Releases\staging' -ExpectedExecutable '.\source\src-tauri\target\release\unreal-manager.exe'
+```
+
+The helper checks the versioned ZIP/installer names, portable archive root and
+approved file inventory, traversal/duplicate/symlink exclusions, marker and
+legal files, AMD64 PE headers, beta version metadata, and byte-for-byte portable
+EXE identity using SHA-256. It records installer PE/version/hash/signature
+metadata, but does not claim to have extracted or compared its compressed
+payload. It never installs or launches an executable or changes user profiles
+or registry settings. Reports and an extracted EXE used only for static
+inspection go into a unique `verification/current/release-validation-...`
+directory. Pass `-Version` for a later release, or `-OutputDirectory` to choose
+the parent evidence directory.
