@@ -44,9 +44,14 @@ function Get-PortableExecutableInfo([string]$Path) {
     $versionInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
     return [PSCustomObject]@{
         Machine = ('0x{0:X4}' -f $machine)
-        ProductVersion = $versionInfo.ProductVersion
-        FileVersion = $versionInfo.FileVersion
-        ProductName = $versionInfo.ProductName
+        # Inno resource strings can include trailing padding. Preserve the raw
+        # resource values while comparing their meaningful, trimmed versions.
+        ProductVersion = ([string]$versionInfo.ProductVersion).Trim()
+        FileVersion = ([string]$versionInfo.FileVersion).Trim()
+        ProductName = ([string]$versionInfo.ProductName).Trim()
+        RawProductVersion = $versionInfo.ProductVersion
+        RawFileVersion = $versionInfo.FileVersion
+        RawProductName = $versionInfo.ProductName
         Length = (Get-Item -LiteralPath $Path).Length
         Sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
     }

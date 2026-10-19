@@ -33,6 +33,10 @@ def main() -> None:
     parser.add_argument("--cargo-home", required=True, type=pathlib.Path)
     parser.add_argument("--evidence", required=True, type=pathlib.Path)
     parser.add_argument("--source-archive", required=True, type=pathlib.Path)
+    parser.add_argument("--windows-dependencies", type=pathlib.Path,
+                        help="Output of cargo tree --locked --offline --target x86_64-pc-windows-msvc --prefix none --format '{p}'")
+    parser.add_argument("--notices-only", action="store_true",
+                        help="Preserve the existing JSON and source ZIP; finish standalone nested notices only")
     args = parser.parse_args()
     evidence = args.evidence.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
@@ -187,7 +191,7 @@ def main() -> None:
     version = json.loads((ROOT / "source/package.json").read_text("utf-8"))["version"]
     archive_path = args.source_archive.resolve()
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    if archive_path.exists():
+    if archive_path.exists() and not args.notices_only:
         raise FileExistsError("Do not overwrite release source evidence: " + str(archive_path))
     archive_url = f"https://github.com/MerryGrim/UnrealManager/releases/download/v{version}/{archive_path.name}"
     source_instructions = [
@@ -200,14 +204,58 @@ def main() -> None:
         "Additional upstream license files are included where a subcrate omitted them.",
         "",
     ]
-    with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as package:
-        for record in mpl:
-            filename = f"{record['name']}-{record['version']}.crate"
-            package.writestr("crates/" + filename, archive_bytes(record["name"], record["version"]))
-            for text in record["texts"]:
-                package.writestr("licenses/" + filename[:-6] + "/" + text["name"], text["text"])
-            source_instructions += [filename, "Source: " + record["sourceArchiveUrl"], "SHA-256: " + record["sourceArchiveSha256"], ""]
-        package.writestr("README.txt", "\n".join(source_instructions))
+    if args.notices_only:
+        with zipfile.ZipFile(archive_path) as package:
+            for record in mpl:
+                content = package.read(f"crates/{record['name']}-{record['version']}.crate")
+                if sha256(content) != record["sourceArchiveSha256"]:
+                    raise ValueError("Existing MPL source archive checksum mismatch")
+    else:
+        with zipfile.ZipFile(archive_path, "x", compression=zipfile.ZIP_DEFLATED) as package:
+            for record in mpl:
+                filename = f"{record['name']}-{record['version']}.crate"
+                package.writestr("crates/" + filename, archive_bytes(record["name"], record["version"]))
+                for text in record["texts"]:
+                    package.writestr("licenses/" + filename[:-6] + "/" + text["name"], text["text"])
+                source_instructions += [filename, "Source: " + record["sourceArchiveUrl"], "SHA-256: " + record["sourceArchiveSha256"], ""]
+            package.writestr("README.txt", "\n".join(source_instructions))
+
+    # Cargo packages can embed separately attributed code below their root.
+    # Preserve those original notices too, rather than relying only on SPDX metadata.
+    target_keys = set(locked)
+    if args.windows_dependencies:
+        target_keys = set()
+        for line in args.windows_dependencies.read_text("utf-8-sig").splitlines():
+            match = re.match(r"^(\S+) v([^\s]+)", line)
+            if match and (match[1], match[2]) in locked:
+                target_keys.add((match[1], match[2]))
+        if not target_keys:
+            raise ValueError("No locked packages identified in Windows dependency tree")
+    already_included = re.sub(r"\s+", " ", "\n".join(t["text"] for r in records for t in r["texts"])).strip()
+    supplemental = []
+    supplemental_seen = set()
+    nested_files_checked = 0
+    for name, version in sorted(target_keys):
+        prefix = f"{name}-{version}/"
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes(name, version)), mode="r:gz") as archive:
+            for member in archive.getmembers():
+                filename = pathlib.PurePosixPath(member.name).name
+                if not member.isfile() or not LICENSE_NAME.fullmatch(filename):
+                    continue
+                if pathlib.PurePosixPath(filename).suffix.lower() in {".rs", ".h", ".c", ".py", ".toml"}:
+                    continue
+                nested_files_checked += 1
+                try:
+                    text = archive.extractfile(member).read().decode("utf-8-sig")
+                except UnicodeError:
+                    continue
+                normalized = re.sub(r"\s+", " ", text).strip()
+                if not normalized or normalized in already_included or normalized in supplemental_seen:
+                    continue
+                supplemental_seen.add(normalized)
+                supplemental.append({"name": name, "version": version,
+                                     "path": member.name[len(prefix):], "text": text,
+                                     "sourceUrl": f"https://static.crates.io/crates/{name}/{name}-{version}.crate"})
 
     lines = [
         f"Unreal Manager {version} - Third-Party Licenses and Source Notices",
@@ -242,15 +290,29 @@ def main() -> None:
             if text.get("sourceUrl"):
                 lines.append("Original license source: " + text["sourceUrl"])
             lines += [text["text"].rstrip(), ""]
+    lines += ["=" * 80, "Additional original notices embedded inside dependency source packages", "",
+              "The following verbatim notices supplement the package-root license inventory above.",
+              "Repeated identical license bodies are included once.", ""]
+    for item in supplemental:
+        lines += ["=" * 80, f"{item['name']} {item['version']} - {item['path']}",
+                  "Exact original source archive: " + item["sourceUrl"], "", item["text"].rstrip(), ""]
     notices = ROOT / "source/installer/THIRD-PARTY-LICENSES.txt"
     notices.write_text("\n".join(lines) + "\n", "utf-8")
-    snapshot_path.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n", "utf-8")
+    snapshot_bytes = (json.dumps(records, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    if args.notices_only and records != json.loads(initial):
+        raise ValueError("Notices-only mode must not change embedded JSON")
+    if not args.notices_only:
+        snapshot_path.write_bytes(snapshot_bytes)
     report = {"components": len(records), "cargoComponents": len(locked), "completedMissingEntries": original_missing, "missingTexts": 0,
               "snapshotSha256Before": sha256(initial), "snapshotSha256After": sha256(snapshot_path.read_bytes()),
               "notices": str(notices), "noticesSha256": sha256(notices.read_bytes()),
               "mplSourceArchive": str(archive_path), "mplSourceArchiveSha256": sha256(archive_path.read_bytes()),
-              "mplPackages": [{k: r[k] for k in ("name", "version", "sourceArchiveUrl", "sourceArchiveSha256")} for r in mpl]}
-    (evidence / "license-generation-report.json").write_text(json.dumps(report, indent=2) + "\n", "utf-8")
+              "mplPackages": [{k: r[k] for k in ("name", "version", "sourceArchiveUrl", "sourceArchiveSha256")} for r in mpl],
+              "nestedAuditPackages": len(target_keys), "nestedNoticeFilesChecked": nested_files_checked,
+              "supplementalNotices": [{k: item[k] for k in ("name", "version", "path", "sourceUrl")} for item in supplemental]}
+    report_name = "license-notices-final-report.json" if args.notices_only else "license-generation-report.json"
+    with (evidence / report_name).open("x", encoding="utf-8") as report_file:
+        report_file.write(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2), flush=True)
 
 
