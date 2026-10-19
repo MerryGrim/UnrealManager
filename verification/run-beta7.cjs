@@ -53,7 +53,7 @@ for (const test of tests) {
 }
 
 const report = {
-  version: '0.2.0-beta.7',
+  version: JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'source', 'package.json'), 'utf8')).version,
   startedAt: startedAt.toISOString(),
   finishedAt: new Date().toISOString(),
   node: process.version,

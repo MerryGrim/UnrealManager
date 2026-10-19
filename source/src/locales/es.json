@@ -1,4 +1,8 @@
 {
+  "Интерфейс": "Interfaz",
+  "Обновления приложения": "Actualizaciones de la aplicación",
+  "Разделы настроек": "Secciones de ajustes",
+  "Хранилище": "Almacenamiento",
   " · На движке: {0}": "· El motor:{0}",
   " · Новый проект: UE {0}": "· Nuevo proyecto: UE {0}",
   " · Синхронизация: {0}": "· Última sincronización {0}",

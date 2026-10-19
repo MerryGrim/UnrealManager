@@ -413,5 +413,39 @@ input[type=checkbox]{padding:0}
 .vault-transfer-card .transfer-buttons button.icon{width:44px;padding:0}
 .vault-operation-actions{display:flex;align-items:flex-start;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:14px}
 .vault-resume-tasks .transfer-card+.transfer-card{margin-top:16px}
+.workspace-page>.settings-layout{display:grid;grid-template-columns:220px minmax(0,1fr);gap:26px;overflow:hidden}
+.settings-sidebar{min-width:0;min-height:0;overflow-y:auto;padding:4px 4px 6px 0}
+.settings-navigation-heading{margin:0 12px 14px;color:var(--muted);font-size:11px;line-height:1.5;font-weight:600}
+.settings-navigation{display:grid;gap:6px}
+.settings-navigation button[role=tab]{width:100%;min-height:48px;justify-content:flex-start;gap:12px;padding:12px;border-color:transparent;background:transparent;color:var(--muted);text-align:left;font-size:13px;line-height:1.45}
+.settings-navigation button[role=tab] span{min-width:0;overflow-wrap:anywhere}
+.settings-navigation button[role=tab]:hover{background:var(--panel2);color:var(--text);border-color:var(--border)}
+.settings-navigation button[role=tab][aria-selected=true]{background:#23364f;border-color:#3b5676;color:#d5e8ff}
+.settings-navigation button[role=tab][aria-selected=true] svg{color:#90bfff}
+.settings-navigation button[role=tab]:focus-visible,.settings-panel:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.settings-content{min-width:0;min-height:0;overflow-y:auto;overflow-x:hidden;padding:4px 5px 6px 4px;scrollbar-gutter:stable}
+.settings-panel{min-width:0;max-width:100%;border-radius:var(--radius-card)}
+.settings-panel[hidden]{display:none!important}
+.settings-category-title{font-size:19px;font-weight:500;line-height:1.5;margin:0 0 18px;overflow-wrap:anywhere}
+.settings-panel>section{width:100%;max-width:none;margin:0}
+.settings-panel>section+section{margin-top:20px}
+.settings-panel .setting-row>label{min-width:0}
+.settings-panel .setting-row{overflow-wrap:anywhere}
+@media(max-width:760px){
+ .workspace-page>.settings-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);gap:18px}
+ .settings-sidebar{overflow:visible;padding:2px 3px 0}
+ .settings-navigation-heading{margin-left:0;margin-bottom:10px}
+ .settings-navigation{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+ .settings-navigation button[role=tab]{min-height:44px;padding:10px 12px}
+ .settings-content{padding-top:3px}
+ .settings-category-title{font-size:18px;margin-bottom:14px}
+ .settings-panel>section{padding:20px}
+}
+@media(max-width:480px){
+ .workspace-page>.settings-layout{padding-left:12px;padding-right:12px;gap:14px}
+ .settings-navigation button[role=tab]{gap:8px;font-size:12px;padding:9px 10px}
+ .settings-panel>section{padding:16px}
+ .settings-panel select{min-width:0}
+}
 .tile-download-label small{display:block;font-size:11px;font-weight:500;margin-top:3px}
 @media(max-width:650px){.vault-transfer-card .transfer-main{grid-template-columns:64px minmax(0,1fr);gap:12px;padding:16px}.vault-transfer-card .transfer-art{grid-row:1;width:64px;height:64px}.vault-transfer-card .transfer-buttons{grid-column:1/-1}.vault-transfer-card .transfer-buttons>button:not(.icon),.vault-transfer-card .engine-pause-controls{flex:1;min-width:140px}.vault-transfer-card .engine-pause-controls button{width:100%}.vault-operation-actions{justify-content:flex-start}}

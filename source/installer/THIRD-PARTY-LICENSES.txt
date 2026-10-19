@@ -1,4 +1,4 @@
-Unreal Manager 0.2.0-beta.7 - Third-Party Licenses and Source Notices
+Unreal Manager 0.2.0-beta.8 - Third-Party Licenses and Source Notices
 
 Original Unreal Manager code is MIT licensed; the following components retain their own licenses.
 This overinclusive inventory includes build-time and non-Windows packages from the locked dependency graph.
@@ -7,8 +7,8 @@ License texts and copyright notices below are preserved from original package or
 
 MPL-2.0 source availability
 Unmodified source packages for cssparser, cssparser-macros, dtoa-short, option-ext and selectors
-are provided in the accompanying release asset: UnrealManager-0.2.0-beta.7-ThirdPartySources.zip
-https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.7/UnrealManager-0.2.0-beta.7-ThirdPartySources.zip
+are provided in the accompanying release asset: UnrealManager-0.2.0-beta.8-ThirdPartySources.zip
+https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.8/UnrealManager-0.2.0-beta.8-ThirdPartySources.zip
 Each component entry also identifies its exact source version and download URL.
 These source packages remain under MPL-2.0; no rights under that license are restricted by the application license.
 

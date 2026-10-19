@@ -6,10 +6,17 @@ base64-encoded 64-byte IEEE P1363 signature. The public verification key is
 compiled from `src-tauri/update-public-key.json`. There is no signing key,
 background update service or development runtime in the distributed app.
 
+In beta.8, open **Settings → App updates** to select the stable/beta channel,
+check, download and apply an update. Beta.7 introduced the updater; it can receive
+beta.8 without a separate manual installation. In beta.7, select **Stable and beta
+releases** and use **Settings → Unreal Manager updates → Check for updates**.
+Beta.6 requires one manual upgrade to beta.7 or newer.
+
 ## Preparing release assets
 
-Use Windows and PowerShell 7. Create the signing key once with
-`CREATE-UPDATE-KEY.ps1` before building the application. Its private key is
+Use Windows and PowerShell 7. Reuse the existing signing key for this repository;
+do not create a replacement for a new release. `CREATE-UPDATE-KEY.ps1` is only for
+initial key creation before the first deployment of a distinct application. The private key is
 encrypted for the current Windows account with DPAPI and stored under the
 ignored `.release-secrets` directory. Keep that key; replacing the public key
 requires a separate migration for existing installations. Never upload the
@@ -19,7 +26,7 @@ Build the release EXE and Inno installer into a fresh staging directory, with
 the portable distribution in its `UnrealManager-Portable` subdirectory. Then:
 
 ```powershell
-.\PREPARE-UPDATE.ps1 -ReleaseDirectory '..\Releases\0.2.0-beta.7\my-release'
+.\PREPARE-UPDATE.ps1 -ReleaseDirectory '..\Releases\0.2.0-beta.8\my-release'
 ```
 
 Use `-PortableDirectory` for a different clean portable distribution folder,

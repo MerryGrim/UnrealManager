@@ -1,4 +1,4 @@
-# Architecture — 0.2.0-beta.7
+# Architecture — 0.2.0-beta.8
 
 ## Desktop interface
 
@@ -6,6 +6,7 @@ React and TypeScript run in Tauri's system WebView2 window. The interface covers
 engines, projects, the Fab library, plugins, content updates, downloads and
 settings. Russian text and eight translated catalogues are available locally.
 The main window invokes Rust commands; remote Epic windows cannot invoke them.
+Settings are grouped into Interface, Downloads, Storage, Projects and App updates.
 
 ## Native core and Epic integration
 
@@ -56,7 +57,7 @@ the original geometric UM artwork using CPU-based Windows drawing APIs.
 
 Application updates use GitHub Releases, a pinned ECDSA P-256 public key and
 SHA-256 payload hashes. The startup check runs at most once per day; manual
-checks and stable/beta channels are available in Settings. There is no polling
+checks and stable/beta channels are available in Settings → App updates. There is no polling
 timer, installed service or scheduled task. Release tooling is documented in
 [UPDATES.md](UPDATES.md).
 

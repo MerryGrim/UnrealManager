@@ -13,10 +13,11 @@ process.env.TMP = temporaryDirectory;
 const {playwright, browserLaunchOptions} = require('./test-env.cjs');
 const docsRoot = fs.realpathSync(path.resolve(__dirname, '..', 'docs'));
 const prefix = '/UnrealManager/';
-const releaseBase = 'https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.7/';
+const releaseVersion = require('../source/package.json').version;
+const releaseBase = `https://github.com/MerryGrim/UnrealManager/releases/download/v${releaseVersion}/`;
 const releaseDownloads = {
-  installer: releaseBase+'UnrealManager-0.2.0-beta.7-Windows-x64-Setup.exe',
-  portable: releaseBase+'UnrealManager-0.2.0-beta.7-Windows-x64-Portable.zip',
+  installer: releaseBase+`UnrealManager-${releaseVersion}-Windows-x64-Setup.exe`,
+  portable: releaseBase+`UnrealManager-${releaseVersion}-Windows-x64-Portable.zip`,
 };
 const locales = {
   ru: {html:'ru',language:'Язык',theme:'Тема',options:['Системная','Светлая','Тёмная'],title:'Unreal Manager — Ваше рабочее пространство Unreal под вашим контролем'},

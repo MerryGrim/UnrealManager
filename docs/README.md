@@ -19,6 +19,6 @@ python -m http.server 4173 --bind 127.0.0.1 --directory docs
 
 Open `http://127.0.0.1:4173/`. Browser QA is covered by `verification/test-site.cjs` at repository root. Its requirements are development tools only.
 
-The primary actions link directly to the Windows x64 installer and portable ZIP in the `v0.2.0-beta.7` GitHub prerelease. Release notes and SHA-256 checksums are linked alongside the packages. The matching release assets must exist before publishing changes to those links. Source and build instructions remain available as secondary actions.
+The primary actions link directly to the Windows x64 installer and portable ZIP in the `v0.2.0-beta.8` GitHub prerelease. Release notes and SHA-256 checksums are linked alongside the packages. The matching release assets must exist before publishing changes to those links. Source and build instructions remain available as secondary actions.
 
-The page describes beta.7's signed GitHub app updates for installed and portable copies, startup checks at most once daily, manual checks and a temporary apply helper. This website never performs an application update. Software-rendering configuration is distinguished from measured GPU activity, and the outstanding real-account Epic/Fab transfer verification remains explicit.
+The page describes beta.8's signed GitHub app updates for installed and portable copies, startup checks at most once daily, manual checks and a temporary apply helper. This website never performs an application update. Software-rendering configuration is distinguished from measured GPU activity, and the outstanding real-account Epic/Fab transfer verification remains explicit.

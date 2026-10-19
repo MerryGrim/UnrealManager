@@ -174,8 +174,9 @@ async function main() {
     await page.waitForFunction(()=>document.querySelectorAll('.fab-cover img').length>=6);
     await capture('library');
     await page.getByRole('button',{name:'Settings',exact:true}).click();
-    await page.locator('#download-speed-limit:not(:disabled)').waitFor();
-    await page.locator('.storage-path').first().waitFor();
+    await page.getByRole('tab',{name:'App updates',exact:true}).click();
+    await page.locator('.settings-panel[data-settings-category="appupdates"]').waitFor();
+    await page.locator('#app-update-channel:not(:disabled)').waitFor();
     await capture('settings');
     await page.locator('.workspace-footer button').first().click();
     await page.getByRole('button',{name:'Resume download',exact:true}).click();
