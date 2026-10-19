@@ -16,8 +16,6 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateItem1": "Check at startup at most once a day, or manually, with stable and beta channels.",
     "appUpdateItem2": "Packages are verified before installation; active tasks are saved before restart.",
     "appUpdateItem3": "No permanent update service: a temporary helper runs only while applying an update.",
-    "manualUpgradeTitle": "Upgrading from beta.6?",
-    "manualUpgradeDescription": "Install beta.7 manually once; beta.6 has no built-in updater. For portable copies, keep the existing Data folder when replacing app files.",
     "statusDescription": "Full real-account Fab/Unreal transfer testing, including close-and-resume, remains to be completed. Check the current project limits before relying on a beta release.",
     "settingsCaptionDetail": "Language and app update preferences, in one place.",
     "settingsAlt": "Unreal Manager language and application update settings"
@@ -134,9 +132,7 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateDescription": "Получайте подписанные обновления Unreal Manager через GitHub Releases для установленной и portable-версии.",
     "appUpdateItem1": "Проверка при запуске не чаще раза в сутки или вручную; стабильный и бета-каналы.",
     "appUpdateItem2": "Пакеты проверяются перед установкой; активные задачи сохраняются перед перезапуском.",
-    "appUpdateItem3": "Без постоянной службы обновлений: временный помощник работает только при применении обновления.",
-    "manualUpgradeTitle": "Переходите с beta.6?",
-    "manualUpgradeDescription": "Один раз установите beta.7 вручную: в beta.6 нет встроенного обновления. В portable-версии сохраняйте существующую папку Data при замене файлов приложения."
+    "appUpdateItem3": "Без постоянной службы обновлений: временный помощник работает только при применении обновления."
   },
   "de": {
     "metaTitle": "Unreal Manager — Dein Unreal-Arbeitsbereich, unter deiner Kontrolle",
@@ -250,9 +246,7 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateDescription": "Signierte Unreal-Manager-Updates über GitHub Releases, für installierte und portable Versionen.",
     "appUpdateItem1": "Prüfung beim Start höchstens einmal täglich oder manuell, mit stabilem und Beta-Kanal.",
     "appUpdateItem2": "Pakete werden vor der Installation geprüft; aktive Aufgaben werden vor dem Neustart gespeichert.",
-    "appUpdateItem3": "Kein dauerhafter Update-Dienst: Ein temporärer Helfer läuft nur beim Anwenden eines Updates.",
-    "manualUpgradeTitle": "Upgrade von beta.6?",
-    "manualUpgradeDescription": "Installiere beta.7 einmal manuell; beta.6 hat keinen integrierten Updater. Behalte bei portablen Kopien den vorhandenen Data-Ordner beim Ersetzen der App-Dateien."
+    "appUpdateItem3": "Kein dauerhafter Update-Dienst: Ein temporärer Helfer läuft nur beim Anwenden eines Updates."
   },
   "it": {
     "metaTitle": "Unreal Manager — Il tuo spazio Unreal, sotto il tuo controllo",
@@ -366,9 +360,7 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateDescription": "Aggiornamenti firmati di Unreal Manager da GitHub Releases, per le versioni installate e portatili.",
     "appUpdateItem1": "Ricerca all’avvio al massimo una volta al giorno, oppure manuale, con canali stabile e beta.",
     "appUpdateItem2": "I pacchetti vengono verificati prima dell’installazione; le attività si salvano prima del riavvio.",
-    "appUpdateItem3": "Nessun servizio permanente: un assistente temporaneo funziona solo mentre applica l’aggiornamento.",
-    "manualUpgradeTitle": "Passi da beta.6?",
-    "manualUpgradeDescription": "Installa beta.7 manualmente una volta: beta.6 non ha un updater integrato. Per la versione portatile, conserva la cartella Data esistente quando sostituisci i file dell’app."
+    "appUpdateItem3": "Nessun servizio permanente: un assistente temporaneo funziona solo mentre applica l’aggiornamento."
   },
   "es": {
     "metaTitle": "Unreal Manager — Tu espacio Unreal, bajo tu control",
@@ -482,9 +474,7 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateDescription": "Recibe actualizaciones firmadas de Unreal Manager desde GitHub Releases, para versiones instaladas y portables.",
     "appUpdateItem1": "Comprobación al iniciar, como máximo una vez al día, o manual, con canales estable y beta.",
     "appUpdateItem2": "Los paquetes se verifican antes de instalarse y las tareas activas se guardan antes de reiniciar.",
-    "appUpdateItem3": "Sin servicio permanente: un asistente temporal solo se ejecuta al aplicar la actualización.",
-    "manualUpgradeTitle": "¿Vienes de beta.6?",
-    "manualUpgradeDescription": "Instala beta.7 manualmente una vez: beta.6 no tiene actualizador integrado. En la versión portable, conserva la carpeta Data existente al sustituir los archivos de la aplicación."
+    "appUpdateItem3": "Sin servicio permanente: un asistente temporal solo se ejecuta al aplicar la actualización."
   },
   "fr": {
     "metaTitle": "Unreal Manager — Votre espace Unreal, sous votre contrôle",
@@ -598,9 +588,7 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateDescription": "Des mises à jour signées d’Unreal Manager via GitHub Releases, pour les versions installées et portables.",
     "appUpdateItem1": "Vérification au démarrage au plus une fois par jour, ou manuelle, avec canaux stable et bêta.",
     "appUpdateItem2": "Les paquets sont vérifiés avant installation ; les tâches actives sont enregistrées avant redémarrage.",
-    "appUpdateItem3": "Aucun service permanent : un assistant temporaire s’exécute uniquement pendant l’application de la mise à jour.",
-    "manualUpgradeTitle": "Vous venez de beta.6 ?",
-    "manualUpgradeDescription": "Installez beta.7 manuellement une fois : beta.6 n’a pas de mise à jour intégrée. Pour la version portable, conservez le dossier Data existant en remplaçant les fichiers de l’application."
+    "appUpdateItem3": "Aucun service permanent : un assistant temporaire s’exécute uniquement pendant l’application de la mise à jour."
   },
   "zh": {
     "metaTitle": "Unreal Manager — 由你掌控的 Unreal 工作空间",
@@ -714,9 +702,7 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateDescription": "通过 GitHub Releases 获取已签名的 Unreal Manager 更新，支持安装版与便携版。",
     "appUpdateItem1": "启动时每天最多检查一次，也可手动检查，提供稳定版与测试版通道。",
     "appUpdateItem2": "安装前验证软件包，重启前保存正在执行的任务。",
-    "appUpdateItem3": "没有常驻更新服务，仅在应用更新时运行临时辅助进程。",
-    "manualUpgradeTitle": "正在从 beta.6 升级？",
-    "manualUpgradeDescription": "请先手动安装一次 beta.7；beta.6 没有内置更新器。便携版替换应用文件时，请保留现有 Data 文件夹。"
+    "appUpdateItem3": "没有常驻更新服务，仅在应用更新时运行临时辅助进程。"
   },
   "ja": {
     "metaTitle": "Unreal Manager — 自分で管理する Unreal ワークスペース",
@@ -830,9 +816,7 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateDescription": "インストール版とポータブル版の両方で、GitHub Releases から署名付き更新を取得できます。",
     "appUpdateItem1": "起動時は1日最大1回、または手動で確認。安定版とベータ版のチャンネルを選べます。",
     "appUpdateItem2": "インストール前にパッケージを検証し、再起動前に実行中のタスクを保存します。",
-    "appUpdateItem3": "常駐の更新サービスはありません。更新適用中だけ一時的なヘルパーが動作します。",
-    "manualUpgradeTitle": "beta.6 から更新する場合",
-    "manualUpgradeDescription": "beta.6 には更新機能がないため、最初の1回は beta.7 を手動でインストールしてください。ポータブル版では、アプリのファイルを置き換える際に既存の Data フォルダーを保持してください。"
+    "appUpdateItem3": "常駐の更新サービスはありません。更新適用中だけ一時的なヘルパーが動作します。"
   },
   "ko": {
     "metaTitle": "Unreal Manager — 직접 관리하는 Unreal 작업 공간",
@@ -946,8 +930,6 @@ globalThis.UM_TRANSLATIONS = {
     "appUpdateDescription": "설치형과 포터블 버전 모두 GitHub Releases에서 서명된 Unreal Manager 업데이트를 받을 수 있습니다.",
     "appUpdateItem1": "시작 시 하루에 한 번 또는 수동으로 확인하며, 안정 및 베타 채널을 선택할 수 있습니다.",
     "appUpdateItem2": "설치 전에 패키지를 검증하고 다시 시작하기 전에 진행 중인 작업을 저장합니다.",
-    "appUpdateItem3": "상시 업데이트 서비스 없이 업데이트를 적용할 때만 임시 도우미가 실행됩니다.",
-    "manualUpgradeTitle": "beta.6에서 업그레이드하시나요?",
-    "manualUpgradeDescription": "beta.6에는 내장 업데이터가 없으므로 beta.7을 한 번 수동으로 설치하세요. 포터블 버전의 앱 파일을 교체할 때는 기존 Data 폴더를 유지하세요."
+    "appUpdateItem3": "상시 업데이트 서비스 없이 업데이트를 적용할 때만 임시 도우미가 실행됩니다."
   }
 };
