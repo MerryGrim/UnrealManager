@@ -32,7 +32,9 @@ The cache can be rebuilt when the application needs it.
 
 The application is not digitally signed. Original Unreal Manager source code
 is licensed under the MIT License. Third-party components retain their
-respective licenses; notices are available in Account menu > About.
+respective licenses; notices are available in Account menu > About and in
+THIRD-PARTY-LICENSES.txt. Corresponding MPL component sources are attached to
+https://github.com/MerryGrim/UnrealManager/releases/tag/v0.2.0-beta.6
 Unreal Engine, Epic Games and Fab belong to their owners.
 
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php

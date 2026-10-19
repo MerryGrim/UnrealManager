@@ -79,6 +79,10 @@ GitHub Releases выбран источником версий и пакетов
 .\BUILD-INSTALLER.ps1 -SkipBuild -Compiler 'D:\AI\Tools\InnoSetup7\ISCC.exe'
 ```
 
+Для новой публикации используйте отдельную папку, чтобы сохранить предыдущие
+сборки: `-OutputDirectory '..\Releases\0.2.0-beta.6\my-release'`.
+Если установщик с таким именем уже существует, скрипт остановится.
+
 Новые дистрибутивы находятся в `../Releases/0.2.0-beta.6`. Рядом с portable EXE должен находиться `portable.marker`; данные хранятся в соседней папке `Data`.
 
 ## Проверки

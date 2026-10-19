@@ -1,4 +1,4 @@
-param([string]$Compiler, [switch]$SkipBuild)
+param([string]$Compiler, [switch]$SkipBuild, [string]$OutputDirectory)
 $ErrorActionPreference='Stop'
 Set-Location $PSScriptRoot
 . "$PSScriptRoot\BUILD-ENV.ps1" -PackagingOnly:$SkipBuild
@@ -10,7 +10,10 @@ if (-not $Compiler) {
 if (-not $Compiler -or -not (Test-Path -LiteralPath $Compiler)) { throw 'Install Inno Setup 7 and pass -Compiler with the ISCC.exe path.' }
 if (-not $SkipBuild) { & "$PSScriptRoot\BUILD-WINDOWS.ps1" -Configuration release }
 $umVersion=(Get-Content "$PSScriptRoot\package.json" -Raw | ConvertFrom-Json).version
-$umOut=Join-Path (Split-Path $PSScriptRoot -Parent) "Releases\$umVersion"
+if (-not $OutputDirectory) { $OutputDirectory=Join-Path (Split-Path $PSScriptRoot -Parent) "Releases\$umVersion" }
+$umOut=[IO.Path]::GetFullPath($OutputDirectory)
+$umSetup=Join-Path $umOut "UnrealManager-$umVersion-Windows-x64-Setup.exe"
+if (Test-Path -LiteralPath $umSetup) { throw 'The installer output already exists. Choose a new -OutputDirectory to preserve archived builds.' }
 $umPortable=Join-Path $umOut 'UnrealManager-Portable'
 New-Item -ItemType Directory -Path $umPortable -Force | Out-Null
 $umExecutable = Join-Path $env:CARGO_TARGET_DIR 'release\unreal-manager.exe'
@@ -23,4 +26,4 @@ $umSignature=Get-AuthenticodeSignature -LiteralPath $umBootstrap
 if ($umSignature.Status -ne 'Valid' -or $umSignature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'WebView2 bootstrapper signature is invalid.' }
 & $Compiler "/DAppVersion=$umVersion" "/DOutputRoot=$umOut" "/DAppExecutable=$umExecutable" "$PSScriptRoot\installer\UnrealManager.iss"
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup build failed.' }
-Get-FileHash -Algorithm SHA256 -LiteralPath "$umPortable\unreal-manager.exe","$umOut\UnrealManager-$umVersion-Windows-x64-Setup.exe" | Format-Table -AutoSize
+Get-FileHash -Algorithm SHA256 -LiteralPath "$umPortable\unreal-manager.exe",$umSetup | Format-Table -AutoSize
