@@ -31,6 +31,7 @@ pub fn vault_resume_tasks()->Vec<Task>{
 }
 #[tauri::command]
 pub async fn vault_resume_prepare(state:tauri::State<'_,VaultState>,id:String)->Result<Package,String>{
+    let _update_operation=crate::app_updates::operation()?;
  if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей загрузки".into());}let _busy=Busy(&state.active);
  let plan=tauri::async_runtime::spawn_blocking(move||{let p=load_at(&directory(),&id)?;validate(&p)?;Ok::<_,String>(p)}).await.map_err(|e|e.to_string())??;
  let info=plan.info.clone();*state.plan.lock().map_err(|_|"Ошибка состояния загрузки")?=Some(plan);Ok(info)
@@ -128,9 +129,9 @@ pub(super) fn cleanup(stage:&Path,id:&str)->Result<(),String>{
  fn fixture(root:&Path)->Plan{
   let id=digest(root.to_string_lossy().as_bytes());let hash=digest(b"real file data");let name="Content/Material.uasset".to_string();
   let file=FileManifestList{filename:name.clone(),file_hash:hash.clone(),file_chunk_parts:vec![egs_api::api::types::download_manifest::FileChunkPart{guid:"some-guid".into(),link:Some(reqwest::Url::parse("https://example.com/chunk").unwrap()),offset:4000,size:14}]};
-  Plan{intent:Some(Intent{mode:"install".into(),project:"E:/Fixture/Game.uproject".into(),project_name:"Game".into(),engine_version:"5.8".into(),update_id:None}),info:Package{artifact_id:"artifact".into(),selected_engine:"5.8".into(),build_version:"build".into(),source:String::new(),asset_id:"asset-id".into(),id:id.clone(),title:"Material".into(),kind:"Asset".into(),engines:vec!["5.8".into()],bytes:14,download_bytes:4096,files:1,path:root.join(id).to_string_lossy().into_owned(),hashes:BTreeMap::from([(name.clone(),hash)])},files:BTreeMap::from([(name,file)])}
+  Plan{intent:Some(Intent{mode:"install".into(),project:"X:/Fixture/Game.uproject".into(),project_name:"Game".into(),engine_version:"5.8".into(),update_id:None}),info:Package{artifact_id:"artifact".into(),selected_engine:"5.8".into(),build_version:"build".into(),source:String::new(),asset_id:"asset-id".into(),id:id.clone(),title:"Material".into(),kind:"Asset".into(),engines:vec!["5.8".into()],bytes:14,download_bytes:4096,files:1,path:root.join(id).to_string_lossy().into_owned(),hashes:BTreeMap::from([(name.clone(),hash)])},files:BTreeMap::from([(name,file)])}
  }
- #[test]fn snapshot_survives_restart_with_exact_version_offsets_and_project_intent(){let base=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());let plan=fixture(&base);save_at(&base.join("tasks"),&plan).unwrap();let restored=load_at(&base.join("tasks"),&plan.info.id).unwrap();assert_eq!(restored.files,plan.files);assert_eq!(restored.info.selected_engine,"5.8");assert_eq!(restored.intent.unwrap().project,"E:/Fixture/Game.uproject");assert!(owned(&base,"../other","json").is_err());fs::remove_dir_all(base).unwrap();}
+ #[test]fn snapshot_survives_restart_with_exact_version_offsets_and_project_intent(){let base=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());let plan=fixture(&base);save_at(&base.join("tasks"),&plan).unwrap();let restored=load_at(&base.join("tasks"),&plan.info.id).unwrap();assert_eq!(restored.files,plan.files);assert_eq!(restored.info.selected_engine,"5.8");assert_eq!(restored.intent.unwrap().project,"X:/Fixture/Game.uproject");assert!(owned(&base,"../other","json").is_err());fs::remove_dir_all(base).unwrap();}
  fn encoded(data:&[u8])->Vec<u8>{let mut raw=vec![0u8;62];raw[0..4].copy_from_slice(&2986228386u32.to_le_bytes());raw[4..8].copy_from_slice(&2u32.to_le_bytes());raw[8..12].copy_from_slice(&62u32.to_le_bytes());raw[12..16].copy_from_slice(&(data.len()as u32).to_le_bytes());raw[41..61].copy_from_slice(&Sha1::digest(data));raw[61]=2;raw.extend_from_slice(data);raw}
  #[tokio::test]async fn interrupted_http_block_resumes_with_range_and_is_reused_without_network(){
   use std::net::{TcpListener,TcpStream};use std::sync::{Arc,atomic::AtomicUsize};

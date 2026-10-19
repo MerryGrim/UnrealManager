@@ -1,4 +1,4 @@
-# Verification on the restored computer
+# Verification
 
 Install the source project's locked dependencies with `npm ci` in `../source`.
 Use Node.js 22.12 or later and an existing Playwright package. If Playwright is
@@ -7,27 +7,29 @@ tests launch the locally installed Microsoft Edge in headless mode with GPU
 acceleration and GPU compositing disabled.
 
 ```powershell
-$env:UM_PLAYWRIGHT_MODULE = 'D:\Tools\playwright\node_modules\playwright'
-node .\verification\run-beta6.cjs
+$env:UM_PLAYWRIGHT_MODULE = (Resolve-Path '.\tools\playwright\node_modules\playwright').Path
+node .\verification\run-beta7.cjs
 ```
 
-The beta.6 selection checks all eight non-Russian locale catalogues, preference
+The beta.7 selection includes the signed-update settings UI, startup deduplication,
+channels, verified download/apply states, errors and retry. These are mocked UI
+checks. It also checks all eight non-Russian locale catalogues, preference
 migration and persistence, library filters, Vault pause/resume and installation
 intent for assets/projects/plugins, saved engine task resume, confirmed removal
 from the resume list, and transfer controls at 1280/600 px.
 
 To rerun one selected test, pass its file name to the runner, for example
-`node .\verification\run-beta6.cjs test-preferences.cjs`. Multiple selected file
+`node .\verification\run-beta7.cjs test-preferences.cjs`. Multiple selected file
 names are supported. Each run writes logs, screenshots, and a JSON report into a
 new timestamped folder under `verification/current`. Set
 `UM_VERIFICATION_OUTPUT_DIRECTORY` to choose a different output directory.
 
 Individual `test-*.cjs` scripts use the shared `test-env.cjs` helper and default
 to writing screenshots into `verification/current`. Their source root is
-resolved relative to this directory; the `E:/Fixture` paths are simulated input
-values and do not require an E: drive. Existing logs and screenshots beside
-these scripts are historical evidence from the original computer and remain
-untouched.
+resolved relative to this directory. Paths beginning with `X:/Fixture` are
+synthetic input values used by mocks and do not require that drive to exist.
+Generated evidence goes under the ignored `verification/current` directory;
+archived logs and screenshots remain untouched.
 
 Older tests are kept for reference. Some assert UI behavior that changed before
 beta.6, so they are not all included in the current regression runner. These UI
@@ -63,7 +65,7 @@ establish GPU power state or behavior during login, tray use or active transfers
 Run the static website checks without starting Unreal Manager:
 
 ```powershell
-$env:UM_PLAYWRIGHT_MODULE = 'D:\Tools\playwright\node_modules\playwright'
+$env:UM_PLAYWRIGHT_MODULE = (Resolve-Path '.\tools\playwright\node_modules\playwright').Path
 node .\verification\test-site.cjs
 ```
 
@@ -89,8 +91,8 @@ native app session or contact Epic/Fab. It additionally requires an existing
 part of the app runtime.
 
 ```powershell
-$env:UM_PLAYWRIGHT_MODULE = 'D:\Tools\playwright\node_modules\playwright'
-$env:UM_SHARP_MODULE = 'D:\Tools\sharp\node_modules\sharp'
+$env:UM_PLAYWRIGHT_MODULE = (Resolve-Path '.\tools\playwright\node_modules\playwright').Path
+$env:UM_SHARP_MODULE = (Resolve-Path '.\tools\sharp\node_modules\sharp').Path
 node .\verification\capture-public-screenshots.cjs --preview
 ```
 
@@ -108,7 +110,7 @@ After creating a fresh release staging directory, compare its portable ZIP to
 the newly built executable without launching either package:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verification\verify-release.ps1 -ReleaseDirectory 'D:\Releases\staging' -ExpectedExecutable '.\source\src-tauri\target\release\unreal-manager.exe'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\verification\verify-release.ps1 -ReleaseDirectory '.\Releases\staging' -ExpectedExecutable '.\source\src-tauri\target\release\unreal-manager.exe'
 ```
 
 The helper checks the versioned ZIP/installer names, portable archive root and
@@ -121,3 +123,76 @@ or registry settings. Reports and an extracted EXE used only for static
 inspection go into a unique `verification/current/release-validation-...`
 directory. Pass `-Version` for a later release, or `-OutputDirectory` to choose
 the parent evidence directory.
+
+## Signed native updater fixtures
+
+Build the library tests, then pass the emitted unit-test EXE to the opt-in
+subprocess harness:
+
+```powershell
+cargo test --manifest-path .\source\src-tauri\Cargo.toml --locked --offline --lib
+node .\verification\test-update-native.cjs --test-executable '<unit-test-exe>' --powershell '<pwsh-exe>'
+```
+
+The harness requires the release signing key already protected with the current
+user's DPAPI, PowerShell 7, and an existing x64 C# compiler for tiny test-only
+programs. `--private-key`, `--csharp-compiler`, `--fixture-version`, and
+`--output-directory` override their defaults. It copies signing metadata into a
+unique `verification/current/native-update-...` directory and signs a strictly
+newer synthetic version there; it never publishes those assets or changes
+production version metadata, the public key, or the private key.
+
+The actual helper validates the production signature and payload hashes, binds
+the parent PID to its creation time and executable path, waits for its exit,
+applies the portable payload, launches the synthetic native-ready application,
+and rolls back on failure. Installed-mode checks use a separate mock installer
+process with the exact Inno command arguments and same-directory file copies.
+These checks preserve fabricated account, task, project and marker files and
+reject a tampered payload before asking the parent to exit. The EXE entry used
+to orchestrate tests exists only under Rust `cfg(test)` and starts no WebView.
+The crash probe terminates its own helper while a mock installer and its child
+are running, verifies that the Windows Job Object stops both processes, and
+checks that interrupted installation keeps its journal and backups for manual
+recovery.
+
+`--installer-kind inno` instead compiles an isolated Inno Setup fixture without
+uninstall/registry registration. This optional case requires `--inno-compiler`
+or an existing compiler in the tools directory. Local endpoint protection may
+block a newly generated fixture; do not disable protection to run it. The JSON
+report records which installer kind was actually tested. Mock subprocess checks
+do not establish a full production Inno installation or a live GitHub update.
+The fixture must keep `CreateAppDir=yes` so `{app}` follows the isolated `/DIR`
+target. Its five installed file hashes are compared to the supplied portable
+files; uninstall registration, shortcuts, and automatic app launch stay disabled.
+
+For an isolated full application fixture, pass `--fixture-app`,
+`--fixture-portable-directory` (the exact five files used by its installer), and
+`--fixture-setup`. The supplied app must require `UM_FULL_UPDATE_FIXTURE_DATA`
+as its data root; the harness sets it to that case's new `Data` directory,
+disables automatic update checks there and sets close behavior to exit. This
+mode runs commit and tamper-refusal cases using the app's actual native-ready
+acknowledgement. It records available owned WebView2 browser software flags,
+then closes only the verified fixture process with WM_CLOSE and a verified
+fallback. These flags describe configuration, not measured GPU activity.
+`--case` selects one named scenario for a targeted rerun.
+
+## Public-file and binary path privacy
+
+The read-only checker inspects current tracked and non-ignored new Git files.
+It excludes local data, release staging and `verification/current` from that
+source inventory. Pass an EXE and/or portable folder to inspect release bytes:
+
+```powershell
+node .\verification\check-public-privacy.cjs --self-test
+$report = Join-Path '.\verification\current' ('privacy-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff') + '.json')
+node .\verification\check-public-privacy.cjs --exe '.\source\src-tauri\target\release\unreal-manager.exe' --portable '.\Releases\staging\UnrealManager-Portable' --output $report
+```
+
+It searches for the workspace, configured development tool roots, user profile
+and account-name aliases in UTF-8 and UTF-16LE at even and odd byte offsets,
+including escaped Windows paths. Reports contain labels and counts rather than
+the matched personal values; an existing output report is never overwritten.
+Public URLs and declared public author attribution are counted separately from
+private account paths. The check also lists any WebP EXIF/XMP/ICC chunks.
+Compressed payload contents and text drawn into image pixels need separate
+artifact or visual inspection.

@@ -77,6 +77,7 @@ pub(super) fn report(id:&str,phase:&str,done:u64,total:u64){
 pub fn engine_resume_tasks()->Vec<Task>{let mut tasks=list_at(&directory());for task in &mut tasks{task.can_recover=Path::new(&task.path).join(".um-engine-update.json").exists();}tasks}
 #[tauri::command]
 pub async fn engine_resume_forget(state:tauri::State<'_,EngineState>,id:String,expected_path:String)->Result<(),String>{
+    let _update_operation=crate::app_updates::operation()?;
  if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции".into());}let _busy=super::install::Busy(&state.active);
  tauri::async_runtime::spawn_blocking(move||{
   let task:Task=serde_json::from_slice(&fs::read(task_path(&directory(),&id,"json")?).map_err(io)?).map_err(|_|"Повреждена задача установки")?;
@@ -98,6 +99,7 @@ pub(super) fn load_at(base:&Path,id:&str)->Result<Plan,String>{
 }
 #[tauri::command]
 pub async fn engine_resume_prepare(state:tauri::State<'_,EngineState>,id:String)->Result<Preview,String>{
+    let _update_operation=crate::app_updates::operation()?;
  if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции".into());}
  let _busy=super::install::Busy(&state.active);
  let mut plan=tauri::async_runtime::spawn_blocking(move||load_at(&directory(),&id)).await.map_err(|e|format!("Не удалось прочитать сохранённую задачу: {e}"))??;
@@ -111,7 +113,7 @@ pub async fn engine_resume_prepare(state:tauri::State<'_,EngineState>,id:String)
 #[cfg(test)]mod tests{
  use super::*;
  #[test]fn compressed_snapshot_is_atomic_and_round_trips(){let base=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());let p=base.join("snapshot.z");write_compressed(&p,&vec![1u32,2,3]).unwrap();assert_eq!(read_compressed::<Vec<u32>>(&p).unwrap(),vec![1,2,3]);assert_eq!(fs::read_dir(&base).unwrap().count(),1);fs::remove_dir_all(base).unwrap();}
- #[test]fn task_ids_cannot_escape_settings(){assert!(task_path(Path::new("C:/test"),"../file","json").is_err());}
+ #[test]fn task_ids_cannot_escape_settings(){assert!(task_path(Path::new("X:/Fixture/Test"),"../file","json").is_err());}
  #[test]fn real_hash_and_numeric_chunk_offsets_round_trip_without_epic_blob_decoder(){
   #[derive(Serialize,Deserialize)]struct Saved{#[serde(with="snapshot_files")]files:BTreeMap<String,FileManifestList>}
   let mut files=BTreeMap::new();files.insert("Engine/file".into(),FileManifestList{filename:"Engine/file".into(),file_hash:"a7ef12b3c4d509876543210fedcba01234567890".into(),file_chunk_parts:vec![egs_api::api::types::download_manifest::FileChunkPart{guid:"guid".into(),link:Some(reqwest::Url::parse("https://example.com/chunk").unwrap()),offset:8192,size:1048576}]});
@@ -122,6 +124,7 @@ pub async fn engine_resume_prepare(state:tauri::State<'_,EngineState>,id:String)
 
 #[tauri::command]
 pub async fn engine_resume_legacy_prepare(state:tauri::State<'_,EngineState>,path:String)->Result<Preview,String>{
+    let _update_operation=crate::app_updates::operation()?;
  if let Some(task)=engine_resume_tasks().into_iter().find(|t|same_installation_path(&t.path,&path)){return engine_resume_prepare(state,task.id).await;}
  if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции".into());}
  let _busy=super::install::Busy(&state.active);

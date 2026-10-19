@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$ReleaseDirectory,
     [Parameter(Mandatory = $true)][string]$ExpectedExecutable,
-    [string]$Version = '0.2.0-beta.6',
+    [string]$Version,
     [string]$OutputDirectory
 )
 
@@ -10,6 +10,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+if (-not $Version) { $Version=(Get-Content -LiteralPath (Join-Path $PSScriptRoot '../source/package.json') -Raw | ConvertFrom-Json).version }
 $releaseRoot = (Resolve-Path -LiteralPath $ReleaseDirectory).ProviderPath
 $expectedExe = (Resolve-Path -LiteralPath $ExpectedExecutable).ProviderPath
 $outputBase = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $PSScriptRoot 'current' }

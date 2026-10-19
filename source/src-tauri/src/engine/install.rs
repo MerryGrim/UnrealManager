@@ -661,6 +661,7 @@ pub async fn engine_install(
     id: String,
     on_progress: tauri::ipc::Channel<Progress>,
 ) -> Result<String, String> {
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) {
         return Err("Уже выполняется операция с движком".into());
     }
@@ -1011,7 +1012,7 @@ mod transaction_tests {
     fn registration_creates_launcher_record_preserves_games_and_rolls_back(){
         let (base,_,plan,_)=fixture();let path=base.join("LauncherInstalled.dat");let root=Path::new(&plan.info.path);
         let item=launcher_update_at(&path,"UE_5.8","5.8.3-3",root).unwrap();assert!(item.1.is_null());update_item(&Some(item.clone()),false).unwrap();assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap()["InstallationList"][0]["AppName"],"UE_5.8");update_item(&Some(item),true).unwrap();assert!(!path.exists());
-        fs::write(&path,br#"{"InstallationList":[{"AppName":"Game","InstallLocation":"D:/Game"}],"other":1}"#).unwrap();let item=launcher_update_at(&path,"UE_5.8","5.8.3-3",root).unwrap();assert_eq!(item.2["InstallationList"][0]["AppName"],"Game");assert_eq!(item.2["other"],1);assert_eq!(item.2["InstallationList"].as_array().unwrap().len(),2);
+        fs::write(&path,br#"{"InstallationList":[{"AppName":"Game","InstallLocation":"X:/Fixture/Game"}],"other":1}"#).unwrap();let item=launcher_update_at(&path,"UE_5.8","5.8.3-3",root).unwrap();assert_eq!(item.2["InstallationList"][0]["AppName"],"Game");assert_eq!(item.2["other"],1);assert_eq!(item.2["InstallationList"].as_array().unwrap().len(),2);
         let other=base.join("other-engine");fs::create_dir(&other).unwrap();fs::write(&path,serde_json::json!({"InstallationList":[{"AppName":"UE_5.8","InstallLocation":other}]}).to_string()).unwrap();assert!(launcher_update_at(&path,"UE_5.8","5.8.3-3",root).is_err());fs::remove_dir_all(base).unwrap();
     }
     #[test]
@@ -1463,6 +1464,7 @@ pub async fn engine_recover(
     vault: tauri::State<'_, crate::vault::VaultState>,
     path: String,
 ) -> Result<(), String> {
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) {
         return Err("Дождитесь текущей операции".into());
     }
@@ -1596,6 +1598,7 @@ mod lock_tests {
 
 #[tauri::command]
 pub async fn engine_register_managed(state:tauri::State<'_,EngineState>)->Result<usize,String>{
+    let _update_operation=crate::app_updates::operation()?;
  if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции с движком.".into());}
  let _busy=Busy(&state.active);
  tauri::async_runtime::spawn_blocking(repair_managed_registration).await.map_err(|e|e.to_string())?

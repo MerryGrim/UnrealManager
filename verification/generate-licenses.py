@@ -188,14 +188,14 @@ def main() -> None:
     mpl = [r for r in records if r["name"] in MPL_NAMES and r["source"] == "Cargo"]
     if len(mpl) != 5:
         raise ValueError("Unexpected MPL inventory")
-    version = json.loads((ROOT / "source/package.json").read_text("utf-8"))["version"]
+    release_version = json.loads((ROOT / "source/package.json").read_text("utf-8"))["version"]
     archive_path = args.source_archive.resolve()
     archive_path.parent.mkdir(parents=True, exist_ok=True)
     if archive_path.exists() and not args.notices_only:
         raise FileExistsError("Do not overwrite release source evidence: " + str(archive_path))
-    archive_url = f"https://github.com/MerryGrim/UnrealManager/releases/download/v{version}/{archive_path.name}"
+    archive_url = f"https://github.com/MerryGrim/UnrealManager/releases/download/v{release_version}/{archive_path.name}"
     source_instructions = [
-        f"Unreal Manager {version} - exact third-party MPL source archives",
+        f"Unreal Manager {release_version} - exact third-party MPL source archives",
         "",
         "These are unchanged original crates.io source packages. A .crate is a gzip-compressed tar archive.",
         "Extract a package with: tar -xzf crates/NAME-VERSION.crate",
@@ -258,7 +258,7 @@ def main() -> None:
                                      "sourceUrl": f"https://static.crates.io/crates/{name}/{name}-{version}.crate"})
 
     lines = [
-        f"Unreal Manager {version} - Third-Party Licenses and Source Notices",
+        f"Unreal Manager {release_version} - Third-Party Licenses and Source Notices",
         "",
         "Original Unreal Manager code is MIT licensed; the following components retain their own licenses.",
         "This overinclusive inventory includes build-time and non-Windows packages from the locked dependency graph.",

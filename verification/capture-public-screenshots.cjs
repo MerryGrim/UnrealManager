@@ -39,17 +39,17 @@ const demoItems = [
 const demoPackages = demoItems.slice(1, 2).map((item, index) => ({
   id: `demo-package-${index}`, assetId: item.id, title: item.title, kind: item.kind,
   engines: ['5.7'], bytes: (index ? 0.8 : 2.4) * GiB, downloadBytes: GiB,
-  files: 128 + index * 25, path: `D:/Demo/UnrealManager/Vault/${item.id}`,
+  files: 128 + index * 25, path: `X:/Fixture/Demo/UnrealManager/Vault/${item.id}`,
 }));
 const activePackage = {
   id: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', assetId: demoItems[0].id,
   artifactId: 'demo-artifact-0', selectedEngine: '5.7', buildVersion: 'demo-build',
   title: demoItems[0].title, kind: 'Asset', engines: ['5.7'], bytes: 4 * GiB,
-  downloadBytes: 2.4 * GiB, files: 1240, path: 'D:/Demo/UnrealManager/Vault/demo-landscape',
+  downloadBytes: 2.4 * GiB, files: 1240, path: 'X:/Fixture/Demo/UnrealManager/Vault/demo-landscape',
 };
 const demoEngines = [
-  { name: 'Unreal Engine', version: '5.7.2', path: 'D:/Demo/Unreal/UE_5.7', source: 'demo' },
-  { name: 'Unreal Engine', version: '5.6.1', path: 'D:/Demo/Unreal/UE_5.6', source: 'demo' },
+  { name: 'Unreal Engine', version: '5.7.2', path: 'X:/Fixture/Demo/Unreal/UE_5.7', source: 'demo' },
+  { name: 'Unreal Engine', version: '5.6.1', path: 'X:/Fixture/Demo/Unreal/UE_5.6', source: 'demo' },
 ];
 
 function makeCover(item, index) {
@@ -74,7 +74,7 @@ export async function invoke(name,args={}) {
   switch(name) {
     case 'epic_status':return {signedIn:true,displayName:'Demo User'};
     case 'scan_engines':return engines;
-    case 'scan_projects':return [{name:'Demo Studio',path:'D:/Demo/Projects/DemoStudio/DemoStudio.uproject',engineAssociation:'5.7',modifiedUnix:1792368000}];
+    case 'scan_projects':return [{name:'Demo Studio',path:'X:/Fixture/Demo/Projects/DemoStudio/DemoStudio.uproject',engineAssociation:'5.7',modifiedUnix:1792368000}];
     case 'engine_catalog':return [
       {appName:'UE_5.8',version:'5.8',build:'5.8.0-demo',installed:[]},
       {appName:'UE_5.7',version:'5.7',build:'5.7.3-demo',installed:[{path:engines[0].path,version:'5.7.2',build:'5.7.2-demo',updateAvailable:true}]},
@@ -83,7 +83,7 @@ export async function invoke(name,args={}) {
     case 'engine_pending':case 'engine_resume_tasks':return [];
     case 'vault_list':return packages;
     case 'vault_resume_tasks':return window.demoTransferStarted?[]:[{id:activePackage.id,assetId:activePackage.assetId,title:activePackage.title,kind:'Asset',selectedEngine:'5.7',path:activePackage.path,phase:'На паузе',done:2*1024**3,total:4*1024**3,filesDone:620,filesTotal:1240,intent:{mode:'vault',project:'',projectName:'',engineVersion:'5.7'}}];
-    case 'vault_epic_status':return {directory:'D:/Demo/Epic/VaultCache',items:[],warnings:[]};
+    case 'vault_epic_status':return {directory:'X:/Fixture/Demo/Epic/VaultCache',items:[],warnings:[]};
     case 'fab_cached_library':return {items,cachedAt:1792368000,stale:false};
     case 'fab_library':return {items,scope:'fictional-public-demo'};
     case 'fab_cover':return covers[args.id]||'';
@@ -98,10 +98,12 @@ export async function invoke(name,args={}) {
       window.demoProgress={...window.demoProgress,paused:args.paused,bytesPerSecond:args.paused?0:24*1024**2};
       window.demoProgressChannel.onmessage(window.demoProgress);return;
     case 'close_behavior_get':return 'ask';
+    case 'app_update_settings_get':return {enabled:true,channel:'beta',configured:true,currentVersion:${JSON.stringify(require('../source/package.json').version)},mode:'portable',supported:true};
+    case 'app_update_check':return {status:'current',release:null,checkedAt:1792396800,cached:true};
     case 'download_limit_get':return 32*1024**2;
     case 'project_association_get':return {enabled:true,windowsChoiceRequired:false};
-    case 'vault_storage_get':return {vaultPath:'D:/Demo/UnrealManager/Vault',keepEngineBackup:false};
-    case 'storage_info':return {dataPath:'D:/Demo/UnrealManager/Data',cachePath:'D:/Demo/UnrealManager/Data/Cache',settingsPath:'D:/Demo/UnrealManager/Data/Settings',cacheBytes:84*1024**2};
+    case 'vault_storage_get':return {vaultPath:'X:/Fixture/Demo/UnrealManager/Vault',keepEngineBackup:false};
+    case 'storage_info':return {dataPath:'X:/Fixture/Demo/UnrealManager/Data',cachePath:'X:/Fixture/Demo/UnrealManager/Data/Cache',settingsPath:'X:/Fixture/Demo/UnrealManager/Data/Settings',cacheBytes:84*1024**2};
     case 'settings_read':return {'unreal-manager.language.v1':'en'};
     case 'settings_write':case 'set_ui_language':case 'engine_discard':return;
     default:window.unexpectedDemoCalls.push(name);throw Error('Unsupported fictional screenshot command: '+name);

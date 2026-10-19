@@ -96,6 +96,7 @@ fn load(app: &tauri::AppHandle, session: &mut Session) -> Result<(), String> {
     Ok(())
 }
 async fn ensure(app: &tauri::AppHandle, session: &mut Session) -> Result<bool, String> {
+    let _update_operation=crate::app_updates::operation()?;
     load(app, session)?;
     if session.api.is_logged_in() { return Ok(true); }
     if session.api.user_details().refresh_token().is_none() { return Ok(false); }
@@ -133,6 +134,7 @@ pub(crate) fn parse_code(value: &str) -> Result<String, String> {
 }
 
 pub async fn epic_complete_login(app: tauri::AppHandle, state: tauri::State<'_, EpicState>, code: String, remember: bool) -> Result<AccountStatus, String> {
+    let _update_operation=crate::app_updates::operation()?;
     let code = parse_code(&code)?;
     let mut session = state.0.lock().await;
     let mut next = Session { api: EpicGames::new(), loaded: true, remember, library: Vec::new() };
@@ -148,6 +150,7 @@ pub async fn epic_complete_login(app: tauri::AppHandle, state: tauri::State<'_, 
 
 #[tauri::command]
 pub async fn epic_logout(app: tauri::AppHandle, state: tauri::State<'_, EpicState>) -> Result<(), String> {
+    let _update_operation=crate::app_updates::operation()?;
     let mut session = state.0.lock().await;
     forget(&app)?;
     let mut old = std::mem::replace(&mut session.api, EpicGames::new());

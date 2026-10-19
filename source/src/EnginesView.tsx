@@ -105,7 +105,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
             return;
         setResuming(false);
         setChoice(release);
-        setPath(destination || `E:\\UNREAL\\UE_${release.version}${release.installed.length ? '_2' : ''}`);
+        setPath(destination || '');
         setIsUpdate(!!destination);
         setIsModify(modify);
         setPreview(null);
@@ -118,7 +118,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
             void prepare(undefined, release, destination, true, modify);
     };
     const prepare = async (selected?: string[], release = choice, destination = path, update = isUpdate, modify = isModify) => {
-        if (!release || lock.current)
+        if (!release || lock.current || !destination.trim())
             return;
         lock.current = true;
         setBusy(true);
@@ -198,7 +198,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
  {tr(open && choice && active && createPortal(<div className="modal-backdrop engine-modal-backdrop"><section className="modal engine-wizard" role="dialog" aria-modal="false" aria-label={tr(isModify ? 'Компоненты Unreal Engine' : isUpdate ? 'Обновление Unreal Engine' : 'Установка Unreal Engine')}>
   <div className="modal-head"><div><span className="eyebrow">{tr("UNREAL ENGINE")}</span><h2>{tr(isModify ? 'Изменить компоненты' : isUpdate ? 'Обновление' : 'Установка')} {tr(isModify ? (choice.installed.find(i => i.path.toLowerCase() === path.toLowerCase())?.version || choice.version) : choice.build.split('-')[0])}</h2></div><button className="icon" onClick={close} aria-label={tr("Закрыть")}><X size={20}/></button></div>
   {tr(!isUpdate && <div className="wizard-steps"><span className={!preview ? 'active' : ''}>{tr("1. Расположение")}</span><span className={preview && !progress ? 'active' : ''}>{tr("2. Компоненты")}</span><span className={progress ? 'active' : ''}>{tr("3. Установка")}</span></div>)}
-  {tr(!isUpdate && !preview && !result && <><label>{tr("Папка движка")}</label><div className="engine-path"><input value={path} disabled={busy} onChange={e => setPath(e.target.value)}/><button disabled={busy} onClick={() => void browse()}><FolderOpen size={17}/>{tr("Выбрать")}</button></div><p className="muted">{tr("Новая номерная версия устанавливается в отдельную папку.")}</p><div className="wizard-footer"><button disabled={busy} className="primary" onClick={() => void prepare()}>{tr("Далее")}</button></div></>)}
+  {tr(!isUpdate && !preview && !result && <><label>{tr("Папка движка")}</label><div className="engine-path"><input value={path} placeholder={tr("Папка движка")} disabled={busy} onChange={e => setPath(e.target.value)}/><button disabled={busy} onClick={() => void browse()}><FolderOpen size={17}/>{tr("Выбрать")}</button></div><p className="muted">{tr("Новая номерная версия устанавливается в отдельную папку.")}</p><div className="wizard-footer"><button disabled={busy || !path.trim()} className="primary" onClick={() => void prepare()}>{tr("Далее")}</button></div></>)}
   {tr(isUpdate && !preview && !busy && !result && error && <button onClick={() => void prepare()}>{tr("Повторить проверку")}</button>)}
   {tr(preview && !result && <>
    {tr(isUpdate && !isModify ? <div className="engine-update-size"><span>{tr("Размер загрузки")}</span><strong>{tr(size(preview.downloadBytes))}</strong><small>{tr("Установка обновится автоматически в своей папке.")}</small></div> : <><p className="project-delete-path">{preview.path}</p><div className="engine-components"><label className="downloaded-filter"><input type="checkbox" checked disabled/>{tr("Основные файлы движка")}</label>{tr(preview.components.map(c => <label className="downloaded-filter" key={c.tag}><input type="checkbox" checked={c.selected} disabled={busy||resuming} onChange={e => void prepare(preview.components.filter(x => x.tag === c.tag ? e.target.checked : x.selected).map(x => x.tag))}/>{tr(c.label)}<small>{tr(size(c.bytes))}</small></label>))}</div><div className="update-summary">{isModify && <span>{tr(`Файлов к удалению: ${preview.removed}`)}</span>}<span>{tr("Скачать: до ")}{tr(size(preview.downloadBytes))}</span><span>{tr("Свободно: ")}{tr(size(preview.freeBytes))}</span></div></>)}

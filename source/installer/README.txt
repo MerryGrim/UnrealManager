@@ -1,4 +1,4 @@
-Unreal Manager 0.2.0-beta.6 — Nyanma
+Unreal Manager 0.2.0-beta.7 — Nyanma
 https://github.com/MerryGrim
 
 Installed edition
@@ -30,22 +30,28 @@ The cache can be rebuilt when the application needs it.
 Удаление программы через деинсталлятор сохраняет эту папку данных.
 Очистка кэша в настройках не удаляет вход в Epic, настройки и скачанные материалы.
 
-The application is not digitally signed. Original Unreal Manager source code
+The EXE has no Windows Authenticode publisher signature. Update manifests have
+a separate ECDSA signature verified with the application's pinned public key. Original Unreal Manager source code
 is licensed under the MIT License. Third-party components retain their
 respective licenses; notices are available in Account menu > About and in
 THIRD-PARTY-LICENSES.txt. Corresponding MPL component sources are attached to
-https://github.com/MerryGrim/UnrealManager/releases/tag/v0.2.0-beta.6
+https://github.com/MerryGrim/UnrealManager/releases/tag/v0.2.0-beta.7
 Unreal Engine, Epic Games and Fab belong to their owners.
 
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
-0.2.0-beta.6
-- Vault materials, projects and plugins support pause and resume after restart.
-- Exact package versions and selected project actions survive closing the app.
-- Completed chunks are reused; interrupted chunks resume with HTTP Range when supported.
-- Engine installations can also resume after a safe stop on closing the app.
-- Engine downloads show progress and current speed in Downloads.
-- Settings include a shared download limit for engines and Vault content (MB/s; 0 = unlimited).
-- The close button can ask, minimize to the system tray, or exit; the choice is changeable in Settings.
-- Engine removal requires confirmation and then removes the entire selected engine folder permanently.
+0.2.0-beta.7
+- GitHub application updates for installed and portable editions.
+- Settings: stable/beta, automatic startup check at most daily, manual check.
+- Separate download and apply actions; signed manifest and SHA-256 verification.
+- Temporary apply helper exits after restart; no permanent service or polling timer.
+- Portable updates preserve Data, portable.marker and unknown user files.
+- Installed updates reuse the existing installation directory.
+- File backups support rollback if apply or native startup confirmation fails.
+- Public documentation and examples use generic or synthetic paths.
+
+Beta.6 needs one manual upgrade to beta.7 to receive this updater.
+Before applying, active operations stop safely and their resumable tasks persist.
+If an Inno installer is interrupted mid-write, recovery keeps its backup and
+reports an error rather than overwriting files whose provenance is uncertain.

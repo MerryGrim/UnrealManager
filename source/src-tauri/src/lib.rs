@@ -20,6 +20,8 @@ mod vault;
 mod fab_cache;
 mod fab_details;
 mod project_actions;
+mod app_updates;
+mod app_update_apply;
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -148,7 +150,6 @@ fn common_engine_roots() -> Vec<PathBuf> {
         PathBuf::from(r"D:\Epic Games"),
         PathBuf::from(r"D:\Unreal Engine"),
         PathBuf::from(r"E:\Epic Games"),
-        PathBuf::from(r"E:\UNREAL"),
     ];
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join("UnrealEngine"));
@@ -205,7 +206,6 @@ fn project_roots() -> Vec<PathBuf> {
         PathBuf::from(r"D:\Unreal Projects"),
         PathBuf::from(r"D:\Projects"),
         PathBuf::from(r"E:\Unreal Projects"),
-        PathBuf::from(r"E:\UNREAL\PROJECTS"),
     ]);
     roots
 }
@@ -277,7 +277,7 @@ pub fn run() {
     let mut context=tauri::generate_context!();
     // Config paths must be relative in Tauri; the builder accepts our resolved absolute path.
     for window in &mut context.config_mut().app.windows {window.create=false;window.data_directory=None;}
-    let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![window_behavior::close_behavior_get,window_behavior::close_behavior_set,window_behavior::window_close_action,download::download_limit_get, download::download_limit_set,project_association::project_association_get,project_association::project_association_set,storage::vault_storage_get,storage::vault_storage_set,storage::settings_read,storage::settings_write,storage::storage_info,storage::clear_cache,ui_locale::set_ui_language,open_author_profile,engine::install::engine_register_managed,engine::delete::engine_delete_preview, engine::delete::engine_delete, engine::engine_discard, engine::resume::engine_resume_forget, engine::resume::engine_resume_tasks, engine::resume::engine_resume_prepare, engine::resume::engine_resume_legacy_prepare, engine::install::engine_pending, engine::install::engine_recover, engine::install::engine_install, engine::install::engine_cancel, engine::install::engine_pause, engine::engine_catalog, engine::engine_prepare, engine::engine_launch, scan_engines, scan_projects, launch_project, project_actions::reveal_project, project_actions::choose_project_location, project_actions::project_delete_preview, project_actions::delete_project,
+    let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![app_updates::app_update_settings_get,app_updates::app_update_settings_set,app_updates::app_update_check,app_updates::app_update_download,app_updates::app_update_apply,window_behavior::close_behavior_get,window_behavior::close_behavior_set,window_behavior::window_close_action,download::download_limit_get, download::download_limit_set,project_association::project_association_get,project_association::project_association_set,storage::vault_storage_get,storage::vault_storage_set,storage::settings_read,storage::settings_write,storage::storage_info,storage::clear_cache,ui_locale::set_ui_language,open_author_profile,engine::install::engine_register_managed,engine::delete::engine_delete_preview, engine::delete::engine_delete, engine::engine_discard, engine::resume::engine_resume_forget, engine::resume::engine_resume_tasks, engine::resume::engine_resume_prepare, engine::resume::engine_resume_legacy_prepare, engine::install::engine_pending, engine::install::engine_recover, engine::install::engine_install, engine::install::engine_cancel, engine::install::engine_pause, engine::engine_catalog, engine::engine_prepare, engine::engine_launch, scan_engines, scan_projects, launch_project, project_actions::reveal_project, project_actions::choose_project_location, project_actions::project_delete_preview, project_actions::delete_project,
         epic::epic_status, epic::epic_begin_login, epic_login::epic_cancel_login,
         epic::epic_logout, epic_redeem::epic_open_redeem, epic::fab_library, epic::fab_cached_library, epic::fab_cover,
         fab_details::fab_details, fab_details::fab_detail_image, fab_details::fab_open_listing,
@@ -312,14 +312,35 @@ pub fn run() {
             }
         })
         .invoke_handler(move |invoke| {
+            if app_updates::applying() {
+                invoke.resolver.reject("Дождитесь завершения обновления программы.");
+                return true;
+            }
             if invoke.message.webview_ref().label() != "main" {
                 invoke.resolver.reject("Native commands are unavailable in this window");
                 return true;
             }
             handler(invoke)
         })
-        .run(context)
-        .expect("error while running Unreal Manager");
+        .build(context)
+        .expect("error while building Unreal Manager")
+        .run(|_,event| {
+            if matches!(event,tauri::RunEvent::Ready) {
+                if let Some(id)=app_update_apply::restart_id() { let _=app_update_apply::confirm_ready(&id); }
+            }
+        });
+}
+
+pub fn run_app_update_helper(path:PathBuf)->Result<(),String> { app_update_apply::run(&path) }
+pub fn app_update_startup()->Result<bool,String> { app_update_apply::recover_or_busy() }
+pub fn report_app_update_error(error:&str) {
+    eprintln!("{error}");
+    #[cfg(windows)] unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW,MB_OK,MB_ICONERROR};
+        let text:Vec<u16>=format!("Не удалось завершить обновление Unreal Manager. Автоматическое восстановление остановлено; существующие файлы сохранены.\n\n{error}").encode_utf16().chain(Some(0)).collect();
+        let title:Vec<u16>="Unreal Manager — обновление".encode_utf16().chain(Some(0)).collect();
+        MessageBoxW(std::ptr::null_mut(),text.as_ptr(),title.as_ptr(),MB_OK|MB_ICONERROR);
+    }
 }
 
 /// Runs the same scanners used by the UI without starting WebView2.
@@ -369,17 +390,17 @@ pub fn engine_report(path: std::path::PathBuf) {
 
 
 
-pub fn engine_plan_report(manifest:PathBuf,report:PathBuf){let result=engine::local_report(&manifest);let _=fs::write(report,serde_json::to_vec_pretty(&result).unwrap());}
+pub fn engine_plan_report(manifest:PathBuf,target:PathBuf,report:PathBuf){let result=engine::local_report(&manifest,target);let _=fs::write(report,serde_json::to_vec_pretty(&result).unwrap());}
 
 
 
 
 #[cfg(any(debug_assertions, feature = "engine-test-cli"))]
-pub fn engine_test_install(raw_path:PathBuf,report:PathBuf){
+pub fn engine_test_install(raw_path:PathBuf,target:PathBuf,report:PathBuf){
  let mut context=tauri::generate_context!();context.config_mut().app.windows.clear();
  tauri::Builder::default().manage(epic::EpicState::default()).manage(engine::EngineState::default()).manage(vault::VaultState::default()).setup(move|app|{
   let app=app.handle().clone();tauri::async_runtime::spawn(async move{
-   let result=engine::install_local(&app,raw_path,report.clone()).await;
+   let result=engine::install_local(&app,raw_path,target,report.clone()).await;
    let _=fs::write(report.with_extension("result.json"),serde_json::to_vec_pretty(&result).unwrap());app.exit(0);
   });Ok(())
  }).run(context).expect("engine installation");

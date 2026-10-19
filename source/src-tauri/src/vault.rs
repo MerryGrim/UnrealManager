@@ -85,6 +85,7 @@ fn make_plan(item: super::epic::LibraryItem, artifact: &str, manifest: DownloadM
 
 #[tauri::command]
 pub async fn vault_prepare(app: tauri::AppHandle, epic: tauri::State<'_, super::epic::EpicState>, state: tauri::State<'_, VaultState>, id: String, artifact: String, engine_version: String) -> Result<Package, String> {
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true,Ordering::SeqCst) { return Err("Дождитесь текущей загрузки".into()); }
     let _busy=Busy(&state.active);
     let (item, manifest) = super::epic::download_manifest(&app, &epic, &id, &artifact).await?;
@@ -121,6 +122,7 @@ pub fn vault_cancel(state: tauri::State<'_, VaultState>) { state.cancel.store(tr
 
 #[tauri::command]
 pub async fn vault_download(state: tauri::State<'_, VaultState>, id: String, on_progress: tauri::ipc::Channel<Progress>,intent:Option<transfers::Intent>) -> Result<Package, String> {
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) { return Err("Уже выполняется загрузка".into()); }
     let _busy = Busy(&state.active); state.cancel.store(false, Ordering::SeqCst);
     if let Some(intent)=intent {if !matches!(intent.mode.as_str(),"vault"|"install")||intent.project.len()>2000||intent.project_name.len()>100||intent.engine_version.len()>100{return Err("Некорректное действие после загрузки".into());}let mut plan=state.plan.lock().map_err(|_|"Ошибка состояния")?;let prepared=plan.as_mut().filter(|p|p.info.id==id).ok_or("Подготовьте загрузку заново")?;prepared.intent=Some(intent);}
@@ -255,6 +257,7 @@ pub async fn vault_delete_preview(ids:Vec<String>)->Result<Vec<String>,String>{
 }
 #[tauri::command]
 pub async fn vault_delete(state:tauri::State<'_,VaultState>,ids:Vec<String>,expected_paths:Vec<String>,mode:Option<super::project_actions::DeleteMode>)->Result<(),String>{
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции Vault".into());}let _busy=Busy(&state.active);
     let result=tauri::async_runtime::spawn_blocking(move||{
         let targets=delete_targets(&ids)?;
@@ -334,6 +337,7 @@ fn checked_engine_plugin(root:&Path,path:&Path,name:&str)->Result<PathBuf,String
 }
 #[tauri::command]
 pub async fn plugin_remove_engine(state:tauri::State<'_,VaultState>,name:String,engine_path:String,expected_path:String)->Result<(),String>{
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции Vault".into());}let _busy=Busy(&state.active);
     tauri::async_runtime::spawn_blocking(move||{
         let installs=engine_plugins()?;
@@ -476,6 +480,7 @@ fn install_for_engine(info: &Package, project: &str, project_name: Option<&str>,
 }
 #[tauri::command]
 pub async fn vault_install(state: tauri::State<'_, VaultState>, id: String, project: String, project_name: Option<String>, engine_version: Option<String>) -> Result<usize, String> {
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) { return Err("Дождитесь текущей операции Vault".into()); }
     let _busy=Busy(&state.active);
     tauri::async_runtime::spawn_blocking(move || {
@@ -540,7 +545,7 @@ mod tests {
         let destination=root.join("new-project");let target=destination.to_str().unwrap();
         let check=preview(&info,target,Some("MyGame")).unwrap();
         assert_eq!(check.project_file,Some(destination.join("MyGame.uproject").to_string_lossy().into()));
-        for invalid in ["","../bad","C:/bad","bad.uproject","bad name","CON","1Game"] {assert!(preview(&info,target,Some(invalid)).is_err(),"{invalid}");}
+        for invalid in ["","../bad","X:/Fixture/bad","bad.uproject","bad name","CON","1Game"] {assert!(preview(&info,target,Some(invalid)).is_err(),"{invalid}");}
         assert!(!destination.exists());
         assert_eq!(install(&info,target,Some("MyGame")).unwrap(),1);
         assert_eq!(fs::read(destination.join("MyGame.uproject")).unwrap(),descriptor);
@@ -565,7 +570,7 @@ mod tests {
     }
     #[test]
     fn rejects_unsafe_windows_paths() {
-        for path in ["../a", "C:/x", "/x", "a\\..\\x", "a:stream", "NUL.txt", "a/COM1", "a./x", "a//b"] { assert!(relative(path).is_err(), "{path}"); }
+        for path in ["../a", "X:/Fixture/x", "/x", "a\\..\\x", "a:stream", "NUL.txt", "a/COM1", "a./x", "a//b"] { assert!(relative(path).is_err(), "{path}"); }
         assert!(relative("Content/Тест/a.uasset").is_ok());
     }
     #[test]
@@ -644,6 +649,7 @@ pub fn vault_epic_status()->Result<EpicVaultIndex,String>{epic_index()}
 pub struct EpicScanProgress { done:usize,total:usize }
 #[tauri::command]
 pub async fn vault_sync_epic(state:tauri::State<'_,VaultState>,epic:tauri::State<'_,super::epic::EpicState>,directory:String,on_progress:tauri::ipc::Channel<EpicScanProgress>)->Result<EpicVaultIndex,String>{
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции Vault".into());} let _busy=Busy(&state.active);
     let mut result=tauri::async_runtime::spawn_blocking(move||scan_epic(&directory,|done,total|{let _=on_progress.send(EpicScanProgress{done,total});})).await.map_err(|_|"Проверка Vault прервана")??;
     let library=super::epic::library_snapshot(&epic).await;

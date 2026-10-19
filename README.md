@@ -4,7 +4,7 @@ An independent, lightweight Unreal Engine manager for **Windows x64**.
 Manage engines, projects, Fab assets, Vault content and plugins in one desktop
 application, without a game storefront.
 
-**Current source version: 0.2.0-beta.6.**
+**Current source version: 0.2.0-beta.7.**
 
 [Website & screenshots](https://merrygrim.github.io/UnrealManager/) ·
 [Build instructions](source/README.md) · [Verification](verification/README.md) ·
@@ -38,7 +38,11 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 
 This is beta software. UI regression checks use demonstration data and do not
 establish that a real Epic/Fab transfer or full engine installation has passed.
-Automatic updates of Unreal Manager itself are **planned, not implemented**.
+GitHub application updates support installed and portable editions. Settings offer
+stable/beta channels, a startup check at most daily, manual checks, verified downloads
+and apply with restart. No update service or permanent helper is installed.
+See [updater and release details](source/UPDATES.md). Beta.6 requires one manual
+upgrade to beta.7 before application updates are available.
 
 ## Lightweight rendering
 
@@ -51,11 +55,11 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
-## Download beta.6
+## Download beta.7
 
-[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.6/UnrealManager-0.2.0-beta.6-Windows-x64-Setup.exe) ·
-[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.6/UnrealManager-0.2.0-beta.6-Windows-x64-Portable.zip) ·
-[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.2.0-beta.6)
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.7/UnrealManager-0.2.0-beta.7-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.7/UnrealManager-0.2.0-beta.7-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.2.0-beta.7)
 
 The installer installs for the current user. For portable use, extract the ZIP to
 a writable directory and keep `portable.marker` beside `unreal-manager.exe`.
@@ -78,7 +82,7 @@ cd UnrealManager/source
 .\PACKAGE-PORTABLE.ps1
 ```
 
-Outputs go to `Releases/0.2.0-beta.6` and `source/src-tauri/target`. The portable
+Outputs go to `Releases/0.2.0-beta.7` and `source/src-tauri/target`. The portable
 package stores its data beside the executable in `Data` when `portable.marker`
 is present. See [source/README.md](source/README.md) for environment configuration,
 installer prerequisites and commands. Inno Setup 7 builds the installable version;

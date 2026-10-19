@@ -112,9 +112,9 @@ fn same_installation_path(a:&str,b:&str)->bool {
 mod path_tests {
     #[test]
     fn epic_and_scanner_paths_match_separators_case_and_trailing_slash() {
-        assert!(super::same_installation_path(r"E:\UNREAL\UE_5.8", "e:/UNREAL/UE_5.8/"));
-        assert!(!super::same_installation_path(r"E:\UNREAL\UE_5.8", "E:/UNREAL/UE_5.7"));
-        assert!(super::same_installation_path(r"E:\\UNREAL\\UE_5.8", "E:/UNREAL/UE_5.8"));
+        assert!(super::same_installation_path(r"X:\Fixture\Engines\UE_5.8", "x:/Fixture/Engines/UE_5.8/"));
+        assert!(!super::same_installation_path(r"X:\Fixture\Engines\UE_5.8", "X:/Fixture/Engines/UE_5.7"));
+        assert!(super::same_installation_path(r"X:\\Fixture\\Engines\\UE_5.8", "X:/Fixture/Engines/UE_5.8"));
     }
 }
 
@@ -274,6 +274,7 @@ pub async fn engine_prepare(
     update: bool,
     modify: Option<bool>,
 ) -> Result<Preview, String> {
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.load(Ordering::SeqCst) {
         return Err("Дождитесь текущей операции с движком".into());
     }
@@ -592,8 +593,7 @@ mod tests {
     }
 }
 
-pub(crate) fn local_report(raw_path: &Path) -> Result<Preview, String> {
-    let root = PathBuf::from(r"E:\UNREAL\UE_5.8");
+pub(crate) fn local_report(raw_path: &Path, root: PathBuf) -> Result<Preview, String> {
     let item = items().into_iter().find(|(_, v)| v["AppName"] == "UE_5.8");
     Ok(prepare(
         root,
@@ -633,10 +633,10 @@ fn register_root(root: &Path) -> Result<(), String> {
 pub(crate) async fn install_local(
     app: &tauri::AppHandle,
     raw_path: PathBuf,
+    root: PathBuf,
     report: PathBuf,
 ) -> Result<String, String> {
     use tauri::Manager;
-    let root = PathBuf::from(r"E:\UNREAL\UE_5.8");
     let item = items().into_iter().find(|(_, v)| v["AppName"] == "UE_5.8");
     let plan = tauri::async_runtime::spawn_blocking(move || {
         prepare(

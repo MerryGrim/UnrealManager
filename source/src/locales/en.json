@@ -557,7 +557,7 @@
   "Платформы": "Platforms",
   "По вашему действию открываются Unreal Editor, Проводник и браузер. Установка и удаление движков затрагивают их локальные записи Epic.": "At your request, the app opens Unreal Editor, File Explorer and your browser. Installing and removing engines changes their local Epic installation records.",
   "По сети:": "Network:",
-  "По сети: около {0}. Каталог: E:\\AI\\UM\\Vault.": "Network: about {0}. Folder: E:\\AI\\UM\\Vault.",
+  "По сети: около {0}.": "Network: about {0}.",
   "По умолчанию используется язык системы. Если он не поддерживается, выбирается английский.": "The system language is used by default. English is used if that language is not supported.",
   "Повреждена запись установки": "Installation record damaged",
   "Повреждена идентификация движка": "Identification of the engine damaged",

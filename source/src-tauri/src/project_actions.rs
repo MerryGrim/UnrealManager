@@ -98,6 +98,7 @@ pub fn reveal_project(path:String)->Result<(),String>{
 #[tauri::command]
 pub async fn choose_project_location(folder:bool)->Result<Option<String>,String>{
     tauri::async_runtime::spawn_blocking(move||{
+        let _operation=crate::app_updates::operation()?;
         #[cfg(windows)] {
             use std::os::windows::process::CommandExt;
             let script=r#"[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
@@ -133,6 +134,7 @@ pub async fn project_delete_preview(path:String)->Result<String,String>{
 #[tauri::command]
 pub async fn delete_project(path:String, directory:String, mode:DeleteMode)->Result<(),String>{
     tauri::async_runtime::spawn_blocking(move||{
+        let _operation=crate::app_updates::operation()?;
         let root=deletion_root(&path)?;
         if root!=Path::new(&directory){return Err("Каталог проекта изменился. Повторите подтверждение".into());}
         #[cfg(windows)] {

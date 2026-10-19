@@ -25,6 +25,7 @@ fn callback_result(url: &tauri::Url, nonce: &str) -> Option<Result<String, Strin
 }
 
 pub async fn authorize(app: &tauri::AppHandle, remember: bool) -> Result<String, String> {
+    let _update_operation=crate::app_updates::operation()?;
     if ACTIVE.swap(true, Ordering::SeqCst) { return Err("Окно входа уже открыто".into()); }
     let _guard = ActiveGuard;
     super::epic_browser::clear_session(app)?;
@@ -63,6 +64,10 @@ pub async fn authorize(app: &tauri::AppHandle, remember: bool) -> Result<String,
             let _ = window.eval(&script);
         })
         .build().map_err(|_| "Не удалось открыть окно Epic Games")?;
+    if crate::app_updates::applying() {
+        let _=window.destroy();
+        return Err("Вход отменён перед обновлением программы.".into());
+    }
     window.on_window_event(move |event| {
         if matches!(event, WindowEvent::Destroyed) {
             if let Ok(mut pending) = sender.lock() { if let Some(tx) = pending.take() { let _ = tx.send(Err("Вход отменён".into())); } }

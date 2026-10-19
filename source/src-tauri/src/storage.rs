@@ -181,7 +181,7 @@ pub async fn clear_cache()->Result<u64,String> {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn vault_location_rejects_drive_root_relative_file_and_engine(){
-     assert!(validate_vault_path("relative/vault").is_err());assert!(validate_vault_path("E:\\").is_err());assert!(validate_vault_path("E:\\folder\\..\\vault").is_err());
+     assert!(validate_vault_path("relative/vault").is_err());assert!(validate_vault_path("X:\\").is_err());assert!(validate_vault_path("X:\\folder\\..\\vault").is_err());
      let dir=std::env::temp_dir().join(format!("um-vault-path-test-{}",uuid::Uuid::new_v4()));fs::create_dir_all(dir.join("Engine/Build")).unwrap();fs::write(dir.join("Engine/Build/Build.version"),b"{}").unwrap();assert!(validate_vault_path(dir.to_str().unwrap()).is_err());assert!(validate_vault_path(dir.join("Vault").to_str().unwrap()).is_ok());fs::write(dir.join("file"),b"data").unwrap();assert!(validate_vault_path(dir.join("file").to_str().unwrap()).is_err());fs::remove_dir_all(dir).unwrap();
     }
 

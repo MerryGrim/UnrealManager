@@ -10,7 +10,7 @@ their copyright and license notices.
   `source/package-lock.json`; native dependencies in `source/src-tauri/Cargo.lock`.
 - `source/src/licenses.json` preserves collected dependency metadata and original
   license texts and is displayed in the application's **About → Licenses** tab.
-  All 560 entries in the beta.6 snapshot have license texts. The inventory includes
+  All 560 entries in the beta.7 snapshot have license texts. The inventory includes
   build-time and other-platform packages; it does not imply that every component
   is distributed in the Windows executable or licensed under MIT.
 - Both binary editions include `THIRD-PARTY-LICENSES.txt` with the full collected
@@ -20,7 +20,7 @@ their copyright and license notices.
 - Some transitive Rust packages use MPL-2.0, including cssparser,
   cssparser-macros, dtoa-short, option-ext, and selectors. Their original licenses
   continue to apply. Unmodified source packages matching Cargo.lock checksums
-  are attached to [beta.6 as ThirdPartySources.zip](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.6/UnrealManager-0.2.0-beta.6-ThirdPartySources.zip).
+  are attached to [beta.7 as ThirdPartySources.zip](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.7/UnrealManager-0.2.0-beta.7-ThirdPartySources.zip).
   The archive includes exact versions, SHA-256 values, original license notices
   and extraction instructions. The same sources are available via the exact
   <https://crates.io/> URLs in the notices.

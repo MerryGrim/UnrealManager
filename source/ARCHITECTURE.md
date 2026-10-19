@@ -1,4 +1,4 @@
-# Architecture — 0.2.0-beta.6
+# Architecture — 0.2.0-beta.7
 
 ## Desktop interface
 
@@ -54,9 +54,21 @@ The Windows executable uses system WebView2. Portable packaging and the optional
 Inno Setup installer are separate build steps. `GENERATE-ICONS.ps1` recreates
 the original geometric UM artwork using CPU-based Windows drawing APIs.
 
-Application self-updates are planned only: `app_updates.rs` is an unconnected
-draft, while the current Updates view handles Vault content. No update server
-is part of the application.
+Application updates use GitHub Releases, a pinned ECDSA P-256 public key and
+SHA-256 payload hashes. The startup check runs at most once per day; manual
+checks and stable/beta channels are available in Settings. There is no polling
+timer, installed service or scheduled task. Release tooling is documented in
+[UPDATES.md](UPDATES.md).
+
+A temporary copy of the same executable enters the updater before Tauri or
+WebView creation. It binds the original process by PID, creation time and image
+path, waits for its exit, then applies an Inno Setup package to the existing
+installation folder or replaces five allowlisted portable files. Data, Vault,
+projects, download tasks and portable.marker remain outside the replacement
+set. A journal and backups support file rollback; an interrupted Inno installer
+with unknown partial output retains its backup for manual recovery. A native
+Tauri Ready acknowledgement confirms startup, rather than a full Epic/Fab
+operation. No update server is part of the application.
 
 Rust tests and mock UI regressions check their respective code paths. A mock
 result does not establish that an authenticated Fab transfer, full Unreal Engine

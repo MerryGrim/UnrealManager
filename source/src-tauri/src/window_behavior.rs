@@ -31,17 +31,34 @@ pub async fn window_close_action(app:tauri::AppHandle,action:String,remember:boo
     if action=="tray" {app.get_webview_window("main").ok_or("Main window missing")?.hide().map_err(|e|e.to_string())?;}
     else {
         if EXITING.swap(true,Ordering::SeqCst){return Ok(());}
+        let _=crate::epic_login::epic_cancel_login(app.clone());
         stop_operations(&app.state::<crate::engine::EngineState>(),&app.state::<crate::vault::VaultState>()).await;
         app.exit(0);
     }
     Ok(())
 }
 async fn stop_operations(engine:&crate::engine::EngineState,vault:&crate::vault::VaultState){
-    while engine.active.load(Ordering::SeqCst)||vault.active.load(Ordering::SeqCst)||vault.updating.load(Ordering::SeqCst){
+    while engine.active.load(Ordering::SeqCst)||vault.active.load(Ordering::SeqCst)||vault.updating.load(Ordering::SeqCst)||crate::app_updates::operations_active(){
         engine.suspend.store(true,Ordering::SeqCst);engine.cancel.store(true,Ordering::SeqCst);engine.paused.store(false,Ordering::SeqCst);vault.cancel.store(true,Ordering::SeqCst);
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
+pub(crate) async fn prepare_update(app:&tauri::AppHandle)->Result<(),String> {
+    if EXITING.swap(true,Ordering::SeqCst) { return Err("Программа уже завершает работу.".into()); }
+    let stop=async {
+        crate::epic_login::epic_cancel_login(app.clone())?;
+        stop_operations(&app.state::<crate::engine::EngineState>(),&app.state::<crate::vault::VaultState>()).await;
+        Ok::<(),String>(())
+    };
+    let result=tokio::time::timeout(std::time::Duration::from_secs(120),stop).await;
+    if !matches!(result,Ok(Ok(()))) {
+        EXITING.store(false,Ordering::SeqCst);
+        if let Ok(Err(error))=result { return Err(error); }
+        return Err("Не удалось безопасно остановить операции. Повторите обновление после их завершения.".into());
+    }
+    Ok(())
+}
+pub(crate) fn abort_update() { EXITING.store(false,Ordering::SeqCst); }
 pub fn request_close(app:&tauri::AppHandle) {
     if EXITING.load(Ordering::SeqCst){return;}
     let behavior=close_behavior_get();

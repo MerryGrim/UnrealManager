@@ -63,6 +63,7 @@ fn unregister(root:&Path)->Result<(),String>{
 
 #[tauri::command]
 pub async fn engine_delete(path:String,expected_version:String,state:tauri::State<'_,EngineState>)->Result<String,String>{
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции с движком.".into());}
     let _busy=install::Busy(&state.active);
     tauri::async_runtime::spawn_blocking(move||{
@@ -129,8 +130,8 @@ mod tests {
     }
     #[test]
     fn registration_matches_exact_path_only(){
-        let root=Path::new("E:/UNREAL/UE_5.8");
-        assert!(matches_path(&serde_json::json!("e:\\unreal\\ue_5.8\\"),root));
-        assert!(!matches_path(&serde_json::json!("E:/UNREAL/UE_5.8_other"),root));
+        let root=Path::new("X:/Fixture/Engines/UE_5.8");
+        assert!(matches_path(&serde_json::json!("x:\\fixture\\engines\\ue_5.8\\"),root));
+        assert!(!matches_path(&serde_json::json!("X:/Fixture/Engines/UE_5.8_other"),root));
     }
 }

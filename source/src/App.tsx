@@ -1,4 +1,5 @@
 import {ClosePrompt,WindowSettings} from './WindowSettings';
+import {AppUpdateNotice,AppUpdateSettings,useAppUpdates} from './AppUpdateSettings';
 import {DownloadSettings} from './DownloadSettings';
 import type {EngineTransfer} from './EngineTransferCard';
 import {CacheSettings} from './CacheSettings';
@@ -40,6 +41,7 @@ const nav: {
 ];
 export default function App() {
     useLanguage();
+    const appUpdates = useAppUpdates();
     const [about, setAbout] = useState(false);
     const epic = useEpic();
     const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
@@ -92,12 +94,13 @@ export default function App() {
       {tr(section === 'plugins' && <PluginsView onDownload={item => vault.select(item, false, true)} transfers={vault.updateTransfers} downloadProgress={vault.tileProgress} pendingProgress={vault.pendingProgress} onResume={id=>window.dispatchEvent(new CustomEvent('um-resume-vault',{detail:id}))} items={vault.items} busy={vault.busy} onInstall={vault.openInstall} onUpdate={vault.openProjectUpdate} onLibrary={() => { setPluginLibraryRequest(n => n + 1); setSection('library'); }} onRefresh={vault.refresh}/>)}
       <PageActionsTarget.Provider value={section === 'updates' ? actionsTarget : null}><div className="library-view" hidden={section !== 'updates'}><UpdatesView transfers={vault.updateTransfers} items={vault.items} account={epic.account} busy={vault.busy} onDownload={vault.openUpdate} onProjectUpdate={vault.openProjectUpdate} onCount={setUpdateCount}/></div></PageActionsTarget.Provider>
       {section === 'downloads' && vault.view}
-      {tr(section === 'settings' && <SettingsView vaultSettings={<><ProjectAssociationSettings/><VaultStorageSettings busy={vault.busy||!!engineProgress} onChanged={vault.refresh}/>{vault.epicSettings}</>}/>)}
+      {tr(section === 'settings' && <SettingsView appUpdates={appUpdates} vaultSettings={<><ProjectAssociationSettings/><VaultStorageSettings busy={vault.busy||!!engineProgress} onChanged={vault.refresh}/>{vault.epicSettings}</>}/>)}
       <div className="library-view" hidden={section !== 'redeem'}><RedeemView account={epic.account} onActivated={() => setLibraryRefresh(n => n + 1)} onLibrary={() => { setSection('library'); setLibraryRefresh(n => n + 1); }}/></div>
       </div>
     </main></PageActionsTarget.Provider>
     <footer className="workspace-footer"><button className={section === 'downloads' ? 'active' : ''} aria-current={section === 'downloads' ? 'page' : undefined} onClick={() => setSection('downloads')}><Download size={16}/>{tr((engineProgress ? `${engineProgress.paused?tr('На паузе'):engineProgress.phase}${engineProgress.total ? ` · ${engineProgress.percent}%` : ''}` : '') || (vault.tileProgress ? `${vault.tileProgress.phase} · ${vault.tileProgress.percent}%` : vault.busy ? 'Операция с хранилищем…' : 'Нет активных загрузок'))}</button><button className={section === 'settings' ? 'active' : ''} aria-current={section === 'settings' ? 'page' : undefined} onClick={() => setSection('settings')}><Settings size={16}/>{tr("Настройки")}</button></footer>
     {tr(epic.accountError && <div className="account-notice" role="alert">{tr(epic.accountError)}<span>{tr("Вход доступен в меню аккаунта справа сверху.")}</span></div>)}
+    {section !== 'settings' && <AppUpdateNotice updates={appUpdates} onOpen={() => setSection('settings')}/>}
     <ClosePrompt/>{tr(epic.dialog)}{tr(vault.dialog)}{tr(about && <AboutDialog onClose={() => setAbout(false)}/>)}
   </div>;
 }
@@ -120,9 +123,10 @@ function ProjectsView({ projects, query, setQuery, refresh, onRemoved }: {
     refresh: () => Promise<void>;
     onRemoved: (path: string) => void;
 }) { const [launchError, setLaunchError] = useState(''); return <div className="content"><div className="toolbar"><label className="search"><Search size={17}/><input placeholder={tr("Поиск проектов")} value={query} onChange={e => setQuery(e.target.value)}/></label><PageActions><button onClick={refresh}><RefreshCw size={17}/>{tr("Сканировать")}</button></PageActions></div>{tr(launchError.trim() && <p className="error-text" role="alert">{tr(launchError)}</p>)}<div className="fab-grid recent-projects">{tr(projects.map(p => <ProjectTile key={p.path} project={p} onError={setLaunchError} onRemoved={onRemoved}/>))}{tr(projects.length === 0 && <Empty text="Проекты не найдены. Поиск выполняется в стандартных каталогах Unreal Projects."/>)}</div></div>; }
-function SettingsView({ vaultSettings }: {
+function SettingsView({ vaultSettings, appUpdates }: {
     vaultSettings: React.ReactNode;
-}) { return <div className="content settings"><LanguageSettings /><WindowSettings /><DownloadSettings /><CacheSettings />{tr(vaultSettings)}<section><span className="eyebrow">{tr("ПРОИЗВОДИТЕЛЬНОСТЬ")}</span><h3>{tr("Графика интерфейса")}</h3><div className="setting-row"><div><b>{tr("Программная отрисовка")}</b><span>{tr("Аппаратное ускорение WebView2 отключено. Состояние дискретной GPU проверяется внешним мониторингом.")}</span></div><span className="status-ok">{tr("ВКЛЮЧЕНО")}</span></div><div className="setting-row"><div><b>{tr("Анимации интерфейса")}</b><span>{tr("Только короткие событийные transform/opacity переходы. В простое анимации отсутствуют.")}</span></div><span>{tr("Экономичные")}</span></div><div className="setting-row"><div><b>{tr("Фоновая отрисовка")}</b><span>{tr("Скрытое окно не выполняет постоянные визуальные обновления.")}</span></div><span className="status-ok">{tr("Отключена")}</span></div></section></div>; }
+    appUpdates: ReturnType<typeof useAppUpdates>;
+}) { return <div className="content settings"><LanguageSettings /><AppUpdateSettings updates={appUpdates}/><WindowSettings /><DownloadSettings /><CacheSettings />{tr(vaultSettings)}<section><span className="eyebrow">{tr("ПРОИЗВОДИТЕЛЬНОСТЬ")}</span><h3>{tr("Графика интерфейса")}</h3><div className="setting-row"><div><b>{tr("Программная отрисовка")}</b><span>{tr("Аппаратное ускорение WebView2 отключено. Состояние дискретной GPU проверяется внешним мониторингом.")}</span></div><span className="status-ok">{tr("ВКЛЮЧЕНО")}</span></div><div className="setting-row"><div><b>{tr("Анимации интерфейса")}</b><span>{tr("Только короткие событийные transform/opacity переходы. В простое анимации отсутствуют.")}</span></div><span>{tr("Экономичные")}</span></div><div className="setting-row"><div><b>{tr("Фоновая отрисовка")}</b><span>{tr("Скрытое окно не выполняет постоянные визуальные обновления.")}</span></div><span className="status-ok">{tr("Отключена")}</span></div></section></div>; }
 function Placeholder({ icon, title, text }: {
     icon: any;
     title: string;

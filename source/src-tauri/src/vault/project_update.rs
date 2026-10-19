@@ -170,6 +170,7 @@ pub async fn project_update_preview(old_id:String,new_id:String,target:String)->
 }
 #[tauri::command]
 pub async fn project_update_apply(state:tauri::State<'_,VaultState>,old_id:String,new_id:String,target:String,token:String,mode:String,backup:bool,accept_version:bool,on_progress:Channel<String>)->Result<UpdateResult,String>{
+    let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции Vault".into());}let _busy=Busy(&state.active);
     state.updating.store(true,Ordering::SeqCst);let _updating=Busy(&state.updating);
     tauri::async_runtime::spawn_blocking(move||{
