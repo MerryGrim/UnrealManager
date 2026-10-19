@@ -1,0 +1,435 @@
+use egs_api::{EpicGames, api::types::account::UserData};
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
+
+use tokio::sync::Mutex;
+
+
+pub struct EpicState(Mutex<Session>);
+struct Session { api: EpicGames, loaded: bool, remember: bool, library: Vec<LibraryItem> }
+impl Default for EpicState {
+    fn default() -> Self { Self(Mutex::new(Session { api: EpicGames::new(), loaded: false, remember: false, library: Vec::new() })) }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct AccountStatus { signed_in: bool, display_name: Option<String> }
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct LibraryItem {
+    pub(crate) id: String, pub(crate) title: String, pub(crate) kind: String, engine_versions: Vec<String>,
+    categories: Vec<String>, source: String,
+    namespace: String, pub(crate) versions: Vec<AssetVersion>,
+    #[serde(default)]
+    cover: Option<String>,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    pub(crate) info_version: u8,
+    #[serde(default)]
+    pub(crate) images: Vec<String>,
+    #[serde(default)]
+    pub(crate) listing_url: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct AssetVersion { pub(crate) artifact_id: String, pub(crate) engines: Vec<String>, pub(crate) platforms: Vec<String> }
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct Library { items: Vec<LibraryItem>, scope: &'static str }
+
+fn secret_path(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(crate::storage::root().join("Account/epic-session.dpapi"))
+}
+
+#[cfg(windows)]
+fn protect(data: &[u8], decrypt: bool) -> Result<Vec<u8>, String> {
+    use windows_sys::Win32::{Foundation::LocalFree, Security::Cryptography::*};
+    let input = CRYPT_INTEGER_BLOB { cbData: data.len().try_into().map_err(|_| "Слишком большой сеанс")?, pbData: data.as_ptr() as *mut u8 };
+    let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    // DPAPI defaults to the current Windows user; plaintext never goes to disk.
+    let result = unsafe {
+        if decrypt { CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) }
+        else { CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) }
+    };
+    if result == 0 { return Err("Windows не удалось защитить или прочитать сохранённый сеанс".into()); }
+    let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    unsafe { LocalFree(output.pbData.cast()); }
+    Ok(bytes)
+}
+#[cfg(not(windows))]
+fn protect(_: &[u8], _: bool) -> Result<Vec<u8>, String> { Err("Сохранение входа реализовано только для Windows".into()) }
+
+fn save(app: &tauri::AppHandle, session: &Session) -> Result<(), String> {
+    if !session.remember { return Ok(()); }
+    let path = secret_path(app)?;
+    let mut plain = serde_json::to_vec(&session.api.user_details()).map_err(|_| "Не удалось подготовить сеанс")?;
+    let encrypted = protect(&plain, false);
+    plain.fill(0);
+    let encrypted = encrypted?;
+    fs::create_dir_all(path.parent().unwrap()).map_err(|_| "Не удалось создать каталог сеанса")?;
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, encrypted).map_err(|_| "Не удалось сохранить сеанс")?;
+    fs::rename(temporary, path).map_err(|_| "Не удалось обновить сохранённый сеанс".into())
+}
+fn forget(app: &tauri::AppHandle) -> Result<(), String> {
+    match fs::remove_file(secret_path(app)?) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("Не удалось удалить сохранённый сеанс".into()),
+    }
+}
+fn load(app: &tauri::AppHandle, session: &mut Session) -> Result<(), String> {
+    if session.loaded { return Ok(()); }
+    session.loaded = true;
+    let bytes = match fs::read(secret_path(app)?) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Не удалось прочитать сохранённый сеанс".into()),
+    };
+    let mut plain = protect(&bytes, true)?;
+    let details = serde_json::from_slice::<UserData>(&plain);
+    plain.fill(0);
+    session.api.set_user_details(details.map_err(|_| "Повреждён сохранённый сеанс; выполните вход заново")?);
+    session.remember = true;
+    Ok(())
+}
+async fn ensure(app: &tauri::AppHandle, session: &mut Session) -> Result<bool, String> {
+    load(app, session)?;
+    if session.api.is_logged_in() { return Ok(true); }
+    if session.api.user_details().refresh_token().is_none() { return Ok(false); }
+    let result = tokio::time::timeout(Duration::from_secs(40), session.api.try_login()).await
+        .map_err(|_| "Epic не ответил вовремя. Повторите попытку")?
+        .map_err(|_| "Не удалось восстановить вход Epic. Проверьте сеть или войдите заново")?;
+    if result { save(app, session)?; }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn epic_status(app: tauri::AppHandle, state: tauri::State<'_, EpicState>) -> Result<AccountStatus, String> {
+    let mut session = state.0.lock().await;
+    let signed_in = ensure(&app, &mut session).await?;
+    Ok(AccountStatus { signed_in, display_name: if signed_in { session.api.user_details().display_name } else { None } })
+}
+
+#[tauri::command]
+pub async fn epic_begin_login(app: tauri::AppHandle, state: tauri::State<'_, EpicState>, remember: bool) -> Result<AccountStatus, String> {
+    let code = super::epic_login::authorize(&app, remember).await?;
+    epic_complete_login(app, state, code, remember).await
+}
+
+pub(crate) fn parse_code(value: &str) -> Result<String, String> {
+    if value.len() > 8192 { return Err("Слишком длинный код входа".into()); }
+    let input = value.trim();
+    let code = if input.starts_with('{') {
+        let json: serde_json::Value = serde_json::from_str(input).map_err(|_| "Некорректный ответ Epic")?;
+        json.get("authorizationCode").and_then(|v| v.as_str()).ok_or("В ответе Epic нет authorizationCode")?.to_string()
+    } else { input.trim_matches('"').to_string() };
+    if !(16..=512).contains(&code.len()) || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+        return Err("Epic вернул некорректный результат входа".into());
+    }
+    Ok(code)
+}
+
+pub async fn epic_complete_login(app: tauri::AppHandle, state: tauri::State<'_, EpicState>, code: String, remember: bool) -> Result<AccountStatus, String> {
+    let code = parse_code(&code)?;
+    let mut session = state.0.lock().await;
+    let mut next = Session { api: EpicGames::new(), loaded: true, remember, library: Vec::new() };
+    let success = tokio::time::timeout(Duration::from_secs(40), next.api.try_auth_code(None, Some(code))).await
+        .map_err(|_| "Epic не ответил вовремя. Повторите вход")?
+        .map_err(|_| "Epic отклонил вход или недоступен. Повторите вход")?;
+    if !success { return Err("Epic не подтвердил вход. Повторите попытку".into()); }
+    if remember { save(&app, &next)?; } else { forget(&app)?; }
+    let display_name = next.api.user_details().display_name;
+    *session = next;
+    Ok(AccountStatus { signed_in: true, display_name })
+}
+
+#[tauri::command]
+pub async fn epic_logout(app: tauri::AppHandle, state: tauri::State<'_, EpicState>) -> Result<(), String> {
+    let mut session = state.0.lock().await;
+    forget(&app)?;
+    let mut old = std::mem::replace(&mut session.api, EpicGames::new());
+    session.loaded = true; session.remember = false;
+    session.library.clear();
+    drop(session);
+    // Local sign-out succeeds even if the remote service is offline.
+    let _ = tokio::time::timeout(Duration::from_secs(10), old.logout()).await;
+    Ok(())
+}
+
+fn normalize(value: &serde_json::Value) -> Result<LibraryItem, String> {
+    let id = value.get("assetId").and_then(|v| v.as_str()).ok_or("Fab вернул запись без assetId")?;
+    let title = value.get("title").and_then(|v| v.as_str()).ok_or("Fab вернул запись без названия")?;
+    let versions: BTreeSet<String> = value["projectVersions"].as_array().into_iter().flatten()
+        .flat_map(|p| p["engineVersions"].as_array().into_iter().flatten())
+        .filter_map(|v| v.as_str().map(str::to_string)).collect();
+    let categories: Vec<String> = value["categories"].as_array().into_iter().flatten()
+        .filter_map(|c| c["name"].as_str().or_else(|| c["id"].as_str()).map(str::to_string)).collect();
+    let method = value["distributionMethod"].as_str().unwrap_or("").to_lowercase();
+    let kind = if method.contains("plugin") { "Plugin" } else if method.contains("project") { "Project" } else { "Asset" };
+    Ok(LibraryItem { id: id.to_string(), title: title.to_string(), kind: kind.into(), engine_versions: versions.into_iter().collect(), categories,
+        source: value["source"].as_str().unwrap_or("Fab").to_string(),
+        namespace: value["assetNamespace"].as_str().unwrap_or("").to_string(),
+        description: value["description"].as_str().unwrap_or("").to_string(),
+        info_version: 1,
+        images: value["images"].as_array().into_iter().flatten().filter_map(|i|i["url"].as_str().map(str::to_owned)).collect(),
+        listing_url: value["url"].as_str().unwrap_or("").to_string(),
+        cover: value["images"].as_array().and_then(|images| images.iter().find(|i| i["type"].as_str().is_some_and(|t| t.to_lowercase().contains("thumbnail"))).or_else(|| images.first())).and_then(|i| i["url"].as_str()).map(str::to_string),
+        versions: value["projectVersions"].as_array().into_iter().flatten().filter_map(|v| Some(AssetVersion {
+            artifact_id: v["artifactId"].as_str()?.to_string(),
+            engines: v["engineVersions"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+            platforms: v["targetPlatforms"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        })).collect() })
+}
+
+#[tauri::command]
+pub async fn fab_library(app: tauri::AppHandle, state: tauri::State<'_, EpicState>, on_progress: tauri::ipc::Channel<LibraryProgress>) -> Result<Library, String> {
+    let _cache_guard=crate::storage::CACHE_ACCESS.read().await;
+    let mut session = state.0.lock().await;
+    if !ensure(&app, &mut session).await? { return Err("Сначала войдите в Epic Games".into()); }
+    let details = session.api.user_details();
+    let account = details.account_id.as_deref().ok_or("Epic не вернул идентификатор аккаунта")?;
+    if !account.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("Некорректный идентификатор аккаунта Epic".into()); }
+    let token = details.access_token().ok_or("Нет сеанса Epic")?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(40))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("UnrealManager/",env!("CARGO_PKG_VERSION")))
+        .build().map_err(|_| "Не удалось создать сетевое соединение")?;
+    let endpoint = format!("https://www.fab.com/e/accounts/{account}/ue/library");
+    let library = fetch_library(&client, &endpoint, token, |pages, items| {
+        let _ = on_progress.send(LibraryProgress { pages, items });
+    }).await?;
+    // Cache failure must not discard a successfully synchronized library.
+    let _ = super::fab_cache::save(account, &library.items);
+    session.library = library.items.clone();
+    Ok(library)
+}
+
+#[tauri::command]
+pub async fn fab_cached_library(app: tauri::AppHandle, state: tauri::State<'_, EpicState>) -> Result<Option<super::fab_cache::CachedLibrary>, String> {
+    let _cache_guard=crate::storage::CACHE_ACCESS.read().await;
+    let mut session=state.0.lock().await;
+    if !ensure(&app,&mut session).await? { return Ok(None); }
+    let account=session.api.user_details().account_id.ok_or("Нет аккаунта Epic")?;
+    let cache=super::fab_cache::read(&account)?;
+    if let Some(ref cache)=cache { session.library=cache.items.clone(); }
+    Ok(cache)
+}
+#[tauri::command]
+pub async fn fab_cover(state: tauri::State<'_, EpicState>, id:String, revision:u64) -> Result<String,String> {
+    let _cache_guard=crate::storage::CACHE_ACCESS.read().await;
+    let url={let session=state.0.lock().await;session.library.iter().find(|i| i.id==id).and_then(|i|i.cover.clone()).ok_or("У материала нет обложки")?};
+    super::fab_cache::thumbnail(id, url, revision).await
+}
+
+pub(crate) async fn download_manifest(app: &tauri::AppHandle, state: &EpicState, id: &str, artifact: &str)
+    -> Result<(LibraryItem, egs_api::api::types::download_manifest::DownloadManifest), String> {
+    let mut session = state.0.lock().await;
+    if !ensure(app, &mut session).await? { return Err("Сначала войдите в Epic".into()); }
+    let item = session.library.iter().find(|i| i.id == id && i.versions.iter().any(|v| v.artifact_id == artifact))
+        .cloned().ok_or("Обновите библиотеку и выберите доступную версию материала")?;
+    let infos = tokio::time::timeout(Duration::from_secs(45), session.api.fab_asset_manifest(artifact, &item.namespace, &item.id, Some("Windows")))
+        .await.map_err(|_| "Fab не ответил вовремя")?.map_err(|_| "Fab не предоставил файлы выбранной версии")?;
+    for info in infos {
+        for url in &info.distribution_point_base_urls {
+            if let Ok(Ok(manifest)) = tokio::time::timeout(Duration::from_secs(45), session.api.fab_download_manifest(info.clone(), url)).await {
+                return Ok((item, manifest));
+            }
+        }
+    }
+    Err("Не удалось получить описание файлов. Повторите позже".into())
+}
+
+#[derive(Clone, Serialize)]
+pub struct LibraryProgress { pages: usize, items: usize }
+
+async fn fetch_library(client: &reqwest::Client, endpoint: &str, token: &str, mut progress: impl FnMut(usize, usize)) -> Result<Library, String> {
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = BTreeSet::new();
+    let mut seen_items = BTreeSet::new();
+    let mut items = Vec::new();
+    for page_index in 0..1000 {
+        let mut request = client.get(endpoint).bearer_auth(token).query(&[("count", "100")]);
+        if let Some(ref cursor) = cursor { request = request.query(&[("cursor", cursor)]); }
+        let response = request.send().await.map_err(|_| "Не удалось связаться с Fab. Проверьте подключение")?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(match status.as_u16() {
+                401 => "Сеанс Epic истёк или не принят Fab. Войдите заново".into(),
+                403 => "Fab отказал в доступе. Откройте Fab в браузере и проверьте доступ аккаунта; повторите позже".into(),
+                429 => "Fab ограничил частоту запросов. Повторите позже".into(),
+                _ => format!("Fab вернул ошибку HTTP {}. Библиотека не обновлена", status.as_u16()),
+            });
+        }
+        let page: serde_json::Value = response.json().await.map_err(|_| "Fab вернул неожиданный формат ответа")?;
+        let results = page["results"].as_array().ok_or("В ответе Fab отсутствует список библиотеки")?;
+        for item in results { let item = normalize(item)?; if seen_items.insert(item.id.clone()) { items.push(item); } }
+        let cursors = page["cursors"].as_object().ok_or("Fab не вернул сведения о страницах")?;
+        cursor = match cursors.get("next") {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => Some(s.clone()),
+            Some(serde_json::Value::String(_)) | Some(serde_json::Value::Null) => None,
+            _ => return Err("Fab вернул некорректный указатель следующей страницы".into()),
+        };
+        progress(page_index + 1, items.len());
+        match &cursor {
+            None => { items.sort_by_key(|i| i.title.to_lowercase()); return Ok(Library { items, scope: "unreal-engine" }); }
+            Some(c) if !seen_cursors.insert(c.clone()) => return Err("Fab повторил страницу. Частичный список не сохранён".into()),
+            _ => (),
+        }
+    }
+    Err("Превышен предел страниц Fab. Частичный список не сохранён".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    fn mock(responses: Vec<(u16, serde_json::Value)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url=format!("http://{}/library",listener.local_addr().unwrap());
+        let handle=std::thread::spawn(move || {
+            let mut requests=Vec::new();
+            for (status,body) in responses {
+                let (mut stream,_)=listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut data=[0u8;4096]; let n=stream.read(&mut data).unwrap();
+                requests.push(String::from_utf8_lossy(&data[..n]).to_string());
+                let body=body.to_string();
+                write!(stream,"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            }
+            requests
+        });
+        (url,handle)
+    }
+    #[tokio::test]
+    async fn pagination_and_deduplication() {
+        let (url,server)=mock(vec![
+            (200,serde_json::json!({"results":[{"assetId":"1","title":"Z"}],"cursors":{"next":"a+b/="}})),
+            (200,serde_json::json!({"results":[{"assetId":"1","title":"Z"},{"assetId":"2","title":"A"}],"cursors":{"next":null}})),
+        ]);
+        let mut updates = Vec::new();
+        let result=fetch_library(&reqwest::Client::new(),&url,"synthetic-test-token", |p, n| updates.push((p, n))).await.unwrap();
+        assert_eq!(updates, vec![(1, 1), (2, 2)]);
+        assert_eq!(result.items.len(),2); assert_eq!(result.items[0].title,"A");
+        let requests=server.join().unwrap(); assert!(requests[1].contains("cursor=a%2Bb%2F%3D"));
+    }
+    #[tokio::test]
+    async fn failed_second_page_is_not_partial_success() {
+        let (url,server)=mock(vec![
+            (200,serde_json::json!({"results":[{"assetId":"1","title":"Z"}],"cursors":{"next":"page2"}})),
+            (403,serde_json::json!({"error":"denied"})),
+        ]);
+        assert!(fetch_library(&reqwest::Client::new(),&url,"synthetic-test-token", |_, _| {}).await.is_err());
+        server.join().unwrap();
+    }
+    #[tokio::test]
+    async fn repeated_cursor_stops() {
+        let page=serde_json::json!({"results":[],"cursors":{"next":"same"}});
+        let (url,server)=mock(vec![(200,page.clone()),(200,page)]);
+        assert!(fetch_library(&reqwest::Client::new(),&url,"synthetic-test-token", |_, _| {}).await.is_err());
+        server.join().unwrap();
+    }
+    #[test] fn code_formats_and_rejections() {
+        assert_eq!(parse_code("{\"authorizationCode\":\"abcdefghijklmnop\"}").unwrap(), "abcdefghijklmnop");
+        assert!(parse_code("{\"error\":\"no code\"}").is_err());
+        assert!(parse_code("https://example.com/token").is_err());
+        assert!(parse_code("password").is_err());
+    }
+    #[test] fn library_mapping_and_validation() {
+        let item = normalize(&serde_json::json!({"assetId":"x","title":"Example","distributionMethod":"ENGINE_PLUGIN","categories":null,"projectVersions":[{"engineVersions":["5.8","5.7"]},{"engineVersions":["5.8"]}]})).unwrap();
+        assert_eq!(item.kind,"Plugin"); assert_eq!(item.engine_versions,vec!["5.7","5.8"]);
+        for method in ["COMPLETE_PROJECT", "CompleteProject", "Complete Project"] {
+            let project=normalize(&serde_json::json!({"assetId":"project","title":"Example project","distributionMethod":method})).unwrap();
+            assert_eq!(project.kind,"Project");
+        }
+        assert!(normalize(&serde_json::json!({"error":"denied"})).is_err());
+    }
+    #[cfg(windows)]
+    #[test] fn dpapi_roundtrip_and_corruption() {
+        let source=b"synthetic-test-secret";
+        let encrypted=protect(source,false).unwrap(); assert_ne!(encrypted,source);
+        assert_eq!(protect(&encrypted,true).unwrap(),source);
+        assert!(protect(b"invalid",true).is_err());
+    }
+}
+
+
+
+
+pub(crate) async fn library_snapshot(state:&EpicState)->Vec<LibraryItem>{state.0.lock().await.library.clone()}
+
+pub async fn remember_web_session(app: &tauri::AppHandle, state: &EpicState) -> Result<bool,String> {
+    let mut session=state.0.lock().await;
+    load(app,&mut session)?;
+    Ok(session.remember)
+}
+
+pub(crate) async fn library_item(state: &EpicState, id: &str) -> Result<LibraryItem,String> {
+    state.0.lock().await.library.iter().find(|i|i.id==id).cloned().ok_or("Материал отсутствует в текущей библиотеке".into())
+}
+pub(crate) async fn library_metadata(state:&EpicState,id:&str)->Result<serde_json::Value,String>{
+    let mut session=state.0.lock().await;
+    let item=session.library.iter().find(|i|i.id==id).ok_or("Нет материала в библиотеке")?;
+    let asset=egs_api::api::types::epic_asset::EpicAsset{catalog_item_id:item.id.clone(),namespace:item.namespace.clone(),..Default::default()};
+    let data=tokio::time::timeout(Duration::from_secs(20),session.api.try_asset_info(&asset)).await.map_err(|_|"Каталог Epic не ответил")?.map_err(|_|"Каталог Epic не предоставил подробности")?;
+    let data=data.ok_or("Материал отсутствует в каталоге Epic")?;
+    if data.id!=asset.catalog_item_id||data.namespace!=asset.namespace{return Err("Не совпадает материал каталога Epic".into());}
+    serde_json::to_value(data).map_err(|_|"Не удалось прочитать карточку Epic".into())
+}
+
+async fn owned_engine_packages(app: &tauri::AppHandle, state: &EpicState) -> Result<Vec<egs_api::api::types::epic_asset::EpicAsset>, String> {
+    let mut session=state.0.lock().await;
+    if !ensure(app,&mut session).await? {return Err("Войдите в Epic для доступа к движкам".into());}
+    let assets=tokio::time::timeout(Duration::from_secs(45),session.api.try_list_assets(Some("Windows".into()),Some("Live".into()))).await
+        .map_err(|_|"Epic не ответил вовремя")?.map_err(|_|"Не удалось получить список движков Epic")?;
+    Ok(assets.into_iter().filter(|a|a.namespace=="ue").collect())
+}
+pub(crate) async fn engine_assets(app:&tauri::AppHandle,state:&EpicState)->Result<Vec<egs_api::api::types::epic_asset::EpicAsset>,String>{
+    Ok(owned_engine_packages(app,state).await?.into_iter().filter(|a|a.app_name.strip_prefix("UE_").is_some_and(|s|s.split('.').count()==2&&s.split('.').all(|x|!x.is_empty()&&x.chars().all(|c|c.is_ascii_digit())))).collect())
+}
+
+
+pub(crate) async fn engine_metadata(app: &tauri::AppHandle,state:&EpicState,app_name:&str)->Result<serde_json::Value,String>{
+    let asset=engine_assets(app,state).await?.into_iter().find(|a|a.app_name==app_name).ok_or("Движок недоступен в аккаунте Epic")?;
+    let mut session=state.0.lock().await;
+    let info=tokio::time::timeout(Duration::from_secs(45),session.api.try_asset_info(&asset)).await.map_err(|_|"Epic не ответил")?.map_err(|_|"Нет описания компонентов")?;
+    Ok(serde_json::to_value(info).map_err(|_|"Не удалось прочитать компоненты")?)
+}
+pub(crate) async fn engine_manifest(app:&tauri::AppHandle,state:&EpicState,app_name:&str)->Result<(Vec<u8>,String,Option<String>),String>{
+    let asset=owned_engine_packages(app,state).await?.into_iter().find(|a|a.app_name==app_name).ok_or("Пакет недоступен в аккаунте Epic")?;
+    let manifest={
+        let mut session=state.0.lock().await;
+        tokio::time::timeout(Duration::from_secs(45),session.api.try_asset_manifest(Some("Windows".into()),Some("Live".into()),Some(asset.namespace),Some(asset.catalog_item_id.clone()),Some(asset.app_name))).await.map_err(|_|"Epic не ответил")?.map_err(|_|"Не удалось получить манифест движка")?
+    };
+    let client=reqwest::Client::builder().timeout(Duration::from_secs(120)).build().map_err(|_|"Ошибка сети")?;
+    for element in manifest.elements {
+        if element.app_name!=app_name {continue;}
+        for m in element.manifests {
+            if m.uri.scheme()!="https" {continue;}
+            let mut url=m.uri.clone(); for p in m.query_params {url.query_pairs_mut().append_pair(&p.name,&p.value);}
+            let response=client.get(url).send().await;
+            if let Ok(mut response)=response {
+                if !response.status().is_success()||response.content_length().is_some_and(|n|n>128*1024*1024){continue;}
+                let mut bytes=Vec::new();
+                while let Some(chunk)=response.chunk().await.map_err(|_|"Загрузка манифеста прервана")? {
+                    if bytes.len()+chunk.len()>128*1024*1024 {return Err("Манифест слишком большой".into());} bytes.extend_from_slice(&chunk);
+                }
+                let mut base=m.uri.join(".").map_err(|_|"Некорректный адрес манифеста")?;base.set_query(None);base.set_fragment(None);
+                return Ok((bytes,base.to_string(),Some(asset.catalog_item_id.clone())));
+            }
+        }
+    }
+    Err("Не удалось скачать манифест движка".into())
+}
+
+
+pub(crate) async fn fab_plugin_package(app:&tauri::AppHandle,state:&EpicState,version:&str)->Result<(LibraryItem,egs_api::api::types::download_manifest::DownloadManifest),String>{
+ let artifact=format!("FabPlugin_{version}");
+ let (raw,base,catalog_id)=engine_manifest(app,state,&artifact).await?;
+ let mut manifest=crate::engine::parse(&raw)?;
+ manifest.custom_fields.get_or_insert_with(Default::default).insert("SourceURL".into(),base.trim_end_matches('/').into());
+ let item=LibraryItem{id:catalog_id.ok_or("Нет идентификатора Fab")?,title:"Fab UE Plugin".into(),kind:"Plugin".into(),engine_versions:vec![format!("UE_{version}")],categories:vec![],source:"Epic Games Launcher".into(),namespace:"ue".into(),versions:vec![AssetVersion{artifact_id:artifact,engines:vec![format!("UE_{version}")],platforms:vec!["Windows".into()]}],cover:None,description:String::new(),info_version:1,images:vec![],listing_url:String::new()};
+ Ok((item,manifest))
+}

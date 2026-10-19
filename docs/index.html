@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#101820">
+  <title>Unreal Manager — Your Unreal workspace, under your control</title>
+  <meta name="description" content="An independent, lightweight Unreal Engine manager for Windows. Manage engines, projects, Fab assets, plugins and downloads. Open source under the MIT license.">
+  <meta property="og:title" content="Unreal Manager — Your Unreal workspace, under your control">
+  <meta property="og:description" content="An independent, lightweight Unreal Engine manager for Windows. Open source under the MIT license.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://merrygrim.github.io/UnrealManager/">
+  <meta property="og:image" content="https://merrygrim.github.io/UnrealManager/assets/screenshots/engines.webp">
+  <link rel="icon" href="assets/um-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="translations.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main" data-i18n="skip">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner wrap">
+      <a href="#" class="brand" aria-label="Unreal Manager"><img src="assets/um-mark.svg" width="36" height="36" alt=""><span>Unreal Manager</span><span class="version">beta.6</span></a>
+      <nav class="primary-nav" data-i18n-aria="nav" aria-label="Main navigation">
+        <a href="#features" data-i18n="navFeatures">Features</a>
+        <a href="#screenshots" data-i18n="navScreenshots">Screenshots</a>
+        <a href="https://github.com/MerryGrim/UnrealManager" class="nav-source">GitHub <span aria-hidden="true">↗</span></a>
+      </nav>
+      <div class="preferences">
+        <label class="control language-control"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 4h10M8 2v2M5 4c0 5 4 8 7 9M11 4c0 5-4 8-8 9M12 17l3-8 3 8M13 14h4"/></svg><span class="sr-only" data-i18n="language">Language</span><select id="language" aria-label="Language"><option value="en" lang="en">English</option><option value="ru" lang="ru">Русский</option><option value="de" lang="de">Deutsch</option><option value="it" lang="it">Italiano</option><option value="es" lang="es">Español</option><option value="fr" lang="fr">Français</option><option value="zh" lang="zh-CN">简体中文</option><option value="ja" lang="ja">日本語</option><option value="ko" lang="ko">한국어</option></select></label>
+        <label class="control theme-control"><svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6"/><path d="M10 4a6 6 0 0 1 0 12Z"/></svg><span class="sr-only" data-i18n="theme">Theme</span><select id="theme" aria-label="Theme"><option value="system" data-i18n="themeSystem">System</option><option value="light" data-i18n="themeLight">Light</option><option value="dark" data-i18n="themeDark">Dark</option></select></label>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span><span data-i18n="heroEyebrow">INDEPENDENT · OPEN SOURCE · WINDOWS</span></p>
+        <h1 id="hero-title"><span data-i18n="heroTitle">Your Unreal workspace.</span> <span class="accent" data-i18n="heroAccent">Under your control.</span></h1>
+        <p class="hero-description" data-i18n="heroDescription">Engines, projects, Fab assets and downloads, together in a focused desktop app. Get to your work without the game storefront.</p>
+        <div class="actions"><a class="button primary" href="https://github.com/MerryGrim/UnrealManager#build-from-source" data-i18n="getSource">Get source & build</a><a class="button secondary" href="#screenshots"><span data-i18n="explore">Explore the app</span><span aria-hidden="true">↓</span></a></div>
+        <div class="hero-meta"><span>0.2.0-beta.6</span><span>Windows x64</span><a href="https://github.com/MerryGrim/UnrealManager/blob/main/LICENSE" data-i18n="mitLicense">MIT license</a></div>
+      </div>
+      <figure class="hero-figure screenshot-frame"><div class="window-bar" aria-hidden="true"><span class="window-mark">UM</span><span>Unreal Manager</span><span class="window-controls">— □ ×</span></div><a href="assets/screenshots/engines.webp" target="_blank" rel="noopener" data-i18n-title="openScreenshot" title="Open full-size screenshot"><img src="assets/screenshots/engines.webp" width="1280" height="800" fetchpriority="high" data-i18n-alt="enginesAlt" alt="Unreal Manager engine management screen with demonstration data"></a><figcaption><span class="image-index">01 /</span><span data-i18n="heroCaption">A home for every engine version.</span><span class="figure-tag" data-i18n="actualInterface">APP INTERFACE</span></figcaption></figure>
+    </section>
+
+    <div class="facts-band"><div class="wrap facts"><p><strong data-i18n="factOneValue">One workspace</strong><span data-i18n="factOne">Engines → projects → content</span></p><p><strong data-i18n="factTwoValue">Software rendering</strong><span data-i18n="factTwo">WebView2 GPU acceleration disabled</span></p><p><strong data-i18n="factThreeValue">9 languages</strong><span data-i18n="factThree">Local interface translations</span></p><p><strong data-i18n="factFourValue">Your files</strong><span data-i18n="factFour">Local Vault, settings and history</span></p></div></div>
+
+    <section id="features" class="section wrap" aria-labelledby="features-title">
+      <div class="section-heading"><p class="eyebrow" data-i18n="featuresEyebrow">A SMALLER LAUNCHER. A CLEARER WORKFLOW.</p><h2 id="features-title" data-i18n="featuresTitle">Everything around your next project.</h2><p data-i18n="featuresDescription">A practical toolkit for the work between opening an engine and shipping a project.</p></div>
+      <div class="feature-grid">
+        <article class="feature"><span class="feature-number">01</span><h3 data-i18n="engineTitle">Make room for every engine.</h3><p data-i18n="engineDescription">Find installed Unreal Engine versions, choose components, and install, verify, modify or remove an engine.</p><ul><li data-i18n="engineItem1">Automatic discovery in common folders and Windows Registry</li><li data-i18n="engineItem2">Component selection for engine installations</li></ul></article>
+        <article class="feature"><span class="feature-number">02</span><h3 data-i18n="projectTitle">Your projects, already there.</h3><p data-i18n="projectDescription">Discover .uproject files in standard user folders, read their engine association, and launch through Windows.</p><ul><li data-i18n="projectItem1">Installed engines and projects in one place</li><li data-i18n="projectItem2">Use the registered .uproject file association</li></ul></article>
+        <article class="feature"><span class="feature-number">03</span><h3 data-i18n="libraryTitle">Give your content a home.</h3><p data-i18n="libraryDescription">Sign in to Epic, browse your Fab library, connect an existing Epic VaultCache, and work with your local Vault.</p><ul><li data-i18n="libraryItem1">Download assets, projects and plugins</li><li data-i18n="libraryItem2">Content updates with conflict review</li></ul></article>
+        <article class="feature"><span class="feature-number">04</span><h3 data-i18n="downloadsTitle">Pick up where you paused.</h3><p data-i18n="downloadsDescription">Pause a download and continue with HTTP Range support. Saved tasks retain the selected version and action after restart.</p><ul><li data-i18n="downloadsItem1">Resume saved tasks when you choose</li><li data-i18n="downloadsItem2">Download history, speed limits and storage settings</li></ul></article>
+        <article class="feature"><span class="feature-number">05</span><h3 data-i18n="epicTitle">Epic access, through Epic.</h3><p data-i18n="epicDescription">Sign in and redeem product keys in official Epic web windows. Passwords and two-factor codes are entered on Epic's website.</p><ul><li data-i18n="epicItem1">A dedicated key-redemption view</li><li data-i18n="epicItem2">Saved sessions protected by Windows DPAPI</li></ul></article>
+        <article class="feature"><span class="feature-number">06</span><h3 data-i18n="localTitle">Keep your workspace local.</h3><p data-i18n="localDescription">Catalogue data, covers, preferences and download history are stored locally. Interface translations need no network connection.</p><ul><li data-i18n="localItem1">Installed and portable packaging options</li><li data-i18n="localItem2">System tray controls and persistent settings</li></ul></article>
+      </div>
+    </section>
+
+    <section id="screenshots" class="screenshots-section section" aria-labelledby="screenshots-title"><div class="wrap">
+      <div class="section-heading gallery-heading"><div><p class="eyebrow" data-i18n="screenshotsEyebrow">TAKE A LOOK AROUND</p><h2 id="screenshots-title" data-i18n="screenshotsTitle">The work, in view.</h2></div><p data-i18n="screenshotNote">English app screenshots use a fictional account, assets and paths, with a simulated transfer. They do not verify a real Epic/Fab download or a complete engine installation.</p></div>
+      <div class="gallery">
+        <figure class="gallery-item gallery-wide"><a href="assets/screenshots/library.webp" target="_blank" rel="noopener" data-i18n-title="openScreenshot" title="Open full-size screenshot"><img src="assets/screenshots/library.webp" width="1280" height="800" loading="lazy" data-i18n-alt="libraryAlt" alt="Fab library and local content in Unreal Manager, using demonstration data"></a><figcaption><span class="image-index">02 /</span><div><h3 data-i18n="libraryCaption">Your library, closer to your projects.</h3><p data-i18n="libraryCaptionDetail">Fab content, local Vault and an existing Epic cache.</p></div></figcaption></figure>
+        <figure class="gallery-item"><a href="assets/screenshots/downloads.webp" target="_blank" rel="noopener" data-i18n-title="openScreenshot" title="Open full-size screenshot"><img src="assets/screenshots/downloads.webp" width="1280" height="800" loading="lazy" data-i18n-alt="downloadsAlt" alt="Unreal Manager downloads and task controls with demonstration data"></a><figcaption><span class="image-index">03 /</span><div><h3 data-i18n="downloadsCaption">A queue you can come back to.</h3><p data-i18n="downloadsCaptionDetail">Pause, resume and keep track of transfers.</p></div></figcaption></figure>
+        <figure class="gallery-item"><a href="assets/screenshots/settings.webp" target="_blank" rel="noopener" data-i18n-title="openScreenshot" title="Open full-size screenshot"><img src="assets/screenshots/settings.webp" width="1280" height="800" loading="lazy" data-i18n-alt="settingsAlt" alt="Unreal Manager language, storage and application settings"></a><figcaption><span class="image-index">04 /</span><div><h3 data-i18n="settingsCaption">Set it up for your workflow.</h3><p data-i18n="settingsCaptionDetail">Language, storage, transfer limits and tray behavior.</p></div></figcaption></figure>
+      </div>
+    </div></section>
+
+    <section class="section wrap approach-section" aria-labelledby="approach-title"><div class="approach-copy"><p class="eyebrow" data-i18n="approachEyebrow">SMALL BY DESIGN</p><h2 id="approach-title" data-i18n="approachTitle">The launcher should leave room for the engine.</h2><p data-i18n="approachDescription">A Rust backend and a Tauri desktop interface, with no game storefront. Build tools stay on the developer's machine.</p><p class="technical-note" data-i18n="gpuNote">All WebView2 windows are configured for software rendering. This is a configuration policy; actual GPU activity depends on the system and requires measurement.</p></div><dl class="spec-list"><div><dt data-i18n="specPlatform">Platform</dt><dd>Windows x64</dd></div><div><dt data-i18n="specRuntime">Runtime</dt><dd>Microsoft WebView2</dd></div><div><dt data-i18n="specStack">Built with</dt><dd>Rust · Tauri · React</dd></div><div><dt data-i18n="specRendering">WebView2 flags</dt><dd><code>--disable-gpu<br>--disable-gpu-compositing</code></dd></div><div><dt data-i18n="specLanguages">Interface languages</dt><dd data-i18n="specLanguagesValue">Russian, English, German, Italian, Spanish, French, Chinese, Japanese, Korean</dd></div><div><dt data-i18n="specOther">Everyday essentials</dt><dd data-i18n="specOtherValue">System tray, local download history and persistent settings</dd></div></dl></section>
+
+    <section id="get-started" class="section wrap start-section" aria-labelledby="start-title"><div class="start-heading"><p class="eyebrow" data-i18n="startEyebrow">OPEN SOURCE. OPEN TO IMPROVEMENT.</p><h2 id="start-title" data-i18n="startTitle">Start with the source.</h2><p data-i18n="startDescription">Unreal Manager is published under the MIT license. Read the code, build it locally, and help shape the next version.</p><div class="actions"><a class="button primary" href="https://github.com/MerryGrim/UnrealManager" data-i18n="viewSource">View on GitHub</a><a class="text-link" href="https://github.com/MerryGrim/UnrealManager/blob/main/LICENSE"><span data-i18n="readLicense">Read the license</span><span aria-hidden="true">↗</span></a></div></div><ol class="getting-started"><li><span>01</span><div><h3 data-i18n="startStep1Title">Prepare a Windows build environment.</h3><p data-i18n="startStep1">Node.js/npm, Rust MSVC, C++ Build Tools and Windows SDK are build dependencies, not app runtime requirements.</p></div></li><li><span>02</span><div><h3 data-i18n="startStep2Title">Follow the build instructions.</h3><p><a href="https://github.com/MerryGrim/UnrealManager/blob/main/source/README.md#сборка" data-i18n="startStep2">Build the app, portable package or Inno Setup installer from the repository.</a></p></div></li><li><span>03</span><div><h3 data-i18n="startStep3Title">Track releases and report issues.</h3><p><a href="https://github.com/MerryGrim/UnrealManager/releases" data-i18n="releases">Releases</a><span aria-hidden="true"> · </span><a href="https://github.com/MerryGrim/UnrealManager/issues" data-i18n="issues">Issues & feedback</a></p></div></li></ol></section>
+
+    <aside class="status-section wrap" aria-labelledby="status-title"><span class="beta-label">BETA.6</span><div><h2 id="status-title" data-i18n="statusTitle">A working beta, with work ahead.</h2><p data-i18n="statusDescription">Automatic app updates through GitHub Releases are planned, not enabled. Full real-account Fab/Unreal transfer testing, including close-and-resume, remains to be completed.</p></div><a href="https://github.com/MerryGrim/UnrealManager/blob/main/source/README.md" class="text-link"><span data-i18n="projectStatus">Project status</span><span aria-hidden="true">↗</span></a></aside>
+  </main>
+
+  <footer class="site-footer wrap"><div class="footer-top"><a class="brand" href="#"><img src="assets/um-mark.svg" width="30" height="30" alt=""><span>Unreal Manager</span></a><div class="footer-links"><a href="https://github.com/MerryGrim/UnrealManager" data-i18n="source">Source code</a><a href="https://github.com/MerryGrim/UnrealManager/blob/main/LICENSE" data-i18n="license">License</a><a href="https://github.com/MerryGrim/UnrealManager/issues" data-i18n="feedback">Feedback</a></div></div><p data-i18n="disclaimer">Independent project. Not affiliated with or endorsed by Epic Games. Unreal Engine, Epic Games and Fab are trademarks of their respective owners.</p><p class="footer-note" data-i18n="privacyNote">No analytics, external fonts or tracking scripts. Language and theme preferences stay in your browser.</p></footer>
+</body>
+</html>

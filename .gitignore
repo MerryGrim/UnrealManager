@@ -1,0 +1,47 @@
+# Development outputs and local tools
+**/node_modules/
+source/dist/
+**/target/
+source/src-tauri/gen/
+tools/
+Releases/
+builds/
+distribution/
+
+# User data and credentials must never be published
+Data/
+Temp/
+.env
+.env.*
+!.env.example
+*.key
+*.pfx
+*.p12
+*.pem
+*.session
+*.sqlite*
+*.db
+WebView2/
+EBWebView/
+
+# Restored conversations and machine-specific verification evidence
+/Conversation.md
+/SESSION-STATE.md
+/RESTORATION-RECEIPT.json
+/SHA256SUMS.json
+/BUILD-REPORT.json
+/Start-UnrealManager.cmd
+/Start-UnrealManager-Built.cmd
+verification/current/
+verification/*.log
+verification/*.png
+verification/*.json
+verification/make-resume-legacy-fixture.py
+source/installer/dependencies/
+
+# Editors / operating system
+.DS_Store
+Thumbs.db
+.vs/
+.idea/
+*.user
