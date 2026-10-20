@@ -3,6 +3,23 @@
 fn main() {
     let mut args = std::env::args_os().skip(1);
     let mode=args.next();
+    if mode.as_deref()==Some(std::ffi::OsStr::new("--epic-registration-broker")) {
+        let result=args.next().ok_or_else(||"Missing registration job".to_string()).and_then(|p| {
+            if args.next().is_some() { return Err("Unexpected registration arguments".into()); }
+            unreal_manager_lib::run_epic_registration_broker(p.into())
+        });
+        if let Err(error)=result { eprintln!("{error}"); std::process::exit(1); }
+        return;
+    }
+    #[cfg(feature="engine-test-cli")]
+    if mode.as_deref()==Some(std::ffi::OsStr::new("--epic-registration-uac-probe")) {
+        let result=args.next().ok_or_else(||"Missing probe report".to_string()).and_then(|p| {
+            if args.next().is_some() { return Err("Unexpected probe arguments".into()); }
+            unreal_manager_lib::epic_registration_uac_probe(p.into())
+        });
+        if let Err(error)=result { eprintln!("{error}"); std::process::exit(1); }
+        return;
+    }
     if mode.as_deref()==Some(std::ffi::OsStr::new("--apply-app-update")) {
         let result=args.next().ok_or_else(||"Missing update job".to_string()).and_then(|p|unreal_manager_lib::run_app_update_helper(p.into()));
         if let Err(error)=result { eprintln!("{error}"); std::process::exit(1); }

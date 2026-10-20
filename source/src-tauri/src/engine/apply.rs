@@ -73,20 +73,21 @@ impl Control<'_>{
 fn open_read(path:&Path)->Result<fs::File,String>{
     no_links(path)?;let mut options=fs::OpenOptions::new();options.read(true);
     #[cfg(windows)]{use std::os::windows::fs::OpenOptionsExt;options.share_mode(1).custom_flags(0x08000000);}
-    options.open(path).map_err(io)
+    options.open(path).map_err(|e|super::super::access::contextual("Открытие файла для проверки",path,e))
 }
 #[cfg(windows)]fn open_identity(path:&Path)->Result<fs::File,String>{
     use std::os::windows::fs::OpenOptionsExt;
     // The original data-read guard is still held. Query the actual leaf object
     // without following a newly inserted leaf reparse point, or asking Windows
     // to open/prepare another sequential data stream just to compare its ID.
-    fs::OpenOptions::new().access_mode(0x80).share_mode(1).custom_flags(0x00200000).open(path).map_err(io)
+    fs::OpenOptions::new().access_mode(0x80).share_mode(1).custom_flags(0x00200000).open(path)
+        .map_err(|e|super::super::access::contextual("Проверка идентичности файла",path,e))
 }
 #[cfg(not(windows))]fn open_identity(path:&Path)->Result<fs::File,String>{open_read(path)}
 struct Guard{path:PathBuf,file:fs::File,identity:Identity,size:u64}
 impl Guard{
     fn open(path:&Path)->Result<Self,String>{
-        let file=open_read(path)?;let metadata=file.metadata().map_err(io)?;
+        let file=open_read(path)?;let metadata=file.metadata().map_err(|e|super::super::access::contextual("Чтение свойств файла",path,e))?;
         if !metadata.is_file(){return Err(format!("Файл изменился после проверки: {}",path.display()));}
         let identity=identity(&file)?;Ok(Self{path:path.into(),file,identity,size:metadata.len()})
     }
@@ -137,7 +138,7 @@ fn read_checked(check:Check,mut guard:Guard,buffer:&mut[u8],stats:&Stats,control
     let mask=if matches!(check.role,Role::OldTarget|Role::OldBackup){1}else{2};stats.active.fetch_or(mask,Ordering::SeqCst);
     struct Reading<'a>(&'a std::sync::atomic::AtomicUsize,usize);impl Drop for Reading<'_>{fn drop(&mut self){self.0.fetch_and(!self.1,Ordering::SeqCst);}}
     let _reading=Reading(&stats.active,mask);
-    let mut hash=Sha1::new();loop{control.checkpoint(stop)?;let n=guard.file.read(buffer).map_err(io)?;if n==0{break;}
+    let mut hash=Sha1::new();loop{control.checkpoint(stop)?;let n=guard.file.read(buffer).map_err(|e|super::super::access::contextual("Чтение файла для проверки",&guard.path,e))?;if n==0{break;}
         hash.update(&buffer[..n]);stats.current.fetch_add(n as u64,Ordering::SeqCst);stats.all.fetch_add(n as u64,Ordering::SeqCst);
         #[cfg(test)]if let Some(hook)=&stats.hook{hook(&check.path,n);}
     }
@@ -156,22 +157,22 @@ fn replace(root:&Path,stage:&Path,op:&Operation,mut verified:Verified,control:Co
     let rel=relative(&op.name)?;let target=root.join(&rel);let source=stage.join("files").join(&rel);let backup=stage.join("originals").join(&rel);
     if op.old_hash.is_some()&&!verified.layout.backup_present {
         let parent=backup.parent().ok_or("Путь файла")?;
-        if !parents.contains(parent){no_links(&backup)?;fs::create_dir_all(parent).map_err(io)?;parents.insert(parent.to_path_buf());}
+        if !parents.contains(parent){no_links(&backup)?;fs::create_dir_all(parent).map_err(|e|super::super::access::contextual("Создание папки резервной копии",parent,e))?;parents.insert(parent.to_path_buf());}
         control.checkpoint(stop)?;let guard=take_guard(&mut verified.guards,Role::OldTarget)?;guard.fresh()?;
         // Destination checks occur after any pause, while the source guard is
         // still held, immediately before our own rename.
         no_links(&backup)?;if backup.exists(){return Err("Осталась предыдущая резервная копия. Нужен откат.".into());}
         drop(guard);
-        fs::rename(&target,&backup).map_err(io)?;
+        fs::rename(&target,&backup).map_err(|e|super::super::access::contextual("Перемещение прежнего файла в резервную копию",&target,e))?;
     }else{no_links(&target)?;if target.exists(){return Err("При продолжении обнаружены внешние изменения".into());}}
     if op.new_hash.is_some(){
         let parent=target.parent().ok_or("Путь файла")?;
-        if !parents.contains(parent){no_links(&target)?;fs::create_dir_all(parent).map_err(io)?;parents.insert(parent.to_path_buf());}
+        if !parents.contains(parent){no_links(&target)?;fs::create_dir_all(parent).map_err(|e|super::super::access::contextual("Создание папки движка",parent,e))?;parents.insert(parent.to_path_buf());}
         control.checkpoint(stop)?;let guard=take_guard(&mut verified.guards,Role::NewSource)?;guard.fresh()?;
         // Recheck absence immediately before the owned source is renamed.
         no_links(&target)?;if target.exists(){return Err(format!("В папке появился файл: {}",op.name));}
         drop(guard);
-        fs::rename(&source,&target).map_err(io)?;
+        fs::rename(&source,&target).map_err(|e|super::super::access::contextual("Установка нового файла",&target,e))?;
     }
     Ok(())
 }
@@ -301,3 +302,5 @@ pub(super) fn with_pool<T:Send,F:FnMut(Snapshot)>(options:Options,paused:Option<
 
 #[cfg(test)]
 #[path="apply_tests.rs"]mod tests;
+#[cfg(test)]
+pub(super) fn permission_baseline(plan:&Plan,stage:&Path,ops:&[Operation])->Result<Option<String>,String>{tests::permission_baseline(plan,stage,ops)}

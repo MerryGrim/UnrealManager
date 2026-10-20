@@ -1,5 +1,30 @@
 # Change notes
 
+## 0.9.3 — 2026-10-20
+
+Download the installer or portable edition from
+[0.9.3](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.3).
+
+- Check permissions before long engine preparation and application work,
+  including fresh installs, updates and saved-task resumes.
+- When the mandatory Epic `.item` registration record needs UAC, use a temporary
+  headless helper for that record only. The original application, account
+  session and browser profile remain under the original Windows user.
+- Preserve the saved task when Windows permission is canceled. Distinguish
+  read-only files and sharing violations from access-right failures.
+- Report an unsupported protected engine path before long work, with its exact
+  location and guidance to select a writable folder or correct permissions.
+  The helper does not elevate engine-file operations or change folder ACLs.
+- Show access-check and Windows-permission waiting phases. Failure to update
+  the optional global Epic list remains a warning, without rolling back an
+  otherwise completed engine installation.
+
+The native suite passed 203 tests. One real UAC run applied and restored an
+isolated, protected Epic `.item` fixture, with DACL preservation and temporary-file
+cleanup checks passing. This does not establish clean-Windows compatibility,
+a complete engine installation or an installed/portable update transition.
+Other protected-folder and Epic configurations require separate acceptance.
+
 ## 0.9.2 — 2026-10-20
 
 Download the installer or portable edition from

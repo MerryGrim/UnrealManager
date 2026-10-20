@@ -9,6 +9,10 @@ use std::{cell::Cell, io::{Read, Write}, sync::{Arc, Condvar}, time::{Duration, 
 const FROZEN_BASELINE_COMMIT:&str="dce2e78";
 const FROZEN_INSTALL_SOURCE_SHA256:&str="a6915e3fd33d19c4de7e51266362396a7e348e53183d9a34515f7336622f34d8";
 
+pub(super) fn permission_baseline(plan:&Plan,stage:&Path,ops:&[Operation])->Result<Option<String>,String>{
+    frozen_dce2::original_commit_checkpointed(plan,stage,ops,None,None,None,|_,_,_|{})
+}
+
 mod frozen_dce2 {
     use super::*;
     thread_local! {static READ_BYTES:Cell<u64>=const{Cell::new(0)};}

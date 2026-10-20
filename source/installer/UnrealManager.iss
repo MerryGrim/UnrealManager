@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "0.9.2"
+  #define AppVersion "0.9.3"
 #endif
 #ifndef OutputRoot
   #define OutputRoot SourcePath + "..\..\Releases\" + AppVersion

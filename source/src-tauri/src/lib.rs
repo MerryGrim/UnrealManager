@@ -23,6 +23,7 @@ mod fab_details;
 mod project_actions;
 mod app_updates;
 mod app_update_apply;
+mod elevation;
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -334,6 +335,9 @@ pub fn run() {
 }
 
 pub fn run_app_update_helper(path:PathBuf)->Result<(),String> { app_update_apply::run(&path) }
+pub fn run_epic_registration_broker(path:PathBuf)->Result<(),String> { elevation::run(path) }
+#[cfg(feature="engine-test-cli")]
+pub fn epic_registration_uac_probe(path:PathBuf)->Result<(),String> { elevation::probe(path) }
 pub fn app_update_startup()->Result<bool,String> { app_update_apply::recover_or_busy() }
 pub fn report_app_update_error(error:&str) {
     eprintln!("{error}");

@@ -384,6 +384,7 @@ input[type=checkbox]{padding:0}
 .engine-pause-controls{display:flex;flex-direction:column;align-items:stretch;gap:8px;max-width:280px}
 .engine-pause-controls small{color:var(--muted);font-size:12px;line-height:1.5}
 .engine-pause-controls .error-text{margin:0}
+.engine-permission-error{min-width:0;overflow-wrap:anywhere}.engine-permission-error>p{margin:0 0 8px;color:inherit}.engine-permission-error>p:last-child{margin-bottom:0}.engine-permission-path{white-space:pre-wrap;user-select:text}
 .engine-pause-button{min-width:144px}
 .engine-operation-actions{display:flex;justify-content:flex-end;align-items:flex-start;gap:10px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:14px;margin-top:2px}
 .engine-operation-actions:empty{display:none}
@@ -470,6 +471,10 @@ input[type=checkbox]{padding:0}
 .engine-component-step .project-delete-path{margin:8px 0;font-size:12px}
 .engine-component-step .update-summary{margin-top:8px;gap:8px 18px}
 .engine-component-step .wizard-footer{margin-top:12px;padding-top:12px}
+.engine-modal-backdrop .engine-component-step>.engine-permission-error{flex:0 1 auto;min-height:40px;max-height:72px;overflow:auto;margin:6px 0 0}
+.engine-component-step.engine-permission-step .engine-components,.engine-permission-step .update-summary{display:none}
+.engine-modal-backdrop .engine-permission-step>.engine-permission-error{flex:1;max-height:none}
+.engine-modal-backdrop .engine-progress-step>.engine-permission-error{flex:0 1 auto;min-height:40px;max-height:72px;overflow:auto;margin:6px 0 0}
 .engine-progress-metrics{display:grid;grid-auto-rows:max-content;align-content:start;gap:8px;min-width:0}
 .engine-progress-metrics>span{display:block;overflow-wrap:anywhere}
 .engine-current-file{min-width:0;grid-column:1/-1}

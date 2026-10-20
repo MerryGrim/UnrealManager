@@ -1,4 +1,5 @@
 import { tr } from './i18n';
+import {EnginePermissionError} from './EnginePermissionError';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Channel, invoke } from '@tauri-apps/api/core';
@@ -56,7 +57,7 @@ export function EngineDelete({ path, onClose, onDeleted }: {
         {!result && <><p>{tr("Будет удалена вся папка движка, включая установленные в неё плагины. Проекты вне этой папки и Vault сохранятся.")}</p><p className="error-text">{tr("Файлы будут стёрты без возможности восстановления из корзины.")}</p></>}
         {!preview && !error && <p role="status">{tr("Проверяем установку…")}</p>}
         {busy && !result && (progress?<div className="engine-operation" role="status"><span><RefreshCw size={17} className="spin"/>{formatEnginePhase(progress.phase)}{engineProgressPercent(progress)!==undefined?` · ${enginePercentText(progress)}`:''}</span><progress aria-label={tr("Прогресс загрузки")} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><div className="engine-progress-metrics">{engineProgressMetrics(progress).map(row=><span key={row.label} className={row.currentFile?"engine-current-file":row.fileWork?"engine-file-work":undefined} title={row.currentFile?row.value:row.fileWork?progress.currentFile||undefined:undefined}>{tr(row.label)}{row.value?`: ${row.value}`:""}{row.fileProgress&&<progress className="engine-file-meter" aria-label={tr("Прогресс текущего файла")} aria-valuetext={row.fileProgress.text} max={100} value={row.fileProgress.value}/>}</span>)}</div></div>:<p role="status"><RefreshCw size={17} className="spin"/> {tr("Удаляем…")}</p>)}
-        {error && <p role="alert" className="error-text">{tr(error)}</p>}
+        {error && <EnginePermissionError error={error}/>}
         {result && <p role="status">{tr(result)}</p>}
         <div className="wizard-footer">
             <button ref={cancel} disabled={busy} onClick={onClose}>{tr(result ? 'Закрыть' : 'Отмена')}</button>

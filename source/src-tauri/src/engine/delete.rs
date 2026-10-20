@@ -30,22 +30,34 @@ pub async fn engine_delete_preview(path:String)->Result<DeletePreview,String>{
 fn matches_path(value:&serde_json::Value,root:&Path)->bool {
     value.as_str().is_some_and(|s|s.replace('/',"\\").trim_end_matches('\\').eq_ignore_ascii_case(&root.to_string_lossy().replace('/',"\\").trim_end_matches('\\')))
 }
-fn unregister(root:&Path)->Result<(),String>{
+fn registration_access(root:&Path,mut waiting:impl FnMut())->Result<Vec<(PathBuf,crate::elevation::RegistrationBroker)>,String>{
+    let mut brokers=Vec::new();
+    for(path,before)in items().into_iter().filter(|(_,item)|matches_path(&item["InstallLocation"],root)){
+        let change=Some((path.clone(),before,serde_json::Value::Null));
+        match install::item_access(&change,false,"deleteEngine"){
+            Ok(())=>(),Err(error)if error.starts_with("UM_ELEVATION_REQUIRED:")=>{waiting();brokers.push((path,crate::elevation::prepare(change.as_ref().unwrap())?));},Err(error)=>return Err(error),
+        }
+    }
+    Ok(brokers)
+}
+fn unregister(root:&Path,brokers:&mut[(PathBuf,crate::elevation::RegistrationBroker)])->Result<(),String>{
     let backup=crate::storage::root().join("Backups/engine-removal").join(uuid::Uuid::new_v4().to_string());
     fs::create_dir_all(&backup).map_err(io)?;
     let launcher=install::launcher_path();
+    let mut global_warning=None;
     if launcher.exists(){
         no_links(&launcher)?;
         let bytes=fs::read(&launcher).map_err(io)?;
         let mut data:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
         let list=data["InstallationList"].as_array_mut().ok_or("Повреждён список установок Epic")?;
         let len=list.len();list.retain(|e|!matches_path(&e["InstallLocation"],root));
-        if list.len()!=len {fs::write(backup.join("LauncherInstalled.dat"),bytes).map_err(io)?;install::atomic(&launcher,&serde_json::to_vec(&data).map_err(|e|e.to_string())?)?;}
+        if list.len()!=len {fs::write(backup.join("LauncherInstalled.dat"),bytes).map_err(io)?;if let Err(error)=install::atomic(&launcher,&serde_json::to_vec(&data).map_err(|e|e.to_string())?){global_warning=Some(error);}}
     }
     for (path,_) in items().into_iter().filter(|(_,i)|matches_path(&i["InstallLocation"],root)) {
         no_links(&path)?;
         fs::copy(&path,backup.join(path.file_name().ok_or("Имя записи Epic")?)).map_err(io)?;
-        fs::remove_file(path).map_err(io)?;
+        if let Some((_,broker))=brokers.iter_mut().find(|(target,_)|*target==path){broker.update(false)?;}
+        else{fs::remove_file(&path).map_err(|e|super::access::contextual("Удаление записи Epic",&path,e))?;}
     }
     { let base=crate::storage::settings();
         let path=base.join("engine-installs.json");
@@ -58,7 +70,7 @@ fn unregister(root:&Path)->Result<(),String>{
             install::atomic(&path,&serde_json::to_vec(&roots).map_err(|e|e.to_string())?)?;
         }
     }
-    Ok(())
+    if let Some(warning)=global_warning{Err(warning)}else{Ok(())}
 }
 
 #[tauri::command]
@@ -70,7 +82,10 @@ pub async fn engine_delete(path:String,expected_version:String,state:tauri::Stat
     if vault.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции с хранилищем".into());}let _vault=install::Busy(&vault.active);
     tauri::async_runtime::spawn_blocking(move||{
         let root=checked_root(&path,&known_roots())?;
+        super::access::remove(&root,"deleteEngine")?;
         let _lock=install::lock_installation(&root)?;
+        let mut brokers=registration_access(&root,||{if let Some(channel)=&on_progress{let _=channel.send(install::Progress::waiting_for_permission());}})?;
+        for(_,broker)in &mut brokers{broker.check()?;}
         install::idle(&root)?;
         if version(&root)?.0!=expected_version{return Err("Версия движка изменилась. Повторите подтверждение.".into());}
         install::idle(&root)?;
@@ -78,10 +93,10 @@ pub async fn engine_delete(path:String,expected_version:String,state:tauri::Stat
         // never traversal roots, so outside data retains the original protection.
         let mut progress=|phase:&str,done,total,bytes,total_bytes|{if let Some(channel)=&on_progress{let _=channel.send(install::removal_progress(phase,done,total,bytes,total_bytes));}};
         install::remove_trees_counted(&[root.clone()],"Считаем файлы движка","Удаляем файлы движка",None,&mut progress)
-            .map_err(|e|format!("Не все файлы удалось удалить: {e}. Папка: {}",root.display()))?;
+            .map_err(|e|if e.starts_with("UM_ELEVATION_REQUIRED:"){e}else{format!("Не все файлы удалось удалить: {e}. Папка: {}",root.display())})?;
         if root.exists(){return Err("Папка движка осталась на диске.".into());}
         progress("Удаляем записи движка",0,0,0,0);
-        match unregister(&root) {
+        match unregister(&root,&mut brokers) {
             Ok(())=>Ok("Движок удалён.".into()),
             Err(e)=>Ok(format!("Папка движка удалена, но не удалось убрать запись Epic: {e}")),
         }

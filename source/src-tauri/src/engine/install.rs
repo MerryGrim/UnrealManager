@@ -38,6 +38,7 @@ pub struct Progress {
     #[serde(skip_serializing_if="Option::is_none")]
     read_bytes: Option<u64>,
 }
+impl Progress{pub(super) fn waiting_for_permission()->Self{Self{phase:"Ожидаем разрешения Windows".into(),..Default::default()}}}
 fn fab_progress(value:&serde_json::Value,engine_network:u64,received:&std::sync::atomic::AtomicU64)->Progress {
     let done=value["done"].as_u64().unwrap_or(0);let total=value["total"].as_u64().unwrap_or(0);
     let highest=received.fetch_max(value["networkBytes"].as_u64().unwrap_or(0),Ordering::SeqCst).max(value["networkBytes"].as_u64().unwrap_or(0));
@@ -363,12 +364,24 @@ fn commit_controlled(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&Atom
 fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,preflight_warning:Option<String>,mut progress:impl FnMut(&str,u64,u64))->Result<Option<String>,String>{
     commit_detailed(plan,stage,ops,paused,suspend,preflight_warning,|value|progress(&value.phase,value.done,value.total))
 }
+#[cfg(test)]
 fn commit_detailed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,preflight_warning:Option<String>,progress:impl FnMut(apply::Snapshot))->Result<Option<String>,String>{
     let workers=super::scan_storage::workers_hint(&target(&plan.info.path)?).min(2);
     commit_detailed_with_options(plan,stage,ops,paused,suspend,preflight_warning,apply::Options{workers,..Default::default()},progress)
 }
+#[cfg(test)]
 fn commit_detailed_with_options(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,preflight_warning:Option<String>,options:apply::Options,progress:impl FnMut(apply::Snapshot))->Result<Option<String>,String>{
+    commit_registered_with_options(plan,stage,ops,paused,suspend,preflight_warning,options,None,None,progress)
+}
+#[cfg(test)]
+pub(super) fn permission_fixture_commit(plan:&Plan,stage:&Path,ops:&[Operation])->Result<Option<String>,String>{
+    commit_detailed_with_options(plan,stage,ops,None,None,None,apply::Options::default(),|_|{})
+}
+#[cfg(test)]
+pub(super) fn permission_baseline_commit(plan:&Plan,stage:&Path,ops:&[Operation])->Result<Option<String>,String>{apply::permission_baseline(plan,stage,ops)}
+fn commit_registered_with_options(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,preflight_warning:Option<String>,options:apply::Options,prepared:Option<Option<MetadataChange>>,mut broker:Option<crate::elevation::RegistrationBroker>,progress:impl FnMut(apply::Snapshot))->Result<Option<String>,String>{
     let mut reporter=apply::Reporter::new(progress,options.interval);
+    let pinned_registration=prepared.clone();
     let root = target(&plan.info.path)?;
     idle(&root)?;
     let journal_path=stage.join("journal.json");no_links(&journal_path)?;
@@ -377,15 +390,21 @@ fn commit_detailed_with_options(plan:&Plan,stage:&Path,ops:&[Operation],paused:O
     let mut journal=if restoring {
         let j=previous.unwrap();if j.root!=plan.info.path||j.build!=plan.info.build{return Err("Журнал относится к другой установке".into());}j
     }else{
-        let mut all_ops=ops.to_vec();let item=prepare_metadata(plan,stage,&mut all_ops)?;
+        let mut all_ops=ops.to_vec();let item=if let Some(item)=prepared{
+            prepare_metadata_files(plan,stage,&mut all_ops)?;item
+        }else{prepare_metadata(plan,stage,&mut all_ops)?};
         let (launcher,launcher_warning)=match launcher_update(plan){Ok(value)=>(value,None),Err(_)=>(None,Some(REGISTRATION_WARNING.to_string()))};
         Journal{root:plan.info.path.clone(),build:plan.info.build.clone(),operations:all_ops,status:"applying".into(),item,launcher,launcher_warning}
     };
     if preflight_warning.is_some(){journal.launcher_warning=preflight_warning;}
+    if broker.is_some()&&pinned_registration.as_ref()!=Some(&journal.item){return Err("Запись Epic изменилась после проверки разрешений.".into());}
+    if broker.is_none(){item_access(&journal.item,false,"epicRecord")?;}
     if let Some((path,_,after))=&journal.launcher{
         if no_links(path).is_ok() && fs::read(path).ok().and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok()).as_ref()==Some(after){journal.launcher_warning=None;}
     }
     let ops=journal.operations.clone();for op in &ops{relative(&op.name)?;}
+    super::access::operations_reported(&root,stage,&ops,"engineFiles",|done,total,_|reporter.basic("Проверяем права доступа",done,total))?;
+    if let Some(broker)=broker.as_mut(){broker.check()?;}
     fs::create_dir_all(&root).map_err(io)?;
     if !restoring{atomic(&journal_path,&serde_json::to_vec(&journal).map_err(|e|e.to_string())?)?;}
     let marker=root.join(".um-engine-update.json");no_links(&marker)?;
@@ -411,7 +430,7 @@ fn commit_detailed_with_options(plan:&Plan,stage:&Path,ops:&[Operation],paused:O
             }
             reporter.basic("Устанавливаем движок",ops.len() as u64,ops.len() as u64);
             reporter.basic(REGISTRATION_PHASE,0,0);
-            update_item(&journal.item,false)?;
+            registration_update(&journal.item,false,&mut broker)?;
             return Ok(());
         }
         apply::with_pool(options,paused,suspend,&mut reporter,|pool|{
@@ -420,13 +439,13 @@ fn commit_detailed_with_options(plan:&Plan,stage:&Path,ops:&[Operation],paused:O
         }
         Ok(())})?;
         reporter.basic(REGISTRATION_PHASE,0,0);
-        update_item(&journal.item, false)?;
+        registration_update(&journal.item,false,&mut broker)?;
         Ok(())
     })();
     if let Err(error) = result {
         if error==super::resume::SUSPENDED{return Err(error);}
         match rollback_reported(&root, stage, &started,|done,total|reporter.basic(ROLLBACK_PHASE,done,total))
-            .and_then(|_| update_item(&journal.item, true))
+            .and_then(|_| registration_update(&journal.item,true,&mut broker))
             .and_then(|_| update_item(&journal.launcher, true))
         {
             Ok(()) => {
@@ -523,6 +542,9 @@ fn prepare_metadata(
     stage: &Path,
     ops: &mut Vec<Operation>,
 ) -> Result<Option<(PathBuf, serde_json::Value, serde_json::Value)>, String> {
+    prepare_metadata_files(plan,stage,ops)?;metadata_change(plan)
+}
+fn prepare_metadata_files(plan:&Plan,stage:&Path,ops:&mut Vec<Operation>)->Result<(),String>{
     let root = target(&plan.info.path)?;
     let name = format!(".egstore/um-{}.manifest", digest(&plan.raw));
     let manifest_path = root.join(relative(&name)?);
@@ -567,6 +589,12 @@ fn prepare_metadata(
             new_hash: Some(new_hash),
         });
     }
+    Ok(())
+}
+type MetadataChange=(PathBuf,serde_json::Value,serde_json::Value);
+fn metadata_change(plan:&Plan)->Result<Option<MetadataChange>,String>{
+    let root=target(&plan.info.path)?;
+    let manifest_path=root.join(".egstore").join(format!("um-{}.manifest",digest(&plan.raw)));
     if let Some((path, old)) = &plan.item {
         let mut updated = old.clone();
         updated["AppVersionString"] = plan.info.build.clone().into();
@@ -585,6 +613,16 @@ fn prepare_metadata(
         let item=new_epic_item(&plan.info.app_name,catalog_id,&plan.info.build,&root,&manifest_path,plan.files.values().map(|f|f.size() as u64).sum(),&guid);
         Ok(Some((path,serde_json::Value::Null,item)))
     } else { Ok(None) }
+}
+fn registration_change(plan:&Plan,stage:&Path)->Result<Option<MetadataChange>,String>{
+    let path=stage.join("journal.json");no_links(&path)?;
+    if path.exists(){
+        let journal:Journal=serde_json::from_slice(&fs::read(&path).map_err(|e|super::access::contextual("Чтение журнала установки",&path,e))?).map_err(|_|"Повреждён журнал установки")?;
+        if journal.root!=plan.info.path||journal.build!=plan.info.build{return Err("Журнал относится к другой установке".into());}
+        if journal.status=="complete"{return Ok(None);}
+        if journal.status=="applying"{return Ok(journal.item);}
+    }
+    metadata_change(plan)
 }
 fn update_item(
     item: &Option<(PathBuf, serde_json::Value, serde_json::Value)>,
@@ -613,10 +651,36 @@ fn update_item(
         if target.is_null() {
             if path.exists() { fs::remove_file(path).map_err(io)?; }
         } else {
-            atomic(path, &serde_json::to_vec_pretty(target).unwrap())?;
+            atomic(path, &serde_json::to_vec_pretty(target).unwrap())
+                .map_err(|error|format!("Не удалось заменить запись Epic {}: {error}",path.display()))?;
         }
     }
     Ok(())
+}
+pub(super) fn item_access(item:&Option<(PathBuf,serde_json::Value,serde_json::Value)>,restore:bool,operation:&str)->Result<(),String>{
+    if let Some((path,before,after))=item{
+        no_links(path)?;
+        let current:serde_json::Value=if path.exists(){serde_json::from_slice(&fs::read(path).map_err(|e|super::access::contextual("Чтение записи Epic",path,e))?).map_err(|_|"Не удалось прочитать запись Epic")?}else{serde_json::Value::Null};
+        let(expected,target)=if restore{(after,before)}else{(before,after)};
+        if current==*target{return Ok(());}
+        if current!=*expected{return Err("Epic изменил запись установки. Сохранён журнал для восстановления.".into());}
+        if target.is_null(){super::access::remove(path,operation)?;}else{super::access::replace_file(path,operation)?;}
+    }
+    Ok(())
+}
+pub(super) fn registration_update_if_needed(item:&Option<MetadataChange>,restore:bool,request:impl FnOnce()->Result<(),String>)->Result<(),String>{
+    if let Some((path,before,after))=item{
+        no_links(path)?;
+        let current:serde_json::Value=if path.exists(){serde_json::from_slice(&fs::read(path).map_err(|e|super::access::contextual("Чтение записи Epic",path,e))?).map_err(|_|"Не удалось прочитать запись Epic")?}else{serde_json::Value::Null};
+        let desired=if restore{before}else{after};
+        // A dead helper cannot make an already-restored record incomplete.
+        // This is an exact JSON comparison, never a permission or mtime guess.
+        if current==*desired{return Ok(());}
+    }else{return Ok(());}
+    request()
+}
+fn registration_update(item:&Option<MetadataChange>,restore:bool,broker:&mut Option<crate::elevation::RegistrationBroker>)->Result<(),String>{
+    registration_update_if_needed(item,restore,||if let Some(broker)=broker.as_mut(){broker.update(restore)}else{update_item(item,restore)})
 }
 fn launcher_write_access(path:&Path)->Result<(),String>{
     no_links(path)?;
@@ -712,12 +776,33 @@ pub async fn engine_install(
     if !plan.info.conflicts.is_empty() {
         return Err("Есть локальные изменения. Установка не начата.".into());
     }
-    let _installation_lock = lock_installation(&target(&plan.info.path)?)?;
     let stage = stage_root(&plan)?;
     plan.resume_stage=Some(stage.clone());
     let _=on_progress.send(Progress{phase:"Сохраняем задачу установки".into(),done:0,total:0,percent:0,network_bytes:0,processed_bytes:0,total_bytes:0,files_done:0,files_total:0,paused:false,can_pause:false,..Default::default()});
     plan=tauri::async_runtime::spawn_blocking(move||{super::resume::save(&plan)?;Ok::<_,String>(plan)}).await.map_err(|_|"Сохранение установки прервано")??;
     state.resumable.store(true,Ordering::SeqCst);
+    super::access::create_directory(&stage,"staging")?;
+    let _installation_lock = lock_installation(&target(&plan.info.path)?)?;
+    let registration_channel=on_progress.clone();let permission_stage=stage.clone();
+    let (checked_plan,prepared_registration,registration_broker)=tauri::async_runtime::spawn_blocking(move||{
+        let prepared=registration_change(&plan,&permission_stage)?;
+        let permission=item_access(&prepared,false,"epicRecord");
+        let known_acl_denial=permission.as_ref().is_err_and(|e|e.starts_with("UM_ELEVATION_REQUIRED:"));
+        if let Err(error)=&permission{if !known_acl_denial{return Err(error.clone());}}
+        // A newly created file inherits its directory's ACL. ADD_FILE alone
+        // cannot prove that its closed temporary sibling can then be renamed.
+        let fresh_protected=prepared.as_ref().is_some_and(|(path,before,_)|before.is_null()&&path.parent()==Some(epic_item_directory().as_path()))&&!crate::elevation::is_elevated();
+        let broker=if fresh_protected||known_acl_denial{
+            let change=prepared.as_ref().ok_or("Не найдена запись Epic для проверки разрешений")?;
+            let _=registration_channel.send(Progress{phase:"Ожидаем разрешения Windows".into(),can_pause:false,..Default::default()});
+            Some(crate::elevation::prepare(change)?)
+        }else{permission?;None};
+        super::access::plan(&plan,&permission_stage,|done,total,current|{
+            let _=registration_channel.send(Progress{phase:"Проверяем права доступа".into(),done,total,percent:done.saturating_mul(100)/total.max(1),files_done:done,files_total:total,current_file:current.map(str::to_owned),can_pause:false,..Default::default()});
+        })?;
+        Ok::<_,String>((plan,prepared,broker))
+    }).await.map_err(|_|"Проверка разрешений прервана")??;
+    plan=checked_plan;
     // Probe the optional global record before download without changing it.
     let launcher_preflight_warning=launcher_write_access(&launcher_path()).err().map(|_|REGISTRATION_WARNING.to_string());
     if stage.join("journal.json").exists() {
@@ -773,6 +858,7 @@ pub async fn engine_install(
     })
     .await
     .map_err(|_| "Проверка прервана")?;plan=returned_plan;result?};
+    super::access::operations_reported(&target(&plan.info.path)?,&stage,&ops,"engineFiles",|done,total,_|emit("Проверяем права доступа",done,total,0))?;
     super::resume::save_operations(&stage,&ops)?;
     cancelled(&state)?;
     let bytes: u64 = ops
@@ -877,7 +963,8 @@ pub async fn engine_install(
     let commit_pause=state.paused.clone();let commit_suspend=state.suspend.clone();
     let commit_app=app.clone();
     let registration_warning=if !already_committed {tauri::async_runtime::spawn_blocking(move || {
-        commit_detailed(&copy, &stage_copy, &ops,Some(&commit_pause),Some(&commit_suspend),launcher_preflight_warning, |snapshot| {
+        let workers=super::scan_storage::workers_hint(&target(&copy.info.path)?).min(2);
+        commit_registered_with_options(&copy,&stage_copy,&ops,Some(&commit_pause),Some(&commit_suspend),launcher_preflight_warning,apply::Options{workers,..Default::default()},Some(prepared_registration),registration_broker,|snapshot| {
             let phase=snapshot.phase.as_str();let done=snapshot.done;let total=snapshot.total;
             if phase==REGISTRATION_PHASE||phase==ROLLBACK_PHASE {commit_app.state::<EngineState>().pause_available.store(false,Ordering::SeqCst);commit_pause.store(false,Ordering::SeqCst);}
             super::resume::report(&commit_id,phase,done,total);
@@ -971,6 +1058,8 @@ pub(super) fn remove_trees_counted(roots:&[PathBuf],inventory_phase:&str,removal
         no_links(path.parent().ok_or("Путь файла")?)?;
         let (kind,bytes)=removal_metadata(&path)?;
         if kind==RemovalKind::Directory{for child in fs::read_dir(&path).map_err(io)?{pending.push(child.map_err(io)?.path());}}
+        // Finish the full permission inventory before deleting the first entry.
+        super::access::remove_entry(&path,"deleteEngine")?;
         total_bytes=total_bytes.saturating_add(bytes);entries.push(RemovalEntry{path,kind,bytes});
         if last.elapsed()>=Duration::from_millis(250){progress(inventory_phase,entries.len() as u64,0,0,0);last=Instant::now();}
     }
@@ -1463,12 +1552,16 @@ mod transaction_tests {
         let (base, stage, plan, ops) = fresh_fixture();
         let root = PathBuf::from(&plan.info.path);
         let paused = std::sync::Arc::new(AtomicBool::new(true));
+        struct Unpause(std::sync::Arc<AtomicBool>);impl Drop for Unpause{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
+        let _unpause=Unpause(paused.clone());
         let worker_paused = paused.clone();
         let (send, receive) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || commit_controlled(&plan, &stage, &ops, Some(&worker_paused), |_, done, _| { let _ = send.send(done); }));
+        let source=stage.join("files/Engine/a");
+        let thread = std::thread::spawn(move || commit_controlled(&plan, &stage, &ops, Some(&worker_paused), |phase, done, _| { if phase=="Проверяем файлы перед установкой"{let _ = send.send(done);} }));
         assert_eq!(receive.recv_timeout(Duration::from_secs(5)).unwrap(), 0);
         assert_eq!(receive.recv_timeout(Duration::from_secs(5)).unwrap(), 0);
         assert!(!root.join("Engine").exists());
+        assert!(source.is_file(),"Paused verification must retain its staged source");
         paused.store(false, Ordering::SeqCst);
         thread.join().unwrap().unwrap();
         assert!(root.join("Engine/a").exists());
@@ -1750,9 +1843,15 @@ pub async fn engine_recover(
         idle(&root)?;
         let _installation_lock = lock_installation(&root)?;
         let (stage, mut j) = recovery(&root)?;
+        let mut broker=None;
         if j.status != "complete" {
+            match item_access(&j.item,true,"recovery"){
+                Ok(())=>(),Err(error)if error.starts_with("UM_ELEVATION_REQUIRED:")=>{broker=Some(crate::elevation::prepare(j.item.as_ref().ok_or("Не найдена запись Epic для восстановления")?)?);},Err(error)=>return Err(error),
+            }
+            if let Some(broker)=broker.as_mut(){broker.check()?;}
+            super::access::operations(&root,&stage,&j.operations,"recovery")?;
             rollback(&root, &stage, &j.operations)?;
-            update_item(&j.item, true)?;
+            registration_update(&j.item,true,&mut broker)?;
             update_item(&j.launcher, true)?;
             j.status = "rolledBack".into();
             atomic(
@@ -1760,7 +1859,8 @@ pub async fn engine_recover(
                 &serde_json::to_vec(&j).unwrap(),
             )?;
         }
-        fs::remove_file(root.join(".um-engine-update.json")).map_err(io)
+        let marker=root.join(".um-engine-update.json");super::access::remove(&marker,"recovery")?;
+        fs::remove_file(&marker).map_err(|e|super::access::contextual("Удаление маркера восстановления",&marker,e))
     })
     .await
     .map_err(|_| "Восстановление прервано")?
@@ -1983,7 +2083,7 @@ fn assemble_files_controlled(plan:&Plan,stage:&Path,ops:&[Operation],cancel:&Ato
     Ok(())
 }
 
-fn epic_item_directory()->PathBuf {PathBuf::from(std::env::var_os("PROGRAMDATA").unwrap_or_else(||"C:\\ProgramData".into())).join("Epic/EpicGamesLauncher/Data/Manifests")}
+pub(super) fn epic_item_directory()->PathBuf {PathBuf::from(std::env::var_os("PROGRAMDATA").unwrap_or_else(||"C:\\ProgramData".into())).join("Epic/EpicGamesLauncher/Data/Manifests")}
 fn new_epic_item(app_name:&str,catalog_id:&str,build:&str,root:&Path,manifest:&Path,size:u64,guid:&str)->serde_json::Value {
  serde_json::json!({"FormatVersion":0,"AppName":app_name,"CatalogNamespace":"ue","CatalogItemId":catalog_id,"AppVersionString":build,"DisplayName":"Unreal Engine","InstallLocation":root,"CompleteManifestPath":manifest,"ManifestLocation":root.join(".egstore"),"StagingLocation":root.join(".egstore/bps"),"InstallationGuid":guid,"InstallSize":size,"LaunchExecutable":"Engine/Binaries/Win64/UnrealEditor.exe","LaunchCommand":"","AppCategories":["engines/ue5","engines"],"bIsApplication":false,"bIsExecutable":true,"bIsIncompleteInstall":false,"bNeedsValidation":false,"bRequiresAuth":true,"bCanRunOffline":false})
 }
