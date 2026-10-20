@@ -981,5 +981,10 @@
   "Готова к продолжению": "Lista para reanudar",
   "Завершаем загрузку": "Finalizando descarga",
   "Восстанавливаем загрузку…": "Restaurando descarga…",
-  "Очередь требует внимания: продолжите, повторите или уберите первое задание.": "La cola requiere atención: reanuda, vuelve a intentar o elimina la primera tarea."
+  "Очередь требует внимания: продолжите, повторите или уберите первое задание.": "La cola requiere atención: reanuda, vuelve a intentar o elimina la primera tarea.",
+  "Скорость проверки": "Velocidad de verificación",
+  "файл/с": "archivos/s",
+  "Прочитано": "Leído",
+  "Скорость чтения": "Velocidad de lectura",
+  "Текущий файл": "Archivo actual"
 }

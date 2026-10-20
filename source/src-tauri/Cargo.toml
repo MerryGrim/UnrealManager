@@ -1,6 +1,6 @@
 [package]
 name = "unreal-manager"
-version = "0.9.0"
+version = "0.9.1"
 description = "Lightweight Unreal Engine manager"
 authors = ["Nyanma <https://github.com/MerryGrim>"]
 edition = "2021"
@@ -35,7 +35,7 @@ base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
-windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_JobObjects"] }
+windows-sys = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_IO", "Win32_System_Ioctl"] }
 
 
 [features]

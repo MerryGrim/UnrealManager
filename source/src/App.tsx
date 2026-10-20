@@ -1,7 +1,7 @@
 import {ClosePrompt} from './WindowSettings';
 import {AppUpdateNotice,useAppUpdates} from './AppUpdateSettings';
 import {SettingsView,type SettingsCategory} from './SettingsView';
-import {formatEnginePhase,type EngineTransfer} from './EngineTransferCard';
+import {formatEnginePhase,enginePercentText,engineProgressPercent,type EngineTransfer} from './EngineTransferCard';
 import { tr, getLocale } from './i18n';
 import metadata from '../package.json';
 import { AboutDialog } from './AboutDialog';
@@ -77,7 +77,7 @@ export default function App() {
     useEffect(() => { refresh(); }, []);
     const filteredProjects = useMemo(() => projects.filter(p => p.name.toLowerCase().includes(query.toLowerCase())), [projects, query]);
     const queueProgress = vault.queueActive?.progress;
-    const downloadPhase = engineProgress ? `${engineProgress.paused ? tr('На паузе') : formatEnginePhase(engineProgress.phase)}${engineProgress.total ? ` · ${engineProgress.percent}%` : ''}`
+    const downloadPhase = engineProgress ? `${engineProgress.paused ? tr('На паузе') : formatEnginePhase(engineProgress.phase)}${engineProgressPercent(engineProgress)!==undefined ? ` · ${enginePercentText(engineProgress)}` : ''}`
         : vault.queueActive ? `${queueProgress?.paused ? tr('На паузе') : queueProgress?.phase || tr('Подготовка загрузки')}${queueProgress?.total ? ` · ${Math.min(100,Math.floor(queueProgress.done/queueProgress.total*100))}%` : ''}`
         : vault.tileProgress ? `${vault.tileProgress.phase} · ${vault.tileProgress.percent}%`
         : vault.busy ? 'Операция с хранилищем…' : vault.queuedCount ? vault.queue.paused ? 'Очередь приостановлена' : 'Ожидает завершения текущей операции' : 'Нет активных загрузок';

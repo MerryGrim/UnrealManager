@@ -470,6 +470,37 @@ input[type=checkbox]{padding:0}
 .engine-component-step .project-delete-path{margin:8px 0;font-size:12px}
 .engine-component-step .update-summary{margin-top:8px;gap:8px 18px}
 .engine-component-step .wizard-footer{margin-top:12px;padding-top:12px}
+.engine-progress-metrics{display:grid;grid-auto-rows:max-content;align-content:start;gap:8px;min-width:0}
+.engine-progress-metrics>span{display:block;overflow-wrap:anywhere}
+.engine-current-file{min-width:0;grid-column:1/-1}
+.engine-current-file>b,.engine-progress-metrics>.engine-current-file{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.engine-transfer-card .transfer-metrics>div{min-width:0;overflow-wrap:anywhere}
+.engine-transfer-card .transfer-meter strong{min-width:64px;white-space:nowrap}
+.engine-modal-backdrop .engine-progress-step{display:flex;flex-direction:column;height:min(680px,100%);overflow:hidden}
+.engine-progress-step>:not(.engine-operation){flex-shrink:0}
+.engine-progress-step .engine-operation{display:flex;flex-direction:column;flex:1;min-height:0;gap:8px;margin:8px 0 0}
+.engine-progress-step .engine-operation>span,.engine-progress-step .engine-operation>progress,.engine-progress-step .engine-operation-actions{flex-shrink:0}
+.engine-progress-step .engine-operation>span{align-items:flex-start;overflow-wrap:anywhere}
+.engine-progress-step .engine-operation>span svg{flex-shrink:0}
+.engine-progress-step .engine-progress-metrics{flex:1;min-height:48px;overflow:auto;overscroll-behavior:contain;padding-right:4px}
+.engine-progress-step .project-delete-path{margin:8px 0;font-size:12px}
+.engine-progress-step .wizard-steps{padding:6px 0}
+.engine-delete-dialog .wizard-footer{position:sticky;bottom:-24px;background:var(--panel);padding-bottom:12px;z-index:2}
+@media(max-height:640px){
+ .engine-modal-backdrop .engine-progress-step{--dialog-inset:16px;padding:16px}
+ .engine-progress-step .engine-operation{padding:10px}
+ .engine-progress-step .engine-operation-actions{padding-top:8px}
+}
+@media(max-height:400px){
+ .engine-modal-backdrop .engine-progress-step{--dialog-inset:12px;padding:12px}
+ .engine-progress-step .modal-head .eyebrow{display:none}
+ .modal-backdrop .engine-progress-step>.modal-head{padding-bottom:6px}
+ .engine-progress-step .modal-head h2{font-size:18px;margin:0}
+ .engine-progress-step .wizard-steps{font-size:11px;gap:8px;padding:4px 0}
+ .engine-progress-step .project-delete-path{font-size:11px;margin:4px 0}
+ .engine-progress-step .engine-operation{padding:8px;gap:6px;margin-top:4px}
+ .engine-progress-step .engine-operation-actions{padding-top:6px}
+}
 .engine-wizard .wizard-step-back{min-height:0;border:0;border-radius:2px;background:transparent;padding:0;color:var(--muted);font:inherit}
 .engine-wizard .wizard-step-back:disabled{opacity:1}
 .engine-wizard .wizard-step-back:not(:disabled){color:var(--accent);text-decoration:underline;text-underline-offset:3px}

@@ -981,5 +981,10 @@
   "Готова к продолжению": "Ready to resume",
   "Завершаем загрузку": "Finishing download",
   "Восстанавливаем загрузку…": "Restoring download…",
-  "Очередь требует внимания: продолжите, повторите или уберите первое задание.": "The queue needs attention: resume, retry, or remove the first task."
+  "Очередь требует внимания: продолжите, повторите или уберите первое задание.": "The queue needs attention: resume, retry, or remove the first task.",
+  "Скорость проверки": "Verification speed",
+  "файл/с": "files/s",
+  "Прочитано": "Read",
+  "Скорость чтения": "Read speed",
+  "Текущий файл": "Current file"
 }

@@ -1,8 +1,8 @@
-Unreal Manager 0.9.0 — Nyanma
+Unreal Manager 0.9.1 — Nyanma
 https://github.com/MerryGrim
 
-Release 0.9.0: installer, portable download and signed application updates.
-https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.0
+Release information, downloads and signed application updates:
+https://github.com/MerryGrim/UnrealManager/releases
 
 Installed edition
 The installer installs for the current Windows user. Settings, account session,
@@ -37,13 +37,19 @@ The EXE has no Windows Authenticode publisher signature. Update manifests have
 a separate ECDSA signature verified with the application's pinned public key. Original Unreal Manager source code
 is licensed under the MIT License. Third-party components retain their
 respective licenses; notices are available in Account menu > About and in
-THIRD-PARTY-LICENSES.txt. The unchanged dependency versions have corresponding
-MPL component sources in the ThirdPartySources archive of this release:
-https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.0
+THIRD-PARTY-LICENSES.txt. Corresponding MPL component sources are provided in
+the ThirdPartySources archive alongside
+the distribution. Published source archives are also listed in GitHub Releases:
+https://github.com/MerryGrim/UnrealManager/releases
 Unreal Engine, Epic Games and Fab belong to their owners.
 
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
+
+0.9.1
+- Streamlined installed-file verification with bounded storage-aware reading.
+- Fractional progress, checked files per second, read bytes and current file.
+- The official Epic redemption window follows the application's selected language.
 
 0.9.0
 - Sequential asset downloads to Vault; reorder pending items by drag or keyboard.

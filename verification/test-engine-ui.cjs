@@ -76,6 +76,21 @@ const render=()=>{cursor=0;return m.exports.EnginesView({engines:[{path:'X:\\Fix
  channel.onmessage({phase:'Считаем временные файлы',done:0,total:0,percent:0,filesDone:7,filesTotal:0,processedBytes:0,totalBytes:0,networkBytes:0});u=render();installModal=all(u).find(n=>n.props?.role==='dialog');
  const counting=all(installModal).find(n=>n.props?.role==='status');assert(text(counting).includes('Найдено объектов: 7'));assert(!text(counting).includes('%'));assert.equal(all(counting).find(n=>n.type==='progress').props.value,undefined);
  const countingCard=transfer.exports.EngineTransferCard({progress:{phase:'Считаем временные файлы',done:0,total:0,percent:0,filesDone:7,filesTotal:0,networkBytes:0,bytesPerSecond:0,title:'Unreal Engine'},onOpen:()=>{}});assert(text(countingCard).includes('Найдено объектов7'));assert.equal(all(countingCard).find(n=>n.type==='progress').props.value,undefined);
+ const verifying={phase:'Проверяем установленные файлы',done:1086,total:250332,percent:0,filesDone:1086,filesTotal:250332,processedBytes:3145728,totalBytes:0,filesPerSecond:47.5,readBytesPerSecond:524288,currentFile:'Engine/Content/VeryLongFolder/CurrentAsset.uasset',networkBytes:0,bytesPerSecond:0};
+ channel.onmessage(verifying);u=render();installModal=all(u).find(n=>n.props?.role==='dialog');
+ const verifiedStatus=all(installModal).find(n=>n.props?.role==='status'),verifiedCard=transfer.exports.EngineTransferCard({progress:{...verifying,title:'Unreal Engine'},onOpen:()=>{}});
+ for(const tree of [verifiedStatus,verifiedCard]){
+  assert(text(tree).includes('0,4%'),'Fractional count progress is localized and does not reuse truncated native percent');
+  assert(text(tree).includes('Прочитано')&&text(tree).includes('3 МБ'),'Actual read bytes are visible without an unknown byte denominator');
+  assert(text(tree).includes('Скорость чтения')&&text(tree).includes('Скорость проверки'));
+  assert(all(tree).some(n=>n.props?.title===verifying.currentFile),'Current relative file is visible with a full accessible title');
+ }
+ assert.equal(all(verifiedStatus).find(n=>n.type==='progress').props.value,1086/250332*100);
+ assert.equal(transfer.exports.enginePercentText({...verifying,done:250331}),'99,9%','Do not round unfinished work to 100%');
+ assert.equal(transfer.exports.enginePercentText({...verifying,done:250332}),'100%');
+ assert.equal(transfer.exports.engineProgressPercent({...verifying,total:0}),undefined);
+ assert.equal(transfer.exports.enginePercentText({...verifying,done:1}),'<0,1%');
+ assert.equal(transfer.exports.engineCountLabel('Fab: Проверяем сохранённые блоки'),'Блоки');
  channel.onmessage({phase:'Скачиваем движок',percent:41,total:100,done:41,networkBytes:1048576});u=render();installModal=all(u).find(n=>n.props?.role==='dialog');
  assert.equal(all(installModal).filter(n=>n.type==='input'&&n.props.type==='checkbox').length,0,'Active downloading keeps the component list hidden');
  assert(text(installModal).includes('X:/Fixture/Engines/UE_5.7'),'Active progress retains the chosen destination');
@@ -90,6 +105,7 @@ const render=()=>{cursor=0;return m.exports.EnginesView({engines:[{path:'X:\\Fix
  all(u).find(n=>n.props?.['aria-label']===i18n.tr('Закрыть')).props.onClick();u=render();all(u).filter(n=>n.type==='engine-tile')[1].props.onInstall();u=render();all(u).find(n=>n.type==='input').props.onChange({target:{value:'X:/Fixture/Engines/UE_5.7-guard'}});u=render();
  prepareError='Не удалось определить, какой движок использует UnrealEditor-Cmd.exe. Закройте процесс или повторите проверку.';button(u,i18n.tr('Далее')).onClick();await tick();u=render();
  const nativeGuardAlert=all(u).find(n=>n.props?.role==='alert');assert(nativeGuardAlert,'Native formatted guard error is displayed');assert.equal(text(nativeGuardAlert),'Could not determine which engine is using UnrealEditor-Cmd.exe. Close the process or check again.');assert(!/[А-Яа-яЁё]/.test(text(nativeGuardAlert)),'The dynamic guard message is fully translated without a Cyrillic leak');
+ console.log('PASS fractional progress and matching card/modal read bytes, file rate/current file, unknown denominator and completion boundaries');
  console.log('PASS actual English i18n renders the formatted native guard error and preserves its process name');
  console.log('PASS engine UI: pre-start Back and clickable prior step, preserved component tags and changed-path reprepare, fresh-release reset, busy navigation guard, read-only resume, supplied update path, explicit destination, step 3 without checkboxes, translated completion, duplicate guard and background progress');
 

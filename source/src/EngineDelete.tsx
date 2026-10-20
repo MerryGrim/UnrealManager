@@ -3,8 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { RefreshCw, FileX2 } from 'lucide-react';
-import {engineCountLabel, formatEnginePhase, isEngineObjectInventory, transferSize} from './EngineTransferCard';
-type DeleteProgress={phase:string;done:number;total:number;percent:number;filesDone:number;filesTotal:number;processedBytes:number;totalBytes:number;processingBytesPerSecond?:number};
+import {type EngineProgress, formatEnginePhase, enginePercentText, engineProgressPercent, engineProgressMetrics} from './EngineTransferCard';
+type DeleteProgress=EngineProgress & {processedBytes:number;totalBytes:number;filesDone:number;filesTotal:number};
 export function EngineDelete({ path, onClose, onDeleted }: {
     path: string;
     onClose: () => void;
@@ -51,11 +51,11 @@ export function EngineDelete({ path, onClose, onDeleted }: {
             e.preventDefault();
             controls[(index + (e.shiftKey ? controls.length - 1 : 1)) % controls.length]?.focus();
         }
-    }}><section className="engine-wizard" role="alertdialog" aria-modal="true" aria-label={tr("Удаление движка")}>
+    }}><section className="engine-wizard engine-delete-dialog" role="alertdialog" aria-modal="true" aria-label={tr("Удаление движка")}>
         <h2>{tr("Удаление Unreal Engine ")}{preview?.version}</h2><p className="project-delete-path">{path}</p>
         {!result && <><p>{tr("Будет удалена вся папка движка, включая установленные в неё плагины. Проекты вне этой папки и Vault сохранятся.")}</p><p className="error-text">{tr("Файлы будут стёрты без возможности восстановления из корзины.")}</p></>}
         {!preview && !error && <p role="status">{tr("Проверяем установку…")}</p>}
-        {busy && !result && (progress?<div className="engine-operation" role="status"><span><RefreshCw size={17} className="spin"/>{formatEnginePhase(progress.phase)}{progress.total?` · ${progress.percent}%`:''}</span><progress max={100} value={progress.total?progress.percent:undefined}/>{!!progress.filesTotal&&<span>{tr(engineCountLabel(progress.phase))}: {progress.filesDone} / {progress.filesTotal}</span>}{!progress.filesTotal&&isEngineObjectInventory(progress.phase)&&<span>{tr('Найдено объектов')}: {progress.filesDone}</span>}{!!progress.totalBytes&&<span>{tr('Обработано')}: {transferSize(progress.processedBytes)} / {transferSize(progress.totalBytes)} · {tr('Скорость обработки')}: {transferSize(progress.processingBytesPerSecond||0)}{tr('/с')}</span>}</div>:<p role="status"><RefreshCw size={17} className="spin"/> {tr("Удаляем…")}</p>)}
+        {busy && !result && (progress?<div className="engine-operation" role="status"><span><RefreshCw size={17} className="spin"/>{formatEnginePhase(progress.phase)}{engineProgressPercent(progress)!==undefined?` · ${enginePercentText(progress)}`:''}</span><progress aria-label={tr("Прогресс загрузки")} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><div className="engine-progress-metrics">{engineProgressMetrics(progress).map(row=><span key={row.label} className={row.currentFile?"engine-current-file":undefined} title={row.currentFile?row.value:undefined}>{tr(row.label)}: {row.value}</span>)}</div></div>:<p role="status"><RefreshCw size={17} className="spin"/> {tr("Удаляем…")}</p>)}
         {error && <p role="alert" className="error-text">{tr(error)}</p>}
         {result && <p role="status">{tr(result)}</p>}
         <div className="wizard-footer">

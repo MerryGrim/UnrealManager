@@ -4,8 +4,8 @@ An independent, lightweight Unreal Engine manager for **Windows x64**.
 Manage engines, projects, Fab assets, Vault content and plugins in one desktop
 application, without a game storefront.
 
-**Version 0.9.0.** Download the installer or portable edition, or build from source.
-See the [0.9.0 change notes](source/CHANGELOG.md).
+**Version 0.9.1.** Download the installer or portable edition, or build from source.
+See the [0.9.1 change notes](source/CHANGELOG.md).
 
 [Website & screenshots](https://merrygrim.github.io/UnrealManager/) ·
 [Build instructions](source/README.md) · [Verification](verification/README.md) ·
@@ -29,6 +29,8 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 - Launch projects through their Windows association and manage engine associations.
 - Sign in through Epic's website; browse the Fab library and redeem keys.
 - Install, verify, modify or remove engines with component selection.
+- Faster installed-file checks with bounded, storage-aware reading and visible
+  fractional progress, files per second, read bytes and the current file.
 - Manage local Vault storage and connect an existing Epic VaultCache.
 - Download and install assets, projects and plugins; inspect update conflicts.
 - Pause downloads, resume through HTTP Range, and restore saved tasks after restart.
@@ -62,11 +64,11 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
-## Download 0.9.0
+## Download 0.9.1
 
-[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.0/UnrealManager-0.9.0-Windows-x64-Setup.exe) ·
-[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.0/UnrealManager-0.9.0-Windows-x64-Portable.zip) ·
-[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.0)
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.1/UnrealManager-0.9.1-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.1/UnrealManager-0.9.1-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.1)
 
 The installer installs for the current user. For portable use, extract the ZIP to
 a writable directory and keep `portable.marker` beside `unreal-manager.exe`.

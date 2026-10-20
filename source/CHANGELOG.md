@@ -1,5 +1,21 @@
 # Change notes
 
+## 0.9.1 — 2026-10-20
+
+Download the installer or portable edition from
+[0.9.1](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.1).
+
+- Streamlined the initial installed-file scan, retaining manifest comparisons,
+  SHA-1 verification and the final check before replacing existing files.
+- Added bounded storage-aware reading, reusable hash buffers and cancellation
+  checks while reading a large file. Unknown or seeking storage uses one reader.
+- Show fractional progress, checked files per second, bytes read and the current
+  file without inventing a total byte count or an estimated completion time.
+- The official Epic redemption page follows the selected application language.
+
+Performance and runtime results belong to the corresponding verification
+reports; no general speed multiplier or 1.0 compatibility claim is implied.
+
 ## 0.9.0 — 2026-10-20
 
 This release has no beta suffix. Download the installer or portable edition from

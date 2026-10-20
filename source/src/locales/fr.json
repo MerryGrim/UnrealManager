@@ -981,5 +981,10 @@
   "Готова к продолжению": "Prêt à reprendre",
   "Завершаем загрузку": "Finalisation du téléchargement",
   "Восстанавливаем загрузку…": "Restauration du téléchargement…",
-  "Очередь требует внимания: продолжите, повторите или уберите первое задание.": "La file nécessite votre attention : reprenez, réessayez ou retirez la première tâche."
+  "Очередь требует внимания: продолжите, повторите или уберите первое задание.": "La file nécessite votre attention : reprenez, réessayez ou retirez la première tâche.",
+  "Скорость проверки": "Vitesse de vérification",
+  "файл/с": "fichiers/s",
+  "Прочитано": "Lu",
+  "Скорость чтения": "Vitesse de lecture",
+  "Текущий файл": "Fichier en cours"
 }

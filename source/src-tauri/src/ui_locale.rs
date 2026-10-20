@@ -1,8 +1,12 @@
 use std::sync::atomic::{AtomicUsize,Ordering};
 static LANGUAGE:AtomicUsize=AtomicUsize::new(1);
+const LANGUAGES:[&str;9]=["ru","en","de","it","es","fr","zh","ja","ko"];
+pub(crate) fn language()->&'static str {
+    LANGUAGES.get(LANGUAGE.load(Ordering::Relaxed)).copied().unwrap_or("en")
+}
 #[tauri::command]
 pub fn set_ui_language(app:tauri::AppHandle,language:String)->Result<(),String>{
-    let index=["ru","en","de","it","es","fr","zh","ja","ko"].iter().position(|x|*x==language).ok_or("Unsupported language")?;
+    let index=LANGUAGES.iter().position(|x|*x==language).ok_or("Unsupported language")?;
     LANGUAGE.store(index,Ordering::Relaxed);crate::window_behavior::refresh_menu(&app);Ok(())
 }
 pub fn caption(key:&str)->&'static str {

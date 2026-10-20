@@ -14,6 +14,7 @@ pub mod install;
 pub mod delete;
 mod manifest;
 mod prerequisites;
+mod scan_storage;
 pub mod resume;
 
 #[derive(Default)]

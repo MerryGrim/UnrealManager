@@ -1,11 +1,13 @@
 use super::*;
 use sha1::{Digest, Sha1};
 use tauri::Manager;
+#[path="verification.rs"]
+mod verification;
 use std::{
     io::Write,
     time::{Duration, Instant},
 };
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
     phase: String,
@@ -19,12 +21,18 @@ pub struct Progress {
     files_total: u64,
     paused: bool,
     can_pause: bool,
+    #[serde(skip_serializing_if="Option::is_none")]
+    current_file: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    files_per_second: Option<f64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    read_bytes_per_second: Option<u64>,
 }
 fn fab_progress(value:&serde_json::Value,engine_network:u64,received:&std::sync::atomic::AtomicU64)->Progress {
     let done=value["done"].as_u64().unwrap_or(0);let total=value["total"].as_u64().unwrap_or(0);
     let highest=received.fetch_max(value["networkBytes"].as_u64().unwrap_or(0),Ordering::SeqCst).max(value["networkBytes"].as_u64().unwrap_or(0));
     let phase=value["phase"].as_str().filter(|p|!p.is_empty()).map(|p|format!("Fab: {p}")).unwrap_or_else(||"Устанавливаем Fab".into());
-    Progress{phase,done,total,percent:done.saturating_mul(100)/total.max(1),network_bytes:engine_network.saturating_add(highest),processed_bytes:value["processedBytes"].as_u64().unwrap_or(done),total_bytes:value["totalBytes"].as_u64().unwrap_or(total),files_done:value["filesDone"].as_u64().unwrap_or(0),files_total:value["filesTotal"].as_u64().unwrap_or(0),paused:false,can_pause:false}
+    Progress{phase,done,total,percent:done.saturating_mul(100)/total.max(1),network_bytes:engine_network.saturating_add(highest),processed_bytes:value["processedBytes"].as_u64().unwrap_or(done),total_bytes:value["totalBytes"].as_u64().unwrap_or(total),files_done:value["filesDone"].as_u64().unwrap_or(0),files_total:value["filesTotal"].as_u64().unwrap_or(0),paused:false,can_pause:false,..Default::default()}
 }
 pub(crate) struct Busy<'a>(pub(crate) &'a AtomicBool);
 struct PauseScope<'a>(&'a EngineState);
@@ -273,79 +281,9 @@ pub(super) fn stage_root(plan: &Plan) -> Result<PathBuf, String> {
     no_links(&stage)?;
     Ok(stage)
 }
-fn operations(
-    plan: &Plan,
-    cancel: &AtomicBool,
-    mut progress: impl FnMut(u64, u64),
-) -> Result<Vec<Operation>, String> {
-    let mut last = Instant::now();
-    let root = target(&plan.info.path)?;
-    let mut operations = Vec::new();
-    for (i, (name, f)) in plan.files.iter().enumerate() {
-        if cancel.load(Ordering::SeqCst) {
-            return Err("Проверка остановлена".into());
-        }
-        if last.elapsed() > Duration::from_millis(250) {
-            progress(i as u64, plan.files.len() as u64);
-            last = Instant::now();
-        }
-        let p = root.join(relative(name)?);
-        if plan
-            .old
-            .get(name)
-            .is_some_and(|old| old.file_hash == f.file_hash)
-            && p.is_file()
-        {
-            continue;
-        }
-        no_links(&p)?;
-        let hash = if p.exists() {
-            Some(hash_file(&p)?)
-        } else {
-            None
-        };
-        if hash
-            .as_ref()
-            .is_some_and(|h| *h == f.file_hash.to_lowercase())
-        {
-            continue;
-        }
-        if let Some(ref hash) = hash {
-            if plan
-                .old
-                .get(name)
-                .is_none_or(|o| o.file_hash.to_lowercase() != *hash)
-            {
-                return Err(format!(
-                    "Локальный файл изменён: {name}. Обновление остановлено, файл сохранён."
-                ));
-            }
-        }
-        operations.push(Operation {
-            name: name.clone(),
-            old_hash: hash,
-            new_hash: Some(f.file_hash.to_lowercase()),
-        });
-    }
-    for (name, f) in &plan.old {
-        if plan.files.contains_key(name) || (!plan.remove_unselected && plan.tags.contains_key(name)) {
-            continue;
-        }
-        let p = root.join(relative(name)?);
-        no_links(&p)?;
-        if p.exists() {
-            let hash = hash_file(&p)?;
-            if hash != f.file_hash.to_lowercase() {
-                return Err(format!("Удалённый автором файл изменён локально: {name}"));
-            }
-            operations.push(Operation {
-                name: name.clone(),
-                old_hash: Some(hash),
-                new_hash: None,
-            });
-        }
-    }
-    Ok(operations)
+fn operations(plan:&Plan,cancel:&AtomicBool,progress:impl FnMut(verification::Snapshot))->Result<Vec<Operation>,String>{
+    let workers=super::scan_storage::workers_hint(&target(&plan.info.path)?);
+    verification::operations(plan,cancel,workers,progress)
 }
 fn verify_current(root: &Path, op: &Operation) -> Result<(), String> {
     let path = root.join(relative(&op.name)?);
@@ -742,11 +680,11 @@ fn commit_progress(phase:&str,done:u64,total:u64,network:u64,prefix:&[u64],total
     let (done,total)=if registration{(0,0)}else{(done,total)};
     Progress{phase:phase.into(),done,total,percent:done.saturating_mul(100)/total.max(1),network_bytes:network,
         processed_bytes:if can_pause{prefix.get(done as usize).copied().unwrap_or(total_bytes)}else{0},total_bytes:if can_pause{total_bytes}else{0},
-        files_done:done,files_total:total,paused:can_pause&&paused,can_pause}
+        files_done:done,files_total:total,paused:can_pause&&paused,can_pause,..Default::default()}
 }
 fn validation_progress(phase:&str,done:u64,total:u64,bytes:u64,total_bytes:u64,paused:bool)->Progress{
     Progress{phase:phase.into(),done,total,percent:done.saturating_mul(100)/total.max(1),network_bytes:0,
-        processed_bytes:bytes,total_bytes,files_done:done,files_total:total,paused,can_pause:true}
+        processed_bytes:bytes,total_bytes,files_done:done,files_total:total,paused,can_pause:true,..Default::default()}
 }
 fn validation_checkpoint(cancel:&AtomicBool,paused:&AtomicBool,suspend:&AtomicBool,mut report:impl FnMut())->Result<(),String>{
     loop{
@@ -819,7 +757,7 @@ pub async fn engine_install(
     let _installation_lock = lock_installation(&target(&plan.info.path)?)?;
     let stage = stage_root(&plan)?;
     plan.resume_stage=Some(stage.clone());
-    let _=on_progress.send(Progress{phase:"Сохраняем задачу установки".into(),done:0,total:0,percent:0,network_bytes:0,processed_bytes:0,total_bytes:0,files_done:0,files_total:0,paused:false,can_pause:false});
+    let _=on_progress.send(Progress{phase:"Сохраняем задачу установки".into(),done:0,total:0,percent:0,network_bytes:0,processed_bytes:0,total_bytes:0,files_done:0,files_total:0,paused:false,can_pause:false,..Default::default()});
     plan=tauri::async_runtime::spawn_blocking(move||{super::resume::save(&plan)?;Ok::<_,String>(plan)}).await.map_err(|_|"Сохранение установки прервано")??;
     state.resumable.store(true,Ordering::SeqCst);
     // Probe the optional global record before download without changing it.
@@ -836,8 +774,9 @@ pub async fn engine_install(
             ));
         }
     }
+    let progress_task_id=plan.info.id.clone();
     let emit = |phase: &str, done: u64, total: u64, network_bytes: u64| {
-        super::resume::report(&plan.info.id,phase,done,total);
+        super::resume::report(&progress_task_id,phase,done,total);
         let _ = on_progress.send(Progress {
             phase: phase.into(),
             done,
@@ -851,30 +790,31 @@ pub async fn engine_install(
             processed_bytes: if phase=="Собираем и проверяем файлы" {done}else{0},
             total_bytes: if phase=="Собираем и проверяем файлы" {total}else{0},
             files_done: if phase==TASK_VALIDATION_PHASE{done}else{0}, files_total: if phase==TASK_VALIDATION_PHASE{total}else{0},
-            paused:state.paused.load(Ordering::SeqCst),can_pause:state.pause_available.load(Ordering::SeqCst),
+            paused:state.paused.load(Ordering::SeqCst),can_pause:state.pause_available.load(Ordering::SeqCst),..Default::default()
         });
     };
     emit(TASK_VALIDATION_PHASE, 0, 0, 0);
     let saved_ops=super::resume::load_operations(&stage)?.map(|ops|ops.into_iter().filter(|o|!o.name.starts_with(".egstore/")).collect::<Vec<_>>());
     let ops = if let Some(ops)=saved_ops {ops} else {
         emit("Проверяем установленные файлы",0,0,0);
-        let copy = plan.clone();
         let cancel = state.cancel.clone();
         let channel = on_progress.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-        operations(&copy, &cancel, |done, total| {
+        let (returned_plan,result)=tauri::async_runtime::spawn_blocking(move || {
+        let result=operations(&plan, &cancel, |snapshot| {
             let _ = channel.send(Progress {
                 phase: "Проверяем установленные файлы".into(),
-                done,
-                total,
-                percent: done * 100 / total.max(1),
+                done:snapshot.done,
+                total:snapshot.total,
+                percent:snapshot.done.saturating_mul(100)/snapshot.total.max(1),
                 network_bytes: 0,
-                processed_bytes: 0,total_bytes: 0,files_done:done,files_total:total,paused:false,can_pause:false,
+                processed_bytes:snapshot.processed_bytes,total_bytes:0,files_done:snapshot.done,files_total:snapshot.total,paused:false,can_pause:false,
+                current_file:snapshot.current_file,files_per_second:Some(snapshot.files_per_second),read_bytes_per_second:Some(snapshot.read_bytes_per_second),
             });
-        })
+        });
+        (plan,result)
     })
     .await
-    .map_err(|_| "Проверка прервана")??};
+    .map_err(|_| "Проверка прервана")?;plan=returned_plan;result?};
     super::resume::save_operations(&stage,&ops)?;
     cancelled(&state)?;
     let bytes: u64 = ops
@@ -965,7 +905,7 @@ pub async fn engine_install(
     let assembly_plan=plan.clone();let assembly_stage=stage.clone();let assembly_ops=ops.clone();let assembly_cancel=state.cancel.clone();let assembly_channel=on_progress.clone();let assembly_pause=state.paused.clone();
     tauri::async_runtime::spawn_blocking(move||assemble_files_controlled(&assembly_plan,&assembly_stage,&assembly_ops,&assembly_cancel,Some(&assembly_pause),|done,files_done,files_total|{
         super::resume::report(&assembly_id,"Собираем и проверяем файлы",done,bytes);
-        let _=assembly_channel.send(Progress{phase:"Собираем и проверяем файлы".into(),done,total:bytes,percent:done*100/bytes.max(1),network_bytes:network,processed_bytes:done,total_bytes:bytes,files_done,files_total,paused:assembly_pause.load(Ordering::SeqCst),can_pause:true});
+        let _=assembly_channel.send(Progress{phase:"Собираем и проверяем файлы".into(),done,total:bytes,percent:done*100/bytes.max(1),network_bytes:network,processed_bytes:done,total_bytes:bytes,files_done,files_total,paused:assembly_pause.load(Ordering::SeqCst),can_pause:true,..Default::default()});
     })).await.map_err(|_|"Сборка прервана")??;}
     cancelled(&state)?;
     emit("Устанавливаем движок", 0, ops.len() as u64, network);
@@ -1021,7 +961,7 @@ pub async fn engine_install(
     let prerequisite_channel=on_progress.clone();let prerequisite_suspend=state.suspend.clone();
     let prerequisites=tauri::async_runtime::spawn_blocking(move||super::prerequisites::install(&prerequisite_plan,Some(&prerequisite_suspend),|phase,done,total|{
         let waiting=phase=="Ожидаем завершения установки системных компонентов";
-        let _=prerequisite_channel.send(Progress{phase:phase.into(),done:if waiting{0}else{done},total:if waiting{0}else{total},percent:if waiting{0}else{done.saturating_mul(100)/total.max(1)},network_bytes:network,processed_bytes:0,total_bytes:0,files_done:done,files_total:total,paused:false,can_pause:false});
+        let _=prerequisite_channel.send(Progress{phase:phase.into(),done:if waiting{0}else{done},total:if waiting{0}else{total},percent:if waiting{0}else{done.saturating_mul(100)/total.max(1)},network_bytes:network,processed_bytes:0,total_bytes:0,files_done:done,files_total:total,paused:false,can_pause:false,..Default::default()});
     })).await.map_err(|_|"Проверка системных компонентов прервана")?;
     super::resume::check_suspend(Some(&state.suspend))?;
     emit("Очищаем временные файлы", 0, 0, network);
@@ -1657,13 +1597,13 @@ mod transaction_tests {
         plan.tags.insert(missing.filename.clone(), vec!["symbols".into()]);
         plan.files.insert(missing.filename.clone(), missing);
         plan.remove_unselected = true;
-        let ops = operations(&plan, &AtomicBool::new(false), |_, _| {}).unwrap();
+        let ops = operations(&plan, &AtomicBool::new(false), |_| {}).unwrap();
         assert_eq!(ops.len(), 2);
         assert!(ops.iter().any(|o| o.name == "Engine/debug.pdb" && o.old_hash.is_none() && o.new_hash.is_some()));
         assert!(ops.iter().any(|o| o.name == "Engine/a" && o.new_hash.is_none()));
         assert!(root.join("Engine/Plugins/UserPlugin/x").exists());
         fs::write(root.join("Engine/a"), b"user edited").unwrap();
-        assert!(operations(&plan, &AtomicBool::new(false), |_, _| {}).is_err());
+        assert!(operations(&plan, &AtomicBool::new(false), |_| {}).is_err());
         fs::remove_dir_all(base).unwrap();
     }
     #[test]
