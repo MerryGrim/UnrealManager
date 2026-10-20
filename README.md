@@ -4,7 +4,8 @@ An independent, lightweight Unreal Engine manager for **Windows x64**.
 Manage engines, projects, Fab assets, Vault content and plugins in one desktop
 application, without a game storefront.
 
-**Current source version: 0.2.0-beta.8.**
+**Version 0.9.0.** Download the installer or portable edition, or build from source.
+See the [0.9.0 change notes](source/CHANGELOG.md).
 
 [Website & screenshots](https://merrygrim.github.io/UnrealManager/) ·
 [Build instructions](source/README.md) · [Verification](verification/README.md) ·
@@ -32,19 +33,23 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 - Download and install assets, projects and plugins; inspect update conflicts.
 - Pause downloads, resume through HTTP Range, and restore saved tasks after restart.
   Continuing a saved task is initiated by the user.
+- Queue asset downloads to Vault with one active transfer. Reorder waiting items
+  by dragging or using the keyboard controls. Restored queues wait for an explicit
+  start; project copying remains a separate action.
 - Download history, tray behavior, speed and storage settings, and nine interface
   languages: Russian, English, German, Italian, Spanish, French, Simplified Chinese,
   Japanese and Korean.
 - Settings grouped into Interface, Downloads, Storage, Projects and App updates.
 
-This is beta software. UI regression checks use demonstration data and do not
-establish that a real Epic/Fab transfer or full engine installation has passed.
+Real-account checks covered Fab downloads, pause/restart/resume, queued downloads,
+priority ordering, project copying, engine installation and Editor launch, and
+removal of the test installation. These checks cover specific builds and a tested
+Windows environment; clean-Windows setup and every Epic/Fab scenario remain
+outside that acceptance scope. Website screenshots use fictional demonstration data.
 GitHub application updates support installed and portable editions. **Settings → App updates** offers
 stable/beta channels, a startup check at most daily, manual checks, verified downloads
 and apply with restart. No update service or permanent helper is installed.
-See [updater and release details](source/UPDATES.md). Beta.7 introduced this updater
-and can receive beta.8 through it. Beta.6 requires one manual upgrade to beta.7
-or newer before application updates are available.
+See [updater and release details](source/UPDATES.md).
 
 ## Lightweight rendering
 
@@ -57,11 +62,11 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
-## Download beta.8
+## Download 0.9.0
 
-[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.8/UnrealManager-0.2.0-beta.8-Windows-x64-Setup.exe) ·
-[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.2.0-beta.8/UnrealManager-0.2.0-beta.8-Windows-x64-Portable.zip) ·
-[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.2.0-beta.8)
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.0/UnrealManager-0.9.0-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.0/UnrealManager-0.9.0-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.0)
 
 The installer installs for the current user. For portable use, extract the ZIP to
 a writable directory and keep `portable.marker` beside `unreal-manager.exe`.
@@ -84,7 +89,7 @@ cd UnrealManager/source
 .\PACKAGE-PORTABLE.ps1
 ```
 
-Outputs go to `Releases/0.2.0-beta.8` and `source/src-tauri/target`. The portable
+Outputs go to `Releases/0.9.0` and `source/src-tauri/target`. The portable
 package stores its data beside the executable in `Data` when `portable.marker`
 is present. See [source/README.md](source/README.md) for environment configuration,
 installer prerequisites and commands. Inno Setup 7 builds the installable version;

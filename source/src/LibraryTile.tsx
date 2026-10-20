@@ -104,7 +104,7 @@ export function LibraryTile({ item, onOpen, busy, progress, downloaded, packageI
     const Icon = item.kind === 'Project' ? FolderPlus : item.kind === 'Plugin' ? PlugZap : PackagePlus;
     const current = progress?.id === item.id ? progress : null;
     return <>
-   <button ref={tile} className="fab-tile" disabled={busy && !progress} onDoubleClick={() => onOpen(item)} onClick={e => { if (e.detail === 0)
+   <button ref={tile} className="fab-tile" onDoubleClick={() => onOpen(item)} onClick={e => { if (e.detail === 0)
         onOpen(item); }} aria-label={tr(`Открыть ${item.title}`)} aria-haspopup="menu" onContextMenu={e => { e.preventDefault(); show(e.clientX, e.clientY); }} onKeyDown={e => { if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
         e.preventDefault();
         const r = e.currentTarget.getBoundingClientRect();
@@ -126,7 +126,7 @@ export function LibraryTile({ item, onOpen, busy, progress, downloaded, packageI
                     const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
                     buttons[e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1 : (i + (e.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
                 }
-            }}><button role="menuitem" onClick={() => { close(); setInformation(true); }}><Info size={17}/>{tr("Информация")}</button>{resumeId&&onResume&&<button role="menuitem" disabled={busy} onClick={()=>{close();onResume(resumeId);}}><Play size={17}/>{tr('Продолжить загрузку')}</button>}{tr(item.kind !== 'Plugin' && <button role="menuitem" disabled={busy} onClick={() => { close(); onOpen(item, true); }}><Icon size={17}/>{tr(materialAction(item.kind))}</button>)}<button role="menuitem" disabled={busy} onClick={() => { close(); onOpen(item, false, true); }}><Download size={17}/>{tr("Скачать в хранилище")}</button><button role="menuitem" onClick={() => void reveal()}><FolderOpen size={17}/>{tr("Открыть расположение")}</button>{tr(downloaded && <button role="menuitem" className="danger-text" disabled={busy || deleting} onClick={() => void askDelete()}><Trash2 size={17}/>{tr("Удалить из хранилища")}</button>)}</div>, document.body))}
+            }}><button role="menuitem" onClick={() => { close(); setInformation(true); }}><Info size={17}/>{tr("Информация")}</button>{resumeId&&onResume&&<button role="menuitem" disabled={busy} onClick={()=>{close();onResume(resumeId);}}><Play size={17}/>{tr('Продолжить загрузку')}</button>}{tr(item.kind !== 'Plugin' && <button role="menuitem" disabled={busy} onClick={() => { close(); onOpen(item, true); }}><Icon size={17}/>{tr(materialAction(item.kind))}</button>)}<button role="menuitem" onClick={() => { close(); onOpen(item, false, true); }}><Download size={17}/>{tr("Скачать в хранилище")}</button><button role="menuitem" onClick={() => void reveal()}><FolderOpen size={17}/>{tr("Открыть расположение")}</button>{tr(downloaded && <button role="menuitem" className="danger-text" disabled={busy || deleting} onClick={() => void askDelete()}><Trash2 size={17}/>{tr("Удалить из хранилища")}</button>)}</div>, document.body))}
    {tr(information && <FabDetails item={item} busy={busy} onClose={() => { setInformation(false); tile.current?.focus(); }} onDownload={onOpen}/>)}
    {tr(deletion && createPortal(<div className="modal-backdrop" onKeyDown={e => { if (e.key === 'Escape' && !deleting) {
         setDeletion(null);

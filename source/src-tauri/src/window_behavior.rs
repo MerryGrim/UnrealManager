@@ -31,6 +31,7 @@ pub async fn window_close_action(app:tauri::AppHandle,action:String,remember:boo
     if action=="tray" {app.get_webview_window("main").ok_or("Main window missing")?.hide().map_err(|e|e.to_string())?;}
     else {
         if EXITING.swap(true,Ordering::SeqCst){return Ok(());}
+        crate::vault_queue::stop_dispatch(&app);
         let _=crate::epic_login::epic_cancel_login(app.clone());
         stop_operations(&app.state::<crate::engine::EngineState>(),&app.state::<crate::vault::VaultState>()).await;
         app.exit(0);
@@ -45,6 +46,7 @@ async fn stop_operations(engine:&crate::engine::EngineState,vault:&crate::vault:
 }
 pub(crate) async fn prepare_update(app:&tauri::AppHandle)->Result<(),String> {
     if EXITING.swap(true,Ordering::SeqCst) { return Err("Программа уже завершает работу.".into()); }
+    crate::vault_queue::stop_dispatch(app);
     let stop=async {
         crate::epic_login::epic_cancel_login(app.clone())?;
         stop_operations(&app.state::<crate::engine::EngineState>(),&app.state::<crate::vault::VaultState>()).await;
@@ -53,12 +55,13 @@ pub(crate) async fn prepare_update(app:&tauri::AppHandle)->Result<(),String> {
     let result=tokio::time::timeout(std::time::Duration::from_secs(120),stop).await;
     if !matches!(result,Ok(Ok(()))) {
         EXITING.store(false,Ordering::SeqCst);
+        crate::vault_queue::resume_dispatch(app);
         if let Ok(Err(error))=result { return Err(error); }
         return Err("Не удалось безопасно остановить операции. Повторите обновление после их завершения.".into());
     }
     Ok(())
 }
-pub(crate) fn abort_update() { EXITING.store(false,Ordering::SeqCst); }
+pub(crate) fn abort_update(app:&tauri::AppHandle) { EXITING.store(false,Ordering::SeqCst);crate::vault_queue::resume_dispatch(app); }
 pub fn request_close(app:&tauri::AppHandle) {
     if EXITING.load(Ordering::SeqCst){return;}
     let behavior=close_behavior_get();

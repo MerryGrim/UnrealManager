@@ -4,6 +4,23 @@ import logo from './assets/um-logo.svg';
 import {EnginePauseButton} from './EnginePauseButton';
 export type EngineTransfer = {phase:string;done:number;total:number;percent:number;networkBytes:number;bytesPerSecond:number;title:string;processedBytes?:number;totalBytes?:number;filesDone?:number;filesTotal?:number;processingBytesPerSecond?:number;paused?:boolean;canPause?:boolean};
 export const transferSize=(bytes:number)=>`${(bytes/1048576).toLocaleString(getLocale(),{maximumFractionDigits:1})} ${tr('МБ')}`;
+export const formatEnginePhase=(phase:string)=>phase.startsWith('Fab: ')?`Fab: ${tr(phase.slice(5))}`:tr(phase);
+const countLabels:Record<string,string>={
+ 'Проверяем сохранённую задачу':'Записи',
+ 'Проверяем наличие блоков':'Блоки',
+ 'Проверяем сохранённые блоки':'Блоки',
+ 'Считаем временные файлы':'Объекты',
+ 'Удаляем временные файлы':'Объекты',
+ 'Завершаем очистку':'Объекты',
+ 'Считаем файлы движка':'Объекты',
+ 'Удаляем файлы движка':'Объекты',
+ 'Удаляем записи движка':'Объекты',
+ 'Проверяем системные компоненты':'Компоненты',
+ 'Ожидаем завершения установки системных компонентов':'Компоненты',
+ 'Устанавливаем системные компоненты':'Компоненты',
+};
+export const engineCountLabel=(phase:string)=>countLabels[phase]||'Файлы';
+export const isEngineObjectInventory=(phase:string)=>phase==='Считаем временные файлы'||phase==='Считаем файлы движка';
 export function EngineTransferCard({progress,onOpen}:{progress:EngineTransfer;onOpen:()=>void}){
- return <article className="transfer-card engine-transfer-card"><div className="transfer-main"><div className="transfer-art"><img src={logo} alt=""/></div><div className="transfer-info"><h3>{progress.title}</h3><p>{tr(progress.paused?"На паузе":progress.phase)}</p><div className="transfer-meter"><progress aria-label={tr('Прогресс загрузки')} max={100} value={progress.total?progress.percent:undefined}/><strong>{progress.total?`${progress.percent}%`:'—'}</strong></div></div><div className="transfer-buttons"><EnginePauseButton paused={progress.paused} canPause={progress.canPause}/><button onClick={onOpen}>{tr('Открыть установку движка')}<ChevronRight size={17}/></button></div></div><div className="transfer-metrics"><div><small>{tr('Скорость сети')}</small><b>{transferSize(progress.bytesPerSecond)}{tr('/с')}</b></div><div><small>{tr('Получено по сети')}</small><b>{transferSize(progress.networkBytes)}</b></div><div><small>{tr('Состояние')}</small><b>{tr(progress.paused?"На паузе":progress.phase)}</b></div>{!!progress.filesTotal&&<div><small>{tr('Файлы')}</small><b>{progress.filesDone} / {progress.filesTotal}</b></div>}{!!progress.totalBytes&&<><div><small>{tr('Обработано')}</small><b>{transferSize(progress.processedBytes||0)} / {transferSize(progress.totalBytes)}</b></div><div><small>{tr('Скорость обработки')}</small><b>{transferSize(progress.processingBytesPerSecond||0)}{tr('/с')}</b></div></>}</div></article>;
+ return <article className="transfer-card engine-transfer-card"><div className="transfer-main"><div className="transfer-art"><img src={logo} alt=""/></div><div className="transfer-info"><h3>{progress.title}</h3><p>{tr(progress.paused?"На паузе":formatEnginePhase(progress.phase))}</p><div className="transfer-meter"><progress aria-label={tr('Прогресс загрузки')} max={100} value={progress.total?progress.percent:undefined}/><strong>{progress.total?`${progress.percent}%`:'—'}</strong></div></div><div className="transfer-buttons"><EnginePauseButton paused={progress.paused} canPause={progress.canPause}/><button onClick={onOpen}>{tr('Открыть установку движка')}<ChevronRight size={17}/></button></div></div><div className="transfer-metrics"><div><small>{tr('Скорость сети')}</small><b>{transferSize(progress.bytesPerSecond)}{tr('/с')}</b></div><div><small>{tr('Получено по сети')}</small><b>{transferSize(progress.networkBytes)}</b></div><div><small>{tr('Состояние')}</small><b>{tr(progress.paused?"На паузе":formatEnginePhase(progress.phase))}</b></div>{!!progress.filesTotal&&<div><small>{tr(engineCountLabel(progress.phase))}</small><b>{progress.filesDone} / {progress.filesTotal}</b></div>}{!progress.filesTotal&&isEngineObjectInventory(progress.phase)&&<div><small>{tr('Найдено объектов')}</small><b>{progress.filesDone||0}</b></div>}{!!progress.totalBytes&&<><div><small>{tr('Обработано')}</small><b>{transferSize(progress.processedBytes||0)} / {transferSize(progress.totalBytes)}</b></div><div><small>{tr('Скорость обработки')}</small><b>{transferSize(progress.processingBytesPerSecond||0)}{tr('/с')}</b></div></>}</div></article>;
 }

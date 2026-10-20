@@ -318,7 +318,7 @@ pub async fn app_update_apply(app: tauri::AppHandle, version: String) -> Result<
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }.await;
-    if result.is_err() { APPLYING.store(false,Ordering::SeqCst); crate::window_behavior::abort_update(); }
+    if result.is_err() { APPLYING.store(false,Ordering::SeqCst); crate::window_behavior::abort_update(&app); }
     result
 }
 

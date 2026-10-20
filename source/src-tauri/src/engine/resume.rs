@@ -91,6 +91,10 @@ pub async fn engine_resume_forget(state:tauri::State<'_,EngineState>,id:String,e
 fn list_at(base:&Path)->Vec<Task>{
  if no_links(base).is_err(){return vec![];}fs::read_dir(base).into_iter().flatten().flatten().filter_map(|e|{let p=e.path();if p.extension()?.to_str()?!="json"||no_links(&p).is_err(){return None;}let t:Task=serde_json::from_slice(&fs::read(&p).ok()?).ok()?;if p.file_stem()?.to_str()?!=t.id||task_path(base,&t.id,"zlib").ok()?.is_file()==false{return None;}let root=target(&t.path).ok()?;if t.stage.parent()!=root.parent()||no_links(&t.stage).is_err(){return None;}Some(t)}).collect()
 }
+fn resume_vault_lease(vault:&crate::vault::VaultState)->Result<super::install::Busy<'_>,String>{
+ vault.active.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).map_err(|_|"Дождитесь текущей операции с хранилищем")?;
+ Ok(super::install::Busy(&vault.active))
+}
 pub(super) fn load_at(base:&Path,id:&str)->Result<Plan,String>{
  let task:Task=serde_json::from_slice(&fs::read(task_path(base,id,"json")?).map_err(io)?).map_err(|_|"Повреждена задача установки")?;
  let mut plan:Plan=read_compressed(&task_path(base,id,"zlib")?)?;
@@ -98,10 +102,11 @@ pub(super) fn load_at(base:&Path,id:&str)->Result<Plan,String>{
  validate_stage(&plan,&task.stage)?;plan.resume_stage=Some(task.stage);Ok(plan)
 }
 #[tauri::command]
-pub async fn engine_resume_prepare(state:tauri::State<'_,EngineState>,id:String)->Result<Preview,String>{
+pub async fn engine_resume_prepare(state:tauri::State<'_,EngineState>,vault:tauri::State<'_,crate::vault::VaultState>,id:String)->Result<Preview,String>{
     let _update_operation=crate::app_updates::operation()?;
  if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции".into());}
  let _busy=super::install::Busy(&state.active);
+ let _vault=resume_vault_lease(&vault)?;
  let mut plan=tauri::async_runtime::spawn_blocking(move||load_at(&directory(),&id)).await.map_err(|e|format!("Не удалось прочитать сохранённую задачу: {e}"))??;
  let mut manifest=parse(&plan.raw)?;if manifest.app_name_string!=plan.info.app_name||manifest.build_version_string!=plan.info.build{return Err("Манифест не соответствует задаче".into());}
  manifest.custom_fields.get_or_insert_with(Default::default).insert("SourceURL".into(),plan.source_base.trim_end_matches('/').into());
@@ -112,6 +117,10 @@ pub async fn engine_resume_prepare(state:tauri::State<'_,EngineState>,id:String)
 }
 #[cfg(test)]mod tests{
  use super::*;
+ #[test]fn saved_and_legacy_preparation_share_the_vault_heavy_operation_lease(){
+  let vault=crate::vault::VaultState::default();vault.active.store(true,Ordering::SeqCst);assert!(resume_vault_lease(&vault).is_err());assert!(vault.active.load(Ordering::SeqCst));vault.active.store(false,Ordering::SeqCst);
+  let saved=resume_vault_lease(&vault).unwrap();assert!(vault.active.load(Ordering::SeqCst));assert!(resume_vault_lease(&vault).is_err());drop(saved);assert!(!vault.active.load(Ordering::SeqCst));let legacy=resume_vault_lease(&vault).unwrap();drop(legacy);assert!(!vault.active.load(Ordering::SeqCst));
+ }
  #[test]fn compressed_snapshot_is_atomic_and_round_trips(){let base=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());let p=base.join("snapshot.z");write_compressed(&p,&vec![1u32,2,3]).unwrap();assert_eq!(read_compressed::<Vec<u32>>(&p).unwrap(),vec![1,2,3]);assert_eq!(fs::read_dir(&base).unwrap().count(),1);fs::remove_dir_all(base).unwrap();}
  #[test]fn task_ids_cannot_escape_settings(){assert!(task_path(Path::new("X:/Fixture/Test"),"../file","json").is_err());}
  #[test]fn real_hash_and_numeric_chunk_offsets_round_trip_without_epic_blob_decoder(){
@@ -123,11 +132,12 @@ pub async fn engine_resume_prepare(state:tauri::State<'_,EngineState>,id:String)
 }
 
 #[tauri::command]
-pub async fn engine_resume_legacy_prepare(state:tauri::State<'_,EngineState>,path:String)->Result<Preview,String>{
+pub async fn engine_resume_legacy_prepare(state:tauri::State<'_,EngineState>,vault:tauri::State<'_,crate::vault::VaultState>,path:String)->Result<Preview,String>{
     let _update_operation=crate::app_updates::operation()?;
- if let Some(task)=engine_resume_tasks().into_iter().find(|t|same_installation_path(&t.path,&path)){return engine_resume_prepare(state,task.id).await;}
+ if let Some(task)=engine_resume_tasks().into_iter().find(|t|same_installation_path(&t.path,&path)){return engine_resume_prepare(state,vault,task.id).await;}
  if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции".into());}
  let _busy=super::install::Busy(&state.active);
+ let _vault=resume_vault_lease(&vault)?;
  let plan=tauri::async_runtime::spawn_blocking(move||{let plan=super::install::legacy_plan(&path)?;save(&plan)?;Ok::<_,String>(plan)}).await.map_err(|_|"Чтение сохранённой установки прервано")??;
  let info=plan.info.clone();*state.plan.lock().map_err(|_|"Ошибка состояния")?=Some(plan);Ok(info)
 }

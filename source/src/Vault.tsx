@@ -10,6 +10,8 @@ import { materialAction } from './LibraryTile';
 import { engineVersion, materialVersions } from './lib/materialVersions';
 import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
+import {emptyVaultQueue, type VaultQueueSnapshot} from './VaultQueue';
 import { Download, FolderOpen, PackageOpen, RefreshCw, X } from 'lucide-react';
 import { FabCover, type FabItem } from './EpicLibrary';
 import type { EngineInstall, UnrealProject } from './lib/backend';
@@ -64,6 +66,10 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         setUpdateRequest({ item, newId }); };
     const [updateTransfers, setUpdateTransfers] = useState<Record<string, UpdateTransfer>>({});
     const updateLock = useRef(false);
+    const [queue, setQueue] = useState<VaultQueueSnapshot>(emptyVaultQueue);
+    const queueRef = useRef(emptyVaultQueue);
+    const [queueBusy, setQueueBusy] = useState(false), [queueError, setQueueError] = useState(''), [queueVaultPath, setQueueVaultPath] = useState('');
+    const queueLock = useRef(false), draftGeneration = useRef(0);
     const [items, setItems] = useState<VaultPackage[]>([]);
     const[pendingDownloads,setPendingDownloads]=useState<VaultTask[]>([]);
     const[restoringDownload,setRestoringDownload]=useState(false);
@@ -98,7 +104,8 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     const [artifact, setArtifact] = useState('');
     const [projectEngine, setProjectEngine] = useState('');
     const [plan, setPlan] = useState<VaultPackage | null>(null);
-    const [busy, setBusy] = useState(false);
+    const [manualBusy, setBusy] = useState(false);
+    const busy = manualBusy || !!queue.activeId || !!engineDownload;
     const [progress, setProgress] = useState<Progress | null>(null);
     const [error, setError] = useState('');
     const [message, setMessage] = useState('');
@@ -121,14 +128,24 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     } | null>(null);
     const [installing, setInstalling] = useState(false);
     const [picking, setPicking] = useState(false);
+    const discardPrepared = () => {
+        draftGeneration.current++;
+        if (!activeDownload && !queue.activeId) void invoke('vault_discard').catch(() => {});
+        setPlan(null);
+        setPreview(null);
+    };
+    const closeSelected = () => {
+        if (!activeDownload && !queue.activeId) discardPrepared();
+        setSelected(null);
+    };
     useEffect(() => {
         const close = (event: KeyboardEvent) => { if (event.key === 'Escape') {
-            setSelected(null);
+            closeSelected();
             setInstallItem(null);
         } };
         window.addEventListener('keydown', close);
         return () => window.removeEventListener('keydown', close);
-    }, []);
+    }, [activeDownload, queue.activeId, plan]);
     const browse = async (kind: string, title: string) => {
         setPicking(true);
         setError('');
@@ -156,6 +173,36 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     catch (e) {
         setError(String(e));
     } };
+    const acceptQueue = (next: VaultQueueSnapshot) => {
+        if (!next || next.revision < queueRef.current.revision) return;
+        const metadataChanged = next.revision !== queueRef.current.revision;
+        queueRef.current = {...next, completed: null};
+        setQueue(queueRef.current);
+        if (next.completed) {
+            setHistory(current => recordDownload(current, next.completed!));
+            void refresh();
+            void refreshPending();
+        }
+        else if (metadataChanged && next.items.some(item => item.packageId && (item.status === 'interrupted' || item.status === 'needsAction'))) void refreshPending();
+    };
+    useEffect(() => {
+        let alive = true;
+        const accept = (next: VaultQueueSnapshot) => {if (alive) acceptQueue(next);};
+        const subscription = listen<VaultQueueSnapshot>('vault-queue-changed', event => accept(event.payload));
+        void subscription.catch(e => {if (alive) setQueueError(String(e));});
+        void invoke<VaultQueueSnapshot>('vault_queue_get').then(accept).catch(e => {if (alive) setQueueError(String(e));});
+        return () => {alive = false; void subscription.then(unlisten => unlisten()).catch(() => {});};
+    }, []);
+    const queueCommand = async (name: string, args: Record<string, unknown>) => {
+        if (queueLock.current) return false;
+        queueLock.current = true; setQueueBusy(true); setQueueError('');
+        try {acceptQueue(await invoke<VaultQueueSnapshot>(name, args)); return true;}
+        catch (e) {
+            setQueueError(String(e));
+            try {acceptQueue(await invoke<VaultQueueSnapshot>('vault_queue_get'));} catch {}
+            return false;
+        } finally {queueLock.current = false; setQueueBusy(false);}
+    };
     useEffect(() => { void refresh();void refreshPending(); }, []);
     const syncEpic = async () => {
         setBusy(true);
@@ -183,9 +230,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         }
     };
     const select = (item: FabItem, installNow = false, downloadOnly = false) => {
-        if (busy) {
-            if (!activeDownload)
-                return;
+        if (activeDownload && activeDownload.item.id === item.id) {
             setSelected(item);
             setInstallItem(null);
             const same = activeDownload.item.id === item.id;
@@ -198,6 +243,8 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
             setPreview(null);
             return;
         }
+        if (!busy) discardPrepared();
+        draftGeneration.current++;
         setSelected(item);
         setProjectEngine('');
         setProjectName(suggestedName(item.title));
@@ -205,8 +252,10 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         setPlan(null);
         setError('');
         setMessage('');
-        setProgress(null);
-        setMode(item.kind === 'Plugin' || downloadOnly ? 'vault' : installNow ? 'install' : null);
+        if (!busy) setProgress(null);
+        setQueueError('');
+        void invoke<{vaultPath: string}>('vault_storage_get').then(options => {if (options) setQueueVaultPath(options.vaultPath);}).catch(() => {});
+        setMode(item.kind === 'Plugin' || downloadOnly || busy ? 'vault' : installNow ? 'install' : null);
         setTarget('');
         setPreview(null);
         setAcceptVersion(false);
@@ -250,13 +299,15 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     const versionChoices = materialVersions(selected?.versions || []);
     const chosenVersion = versionChoices.find(v => v.key === artifact);
     const prepare = async () => {
-        if (!selected || !chosenVersion)
+        if (busy || !selected || !chosenVersion)
             return;
+        const generation = draftGeneration.current;
         setBusy(true);
         setError('');
         setPlan(null);
         try {
             const next = await invoke<VaultPackage>('vault_prepare', { id: selected.id, artifact: chosenVersion.artifactId, engineVersion: chosenVersion.engine });
+            if (generation !== draftGeneration.current) {await invoke('vault_discard').catch(() => {}); return;}
             setPlan(next);
             if (mode === 'install') {
                 setPreview(await invoke<Preview>('vault_prepared_preview', { id: next.id, project: target, projectName: selected.kind === 'Project' ? projectName : null }));
@@ -267,6 +318,13 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         }
         finally {
             setBusy(false);
+        }
+    };
+    const enqueue = async () => {
+        if (!selected || !chosenVersion || queueBusy) return;
+        const item = selected;
+        if (await queueCommand('vault_queue_enqueue', {request: {assetId: item.id, artifactId: chosenVersion.artifactId, selectedEngine: chosenVersion.engine, title: item.title}})) {
+            setSelected(current => current?.id === item.id ? null : current);
         }
     };
     const download = async () => {
@@ -291,8 +349,8 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
             await refresh();
             if (mode === 'install') {
                 setInstalling(true);
-                setProgress({ phase: selected.kind === 'Project' ? 'Создаём проект…' : selected.kind === 'Plugin' ? 'Устанавливаем плагин…' : 'Добавляем в проект…', done: plan.bytes, total: plan.bytes, filesDone: plan.files, filesTotal: plan.files, networkBytes: 0, bytesPerSecond: 0 });
-                const n = await invoke<number>('vault_install', { id: plan.id, project: target, projectName: selected.kind === 'Project' ? projectName : null, engineVersion: selected.kind === 'Project' ? projectEngine : null });
+                setProgress({ phase: 'Проверяем файлы проекта', done: 0, total: 0, filesDone: 0, filesTotal: plan.files, networkBytes: 0, bytesPerSecond: 0,canPause:false });
+                const n = await invoke<number>('vault_install', { id: plan.id, project: target, projectName: selected.kind === 'Project' ? projectName : null, engineVersion: selected.kind === 'Project' ? projectEngine : null,onProgress });
                 await onProjectsChanged();
                 setMessage(`${plan.title} — добавлено файлов: ${n}. ${target}`);
             }
@@ -351,9 +409,12 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         if (!installItem || !preview)
             return;
         setBusy(true);
+        setInstalling(true);
         setError('');
+        setProgress({phase:'Проверяем файлы проекта',done:0,total:0,filesDone:0,filesTotal:preview.files,networkBytes:0,bytesPerSecond:0,canPause:false});
+        const onProgress=new Channel<Progress>(setProgress);
         try {
-            const n = await invoke<number>('vault_install', { id: installItem.id, project: target, projectName: installItem.kind === 'Project' ? projectName : null, engineVersion: installItem.kind === 'Project' ? projectEngine : null });
+            const n = await invoke<number>('vault_install', { id: installItem.id, project: target, projectName: installItem.kind === 'Project' ? projectName : null, engineVersion: installItem.kind === 'Project' ? projectEngine : null,onProgress });
             await onProjectsChanged();
             setMessage(`Установка завершена: добавлено файлов ${n}. ${preview.target}`);
             setInstallItem(null);
@@ -363,9 +424,13 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         }
         finally {
             setBusy(false);
+            setInstalling(false);
+            setProgress(null);
         }
     };
     const progressStep = !!selected && activeDownload?.item.id === selected.id;
+    const queueActive = queue.items.find(item => item.id === queue.activeId);
+    const queuedCount = queue.items.filter(item => item.id !== queue.activeId).length;
     const engineInstall = installItem?.kind === 'Plugin' && pluginDestination === 'engine';
     const pluginOptions = installItem && <><label className="wizard-field">{tr("Скачанная версия")}<select aria-label={tr("Скачанная версия плагина")} value={installItem.id} disabled={busy} onChange={e => { const item = items.find(p => p.id === e.target.value); if (item) {
         setInstallItem(item);
@@ -379,7 +444,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     const supportedEngines = (installItem?.engines || selected?.engineVersions || []).map(engineVersion);
     const validProjectEngine = /^\d+\.\d+(?:\.\d+)?$/.test(projectEngine);
     const projectEngineField = <label className="wizard-field">{tr("Движок для нового проекта")}<input aria-label={tr("Движок для нового проекта")} list="project-engine-options" placeholder={tr("Например, 5.8")} value={projectEngine} disabled={busy} onChange={e => { setProjectEngine(e.target.value); setPlan(null); setPreview(null); }}/><datalist id="project-engine-options">{tr([...new Set([...engines.map(e => e.version), ...supportedEngines])].sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(v => <option key={v} value={v}/>))}</datalist><small className="muted">{tr("Можно указать любую версию UE.")}{tr(validProjectEngine && !supportedEngines.includes(projectEngine) ? ' Автор не заявил поддержку этой версии; совместимость не гарантирована.' : '')}</small></label>;
-    const status = <>{tr(progress && <div className="library-loading" role="status"><Download size={24}/><div className="download-progress"><strong>{tr(progress.paused?'На паузе':progress.phase)}</strong><progress max={Math.max(1, progress.total)} value={progress.done}/><p>{tr("Подготовлено ")}{tr(size(progress.done))}{tr(" из ")}{tr(size(progress.total))}{tr(" · Файлы ")}{tr(progress.filesDone)}{tr(" / ")}{tr(progress.filesTotal)}</p><small>{tr("По сети: ")}{tr(size(progress.networkBytes))}{tr(" · ")}{tr(size(progress.bytesPerSecond))}{tr("/с")}</small><div className="vault-operation-actions">{!installing&&<VaultPauseButton paused={progress.paused} canPause={progress.canPause}/>}<button disabled={installing} onClick={() => invoke('vault_cancel').catch(e => setError(String(e)))}>{tr("Остановить загрузку")}</button></div></div></div>)}{tr(error && <p className="error-text" role="alert">{tr(error)}</p>)}{tr(message && <p role="status" className="vault-success">{tr(message)}</p>)}</>;
+    const status = <>{tr(progress && <div className="library-loading" role="status"><Download size={24}/><div className="download-progress"><strong>{tr(progress.paused?'На паузе':progress.phase)}</strong><progress max={Math.max(1, progress.total)} value={progress.total ? progress.done : undefined}/><p>{tr("Обработано")}: {tr(size(progress.done))}{progress.total > 0 && <>{tr(" из ")}{tr(size(progress.total))}</>}{tr(" · Файлы ")}{tr(progress.filesDone)}{tr(" / ")}{tr(progress.filesTotal)}</p><small>{tr("По сети: ")}{tr(size(progress.networkBytes))}{tr(" · ")}{tr(size(progress.bytesPerSecond))}{tr("/с")}</small><div className="vault-operation-actions">{!installing&&<VaultPauseButton paused={progress.paused} canPause={progress.canPause}/>}<button disabled={installing} onClick={() => invoke('vault_cancel').catch(e => setError(String(e)))}>{tr("Остановить загрузку")}</button></div></div></div>)}{tr(error && <p className="error-text" role="alert">{tr(error)}</p>)}{tr(message && <p role="status" className="vault-success">{tr(message)}</p>)}</>;
     const epicSettings = <section className="epic-vault-settings"><h3>{tr("Vault от Epic Games Launcher")}</h3>
     <p className="muted">{tr("Подключите папку VaultCache. Скачанные материалы остаются в ней и доступны для добавления в проект.")}</p>
     <label htmlFor="epic-vault-path">{tr("Папка VaultCache")}</label><div className="epic-vault-controls"><input id="epic-vault-path" aria-label={tr("Папка Epic VaultCache")} placeholder={tr("Папка Epic VaultCache")} value={epicDirectory} disabled={busy} onChange={e => setEpicDirectory(e.target.value)}/><button disabled={busy} onClick={async()=>{try{const path=await invoke<string|null>('choose_project_location',{folder:true});if(path)setEpicDirectory(path);}catch(e){setError(String(e));}}}><FolderOpen size={17}/>{tr('Выбрать папку')}</button><button onClick={syncEpic} disabled={busy || !epicDirectory.trim()}><RefreshCw size={17} className={epicScan ? 'spin' : ''}/>{tr(epicScan ? 'Проверяем…' : 'Синхронизировать')}</button></div>
@@ -387,24 +452,35 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     {tr(epicResult?.directory && <><p role="status">{tr("Подключено материалов: ")}{tr(epicResult.items.length)}{tr(". Папка: ")}{tr(epicResult.directory)}</p><p className="muted">{tr("При синхронизации проверяются наличие и размеры файлов. Перед копированием в проект проверяется их целостность.")}</p>{tr(epicResult.warnings.length > 0 && <details><summary>{tr("Не подключено: ")}{tr(epicResult.warnings.length)}</summary>{tr(epicResult.warnings.map((warning, i) => <p key={i}>{tr(warning)}</p>))}</details>)}</>)}
     {tr(error && <p role="alert" className="error-text">{tr(error)}</p>)}
   </section>;
-    return {pendingProgress:Object.fromEntries(pendingDownloads.map(t=>[t.assetId,{id:t.assetId,taskId:t.id,percent:Math.min(100,Math.floor(t.done/Math.max(1,t.total)*100)),phase:t.phase==='На паузе'?'На паузе':'Ожидает продолжения'}])), select, openUpdate, openProjectUpdate, updateTransfers, busy, items, epicSettings, refresh, openInstall, notice: status,
-        tileProgress: activeDownload && progress ? { id: activeDownload.item.id, percent: Math.min(100, Math.max(0, Math.floor(progress.done / Math.max(1, progress.total) * 100))), phase: installing ? 'Разворачиваем…' : progress.paused?'На паузе':progress.phase } : null,
-        view: <DownloadsView restoring={restoringDownload} pending={pendingDownloads} onResume={id=>void resumeDownload(id)} onForget={forgetDownload} engineDownload={engineDownload} active={activeDownload} progress={progress} installing={installing} records={history.records} error={error} historyError={historyError} onClear={id => setHistory(current => clearDownloadHistory(current, id))} onStop={() => void invoke('vault_cancel').catch(e => setError(String(e)))} onDetails={() => { if (activeDownload)
+    return {queue, queueActive, queuedCount, pendingProgress:Object.fromEntries(pendingDownloads.map(t=>[t.assetId,{id:t.assetId,taskId:t.id,percent:Math.min(100,Math.floor(t.done/Math.max(1,t.total)*100)),phase:t.phase==='На паузе'?'На паузе':'Ожидает продолжения'}])), select, openUpdate, openProjectUpdate, updateTransfers, busy, items, epicSettings, refresh, openInstall, notice: status,
+        tileProgress: activeDownload && progress ? { id: activeDownload.item.id, percent: Math.min(100, Math.max(0, Math.floor(progress.done / Math.max(1, progress.total) * 100))), phase: progress.paused?'На паузе':progress.phase } : queueActive?.progress ? {id:queueActive.assetId,percent:Math.min(100,Math.floor(queueActive.progress.done/Math.max(1,queueActive.progress.total)*100)),phase:queueActive.progress.paused?'На паузе':queueActive.progress.phase} : null,
+        view: <DownloadsView queue={queue} queueBusy={queueBusy} queueError={queueError} onQueuePaused={paused=>void queueCommand('vault_queue_set_paused',{paused})} onQueueReorder={(ids,expectedRevision)=>void queueCommand('vault_queue_reorder',{ids,expectedRevision})} onQueueRemove={(id,expectedRevision)=>void queueCommand('vault_queue_remove',{id,expectedRevision})} onQueueRetry={(id,expectedRevision)=>void queueCommand('vault_queue_retry',{id,expectedRevision})} restoring={restoringDownload} pending={pendingDownloads} onResume={id=>void resumeDownload(id)} onForget={forgetDownload} engineDownload={engineDownload} active={activeDownload} progress={progress} installing={installing} records={history.records} error={error} historyError={historyError} onClear={id => setHistory(current => clearDownloadHistory(current, id))} onStop={() => void invoke('vault_cancel').catch(e => setError(String(e)))} onDetails={() => { if (activeDownload)
             select(activeDownload.item); }} onUse={item => item.kind === 'Plugin' ? onPlugins() : openInstall(item)} busy={busy} available={items}/>,
-        dialog: <>{tr(updateRequest && <ProjectUpdateDialog items={items} projects={projects} engines={engines} initial={updateRequest.item} initialNewId={updateRequest.newId} busy={busy} onBusy={setBusy} onClose={() => setUpdateRequest(null)} onDone={async () => { await refresh(); await onProjectsChanged(); }}/>)}{tr(selected && <div className="modal-backdrop"><section className="login-dialog vault-dialog" role="dialog" aria-modal="true"><div className="section-head"><h2>{selected.title}</h2><button onClick={() => setSelected(null)} aria-label={tr("Закрыть загрузку")}><X /></button></div>
+        dialog: <>{tr(updateRequest && <ProjectUpdateDialog items={items} projects={projects} engines={engines} initial={updateRequest.item} initialNewId={updateRequest.newId} busy={busy} onBusy={setBusy} onClose={() => setUpdateRequest(null)} onDone={async () => { await refresh(); await onProjectsChanged(); }}/>)}{tr(selected && <div className="modal-backdrop"><section className="login-dialog vault-dialog" role="dialog" aria-modal="true"><div className="section-head"><h2>{selected.title}</h2><button onClick={closeSelected} aria-label={tr("Закрыть загрузку")}><X /></button></div>
       <div className="asset-details"><FabCover item={selected}/><div><p>{tr({ Asset: 'Ассет', Plugin: 'Плагин', Project: 'Проект' }[selected.kind] || selected.kind)}{tr(" · ")}{tr(selected.source)}</p><p>{tr(selected.categories.join(' · '))}</p><p>{tr("Версии UE: ")}{tr(selected.engineVersions.join(', ') || 'Не указаны')}</p></div></div>
       {tr(!mode && selected.description && <p className="asset-description">{tr(selected.description.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' '))}</p>)}
-      <ol className="vault-steps" aria-label={tr("Этапы")}><li className={!mode && !progressStep ? "current" : "done"}>{tr("1. Действие")}</li><li className={progressStep ? "done" : mode && !plan ? "current" : plan ? "done" : ""}>{tr("2. Параметры")}</li><li className={progressStep ? "done" : plan ? "current" : ""}>{tr("3. Проверка")}</li><li className={progressStep ? "current" : ""}>{tr("4. Загрузка")}</li></ol>{tr(!progressStep && <>{tr(!mode && <div className="asset-actions"><button disabled={busy} className={mode === 'vault' ? 'primary' : ''} onClick={() => { setMode('vault'); setPlan(null); setPreview(null); }}>{tr("Скачать в хранилище")}</button>{tr(selected.kind !== 'Plugin' && <button disabled={busy} className={mode === 'install' ? 'primary' : ''} onClick={() => { setMode('install'); setPlan(null); setPreview(null); }}>{tr(materialAction(selected.kind))}</button>)}</div>)}
+      {mode === 'vault' && !progressStep ? <div className="vault-queue-draft">
+        <ol className="vault-steps" aria-label={tr('Этапы')}><li className="done">{tr('1. Действие')}</li><li className="current">{tr('2. Параметры')}</li></ol>
+        <label className="wizard-field">{tr('Версия Unreal Engine')}<select aria-label={tr('Версия Unreal Engine для материала')} disabled={queueBusy} value={artifact} onChange={e => {setArtifact(e.target.value);setProjectEngine(versionChoices.find(v=>v.key===e.target.value)?.engine||'');setQueueError('');}}><option value="">{tr('Выберите версию UE')}</option>{versionChoices.map(version=><option key={version.key} value={version.key}>UE {version.engine}{versionChoices.filter(other=>other.engine===version.engine).length>1?` · ${version.artifactId}`:''}</option>)}</select></label>
+        {!versionChoices.length && <p role="alert">{tr('Нет вариантов с указанной версией UE для Windows.')}</p>}
+        {queueVaultPath && <p className="project-delete-path">{tr('Папка хранилища')}: {queueVaultPath}</p>}
+        <p className="muted">{tr('Сведения о файлах и свободное место будут проверены перед запуском.')}</p>
+        <p className="muted">{tr('Очередь выполняется только пока открыт Unreal Manager.')}</p>
+        {queueError && <p className="error-text" role="alert">{tr(queueError)}</p>}
+        <div className="wizard-footer"><button disabled={queueBusy} onClick={()=>setMode(null)}>{tr('Назад')}</button><button className="primary" disabled={queueBusy||!chosenVersion} onClick={()=>void enqueue()}><Download size={17}/>{tr('Добавить в очередь')}</button></div>
+      </div> : <>
+      <ol className="vault-steps" aria-label={tr("Этапы")}><li className={!mode && !progressStep ? "current" : "done"}>{tr("1. Действие")}</li><li className={progressStep ? "done" : mode && !plan ? "current" : plan ? "done" : ""}>{tr("2. Параметры")}</li><li className={progressStep ? "done" : plan ? "current" : ""}>{tr("3. Проверка")}</li><li className={progressStep ? "current" : ""}>{tr("4. Загрузка")}</li></ol>{tr(!progressStep && <>{tr(!mode && <div className="asset-actions"><button disabled={queueBusy} className={mode === 'vault' ? 'primary' : ''} onClick={() => { setMode('vault'); discardPrepared(); }}>{tr("Скачать в хранилище")}</button>{tr(selected.kind !== 'Plugin' && <button disabled={busy} className={mode === 'install' ? 'primary' : ''} onClick={() => { setMode('install'); setPlan(null); setPreview(null); }}>{tr(materialAction(selected.kind))}</button>)}</div>)}
       {tr(mode && !plan && <label className="wizard-field">{tr("Версия Unreal Engine")}<select aria-label={tr("Версия Unreal Engine для материала")} disabled={busy} value={artifact} onChange={e => { setArtifact(e.target.value); setProjectEngine(versionChoices.find(v => v.key === e.target.value)?.engine || ''); setPlan(null); setPreview(null); setAcceptVersion(false); }}><option value="">{tr("Выберите версию UE")}</option>{tr(versionChoices.map(v => <option key={v.key} value={v.key}>{tr("UE ")}{tr(v.engine)}{tr(versionChoices.filter(other => other.engine === v.engine).length > 1 ? ` · ${v.artifactId}` : '')}</option>))}</select>{tr(chosenVersion?.shared && <small className="muted">{tr("Автор использует общий пакет для нескольких версий UE.")}{tr(selected.kind === 'Project' && mode === 'install' ? ` Новый проект будет открываться в UE ${projectEngine}.` : '')}</small>)}{tr(!versionChoices.length && <small role="alert">{tr("Нет вариантов с указанной версией UE для Windows.")}</small>)}</label>)}
       {tr(mode === 'install' && !plan && <div className="wizard-fields">{tr(selected.kind === 'Project' && <>{tr(nameField)}{tr(projectEngineField)}</>)}<p>{tr(selected.kind === 'Project' ? 'Куда создать новый проект?' : 'В какой проект добавить материал?')}</p>{tr(selected.kind !== 'Project' && <select aria-label={tr("Проект для материала")} disabled={busy} value={target} onChange={e => { setTarget(e.target.value); setPlan(null); setPreview(null); setAcceptVersion(false); }}><option value="">{tr("Выберите проект")}</option>{tr(projects.map(p => <option key={p.path} value={p.path}>{p.name}{tr(" · ")}{tr(p.engineAssociation || 'версия не указана')}</option>))}</select>)}<div className="path-picker"><input aria-label={tr("Назначение материала")} disabled={busy} value={target} onChange={e => { setTarget(e.target.value); setPlan(null); setPreview(null); setAcceptVersion(false); }} placeholder={tr(selected.kind === 'Project' ? 'Полный путь к новому каталогу' : 'Или полный путь к .uproject')}/><button disabled={busy || picking} onClick={() => browse(selected.kind, selected.title)}><FolderOpen size={17}/>{tr(picking ? 'Открываем…' : selected.kind === 'Project' ? 'Выбрать папку…' : 'Выбрать проект…')}</button></div><p className="muted">{tr(selected.kind === 'Project' ? 'Проект разворачивается из Vault в новую папку. Если эта версия ещё не скачана, сначала она будет сохранена в Vault.' : 'Сначала материал сохраняется в Vault, затем автоматически добавляется в выбранный проект.')}</p></div>)}
       {tr(!selected.versions.length && <p>{tr("Fab не предоставил варианты загрузки этого материала.")}</p>)}
       {tr(mode && !plan && <div className="wizard-footer"><button disabled={busy || picking} onClick={() => { setMode(null); setPreview(null); }}>{tr("Назад")}</button><button className="primary" disabled={busy || picking || !chosenVersion || (mode === 'install' && (!target || (selected.kind === 'Project' && (!projectName || !validProjectEngine))))} onClick={prepare}>{tr(busy ? 'Получаем сведения о файлах…' : 'Далее')}</button></div>)}
       {tr(plan && <><div className="wizard-summary"><p>{tr("Выбрано: ")}<b>{tr("UE ")}{tr(chosenVersion?.engine)}</b>{tr(mode === 'install' && selected.kind === 'Project' ? ` · Новый проект: UE ${projectEngine}` : '')}</p><p>{tr("На диске: ")}<b>{tr(size(plan.bytes))}</b>{tr(" · ")}{tr(plan.files)}{tr(" файлов")}</p><p className="muted">{tr(items.some(p => p.id === plan.id) ? 'Эта версия уже в Vault. Повторно скачиваться не будет.' : `${tr("Размер загрузки")}: ${size(plan.downloadBytes)} · ${plan.path}`)}</p>
       </div>{tr(mode === 'install' && preview && <><p>{tr("Файл проекта: ")}{tr(preview.projectFile || preview.target)}{tr(" · Файлов: ")}{tr(preview.files)}</p>{tr(preview.conflicts.length > 0 ? <p className="error-text">{tr("Конфликтов: ")}{tr(preview.conflicts.length)}{tr(". Файлы не будут перезаписаны.")}</p> : <p>{tr("Конфликтов нет. Уже совпадают: ")}{tr(preview.existing)}</p>)}{tr(!preview.compatible && <label className="remember"><input type="checkbox" checked={acceptVersion} onChange={e => setAcceptVersion(e.target.checked)}/>{tr("Версия проекта отличается от заявленной. Использовать выбранный вариант материала.")}</label>)}</>)}
-      <div className="wizard-footer"><button disabled={busy || picking} onClick={() => { setPlan(null); setPreview(null); }}>{tr("Назад")}</button><button className="primary" disabled={busy || (mode === 'install' && (!preview || preview.conflicts.length > 0 || (!preview.compatible && !acceptVersion)))} onClick={download}><Download size={17}/>{tr(mode === 'install' ? (selected.kind === 'Project' ? (items.some(p => p.id === plan.id) ? 'Создать проект' : 'Скачать и создать проект') : (items.some(p => p.id === plan.id) ? materialAction(selected.kind) : selected.kind === 'Plugin' ? 'Скачать и установить плагин' : 'Скачать и добавить в проект')) : 'Скачать в хранилище')}</button></div></>)}
+      <div className="wizard-footer"><button disabled={busy || picking} onClick={discardPrepared}>{tr("Назад")}</button><button className="primary" disabled={busy || (mode === 'install' && (!preview || preview.conflicts.length > 0 || (!preview.compatible && !acceptVersion)))} onClick={download}><Download size={17}/>{tr(mode === 'install' ? (selected.kind === 'Project' ? (items.some(p => p.id === plan.id) ? 'Создать проект' : 'Скачать и создать проект') : (items.some(p => p.id === plan.id) ? materialAction(selected.kind) : selected.kind === 'Plugin' ? 'Скачать и установить плагин' : 'Скачать и добавить в проект')) : 'Скачать в хранилище')}</button></div></>)}
       </>)}{tr(progressStep ? <div className="wizard-transfer"><h3>{tr(installing ? materialAction(selected.kind) : 'Скачивание в хранилище')}</h3>{tr(status)}<p className="muted">{tr("Можно закрыть это окно. Загрузка продолжится, прогресс останется на плитке и в разделе «Загрузки».")}</p><div className="wizard-footer"><button onClick={() => setSelected(null)}>{tr("Закрыть окно")}</button></div></div> : !activeDownload && status)}
+      </>}
     </section></div>)}
-    {tr(installItem && <div className="modal-backdrop"><section className="login-dialog vault-dialog" role="dialog" aria-modal="true"><div className="section-head"><h2>{installItem.title}</h2><button onClick={() => setInstallItem(null)} aria-label={tr("Закрыть установку")}><X /></button></div>
+    {tr(installItem && <div className="modal-backdrop"><section className="login-dialog vault-dialog" role="dialog" aria-modal="true"><div className="section-head"><h2>{installItem.title}</h2><button disabled={installing} onClick={() => setInstallItem(null)} aria-label={tr("Закрыть установку")}><X /></button></div>
       {tr(installItem.kind === 'Plugin' ? <ol className="vault-steps" aria-label={tr("Этапы установки плагина")}><li className={pluginChoice ? 'current' : 'done'}>{tr("1. Версия и действие")}</li><li className={pluginChoice ? '' : preview ? 'done' : 'current'}>{tr("2. Место установки")}</li><li className={preview ? 'current' : ''}>{tr("3. Проверка")}</li></ol> : <ol className="vault-steps" aria-label={tr("Этапы")}><li className={!preview ? 'current' : 'done'}>{tr("1. Место установки")}</li><li className={preview ? 'current' : ''}>{tr("2. Проверка")}</li></ol>)}{tr(pluginChoice && pluginOptions)}{tr(!preview && !pluginChoice && <><p>{tr(installItem.kind === 'Project' ? 'Укажите полный путь к новому каталогу проекта.' : engineInstall ? 'Выберите установленный совместимый движок.' : 'Выберите проект. Существующие отличающиеся файлы не перезаписываются.')}</p>
       {tr(installItem.kind === 'Project' && <>{tr(nameField)}{tr(projectEngineField)}</>)}{tr(engineInstall && engineField)}{tr(!engineInstall && installItem.kind !== 'Project' && <select disabled={busy} value={target} onChange={e => { setTarget(e.target.value); setPreview(null); }}><option value="">{tr("Выберите проект")}</option>{tr(projects.map(p => <option key={p.path} value={p.path}>{p.name}{tr(" · ")}{tr(p.engineAssociation || 'версия не указана')}</option>))}</select>)}
       {tr(!engineInstall && <div className="path-picker"><input aria-label={tr("Путь установки")} disabled={busy} value={target} onChange={e => { setTarget(e.target.value); setPreview(null); }} placeholder={tr(installItem.kind === 'Project' ? 'Путь установки' : 'Полный путь к .uproject')}/>

@@ -7,6 +7,7 @@ pub struct Intent {pub mode:String,pub project:String,pub project_name:String,pu
 #[serde(rename_all="camelCase")]
 pub struct Task {pub id:String,pub asset_id:String,pub title:String,pub kind:String,pub selected_engine:String,pub path:String,pub phase:String,pub done:u64,pub total:u64,pub files_done:usize,pub files_total:usize,#[serde(default)]pub intent:Option<Intent>}
 fn directory()->PathBuf{crate::storage::settings().join("VaultTasks")}
+pub(crate) fn has_saved_task(id:&str)->Result<bool,String>{Ok(owned(&directory(),id,"json")?.exists()||owned(&directory(),id,"zlib")?.exists())}
 fn owned(base:&Path,id:&str,extension:&str)->Result<PathBuf,String>{if !valid_hash(id){return Err("Некорректная задача Vault".into());}let p=base.join(format!("{id}.{extension}"));no_links(&p)?;Ok(p)}
 fn validate(plan:&Plan)->Result<(),String>{
  let expected=crate::storage::vault().join(&plan.info.id);no_links(&expected)?;
@@ -60,6 +61,7 @@ pub(super) fn emit(state:&VaultState,mut p:Progress){
  }
  if let Ok(mut latest)=state.latest.lock(){*latest=Some(p.clone());}report(state,&p);
  if let Ok(channel)=state.channel.lock(){if let Some(c)=channel.as_ref(){let _=c.send(p);}}
+ if let Ok(sink)=state.progress_sink.lock(){if let Some(f)=sink.as_ref(){if let Ok(p)=state.latest.lock(){if let Some(p)=p.as_ref(){f(p.clone());}}}}
 }
 fn status(state:&VaultState){let p=state.latest.lock().ok().and_then(|p|p.clone());if let Some(p)=p{emit(state,p);}}
 pub(super) fn network(state:&VaultState,bytes:u64){if state.rate.lock().ok().and_then(|r|r.as_ref().map(|(t,_,_)|t.elapsed()<Duration::from_millis(250))).unwrap_or(false){return;}let p=state.latest.lock().ok().and_then(|p|p.clone());if let Some(mut p)=p{p.network_bytes=bytes;emit(state,p);}}
@@ -72,7 +74,7 @@ pub fn vault_pause(state:tauri::State<'_,VaultState>,paused:bool)->Result<(),Str
  if paused{state.pause_generation.fetch_add(1,Ordering::SeqCst);}state.paused.store(paused,Ordering::SeqCst);status(&state);Ok(())
 }
 pub(super) struct Scope<'a>(pub &'a VaultState);
-impl Drop for Scope<'_>{fn drop(&mut self){self.0.paused.store(false,Ordering::SeqCst);self.0.pause_available.store(false,Ordering::SeqCst);if let Ok(mut c)=self.0.channel.lock(){*c=None;}}}
+impl Drop for Scope<'_>{fn drop(&mut self){self.0.paused.store(false,Ordering::SeqCst);self.0.pause_available.store(false,Ordering::SeqCst);if let Ok(mut c)=self.0.channel.lock(){*c=None;}if let Ok(mut f)=self.0.progress_sink.lock(){*f=None;}}}
 pub(super) struct Temporary(pub PathBuf);
 impl Drop for Temporary {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
 

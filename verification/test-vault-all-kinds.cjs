@@ -1,13 +1,30 @@
-const fs=require('fs'),assert=require('assert');const {build}=require('./test-env.cjs').esbuild;const {chromium}=require('./test-env.cjs').playwright;const {root,outputDirectory}=require('./test-env.cjs');
+const fs=require('fs'),assert=require('assert');
+function assertMainHtml5DragDrop(config){
+ const main=config.app.windows.find(window=>(window.label||'main')==='main');
+ // Tauri intercepts WebView2 drops by default. Windows HTML5 queue DnD
+ // requires disabling that native handler: https://v2.tauri.app/reference/config/#dragdropenabled
+ assert.equal(main?.dragDropEnabled,false,'Main WebView must pass HTML5 queue drag/drop events through on Windows');
+}
+assertMainHtml5DragDrop(JSON.parse(fs.readFileSync(require('path').resolve(__dirname,'../source/src-tauri/tauri.conf.json'),'utf8')));
+const {build}=require('./test-env.cjs').esbuild;const {chromium}=require('./test-env.cjs').playwright;const {root,outputDirectory}=require('./test-env.cjs');
+const queueMock="\nfunction queueSnapshot(){return JSON.parse(JSON.stringify(window.queue||(window.queue={revision:1,paused:true,activeId:null,items:[],error:null,completed:null})));}\nfunction publishQueue(){const snapshot=queueSnapshot();for(const listener of window.eventListeners?.['vault-queue-changed']||[])listener({event:'vault-queue-changed',id:1,payload:snapshot});return snapshot;}\nfunction queueCommand(name,args){\n const queue=window.queue||(window.queue=queueSnapshot());\n if(name==='vault_queue_get')return queueSnapshot();\n if(name==='vault_queue_enqueue'){\n  const request=args.request;const id='queued-'+(window.queueSerial=(window.queueSerial||0)+1);\n  if(!window.queueUserPaused)queue.paused=false;queue.items.push({...request,id,requestedVaultPath:'X:/Fixture/Vault',status:'pending',packageId:null,error:null,progress:null});queue.revision++;return publishQueue();\n }\n if(name==='vault_queue_set_paused'){queue.paused=args.paused;window.queueUserPaused=args.paused;queue.revision++;return publishQueue();}\n if(window.queueStaleNext){window.queueStaleNext=false;queue.revision++;queue.items=queue.items.map(item=>item.status==='pending'?{...item,title:item.title+' (remote)'}:item);throw new Error('Очередь изменилась. Повторите действие.');}\n if(args.expectedRevision!==queue.revision)throw new Error('stale queue revision');\n if(name==='vault_queue_reorder'){\n  const pending=queue.items.filter(item=>item.status==='pending');\n  if(args.ids.length!==pending.length||new Set(args.ids).size!==pending.length||args.ids.some(id=>!pending.some(item=>item.id===id)))throw new Error('pending set differs');\n  queue.items=[...queue.items.filter(item=>item.status!=='pending'),...args.ids.map(id=>pending.find(item=>item.id===id))];\n }else if(name==='vault_queue_remove'){\n  const item=queue.items.find(item=>item.id===args.id);if(!item||item.status!=='pending')throw new Error('only pending may be removed');\n  queue.items=queue.items.filter(item=>item.id!==args.id);\n }else if(name==='vault_queue_retry'){\n  const item=queue.items.find(item=>item.id===args.id);if(!item||item.status!=='needsAction')throw new Error('only needsAction may be retried');item.status='pending';item.error=null;\n }else throw new Error('unexpected queue command '+name);\n queue.revision++;return publishQueue();\n}\n";
+const eventMock="export async function listen(name,listener){(window.eventListeners||={})[name]||=[];window.eventListeners[name].push(listener);return ()=>{window.eventListeners[name]=window.eventListeners[name].filter(fn=>fn!==listener);};}export async function emit(name,payload){for(const listener of window.eventListeners?.[name]||[])listener({event:name,id:1,payload});}";
 (async()=>{
-const mock=`export class Channel{constructor(fn){this.onmessage=fn}};export async function invoke(name,args){window.calls.push({name,args});const pkg={id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',assetId:'asset',artifactId:'exact-artifact',selectedEngine:'5.8',buildVersion:'pinned-build',title:'Test Material',kind:'Asset',engines:['5.8'],bytes:100,downloadBytes:100,files:2,path:'X:/Fixture/Vault/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'};if(name==='vault_resume_tasks')return window.tasks??[{id:pkg.id,assetId:pkg.assetId,title:pkg.title,kind:pkg.kind,selectedEngine:'5.8',path:pkg.path,phase:'На паузе',done:50,total:100,filesDone:1,filesTotal:2,intent:{mode:'install',project:'X:/Fixture/Game.uproject',projectName:'Game',engineVersion:'5.8'}}];if(name==='vault_resume_prepare')return pkg;if(name==='vault_list')return window.finished?[pkg]:[];if(name==='engine_resume_tasks')return [];if(name==='fab_cached_library')return {items:[{id:'asset',title:'Test Material',kind:'Asset',engineVersions:['5.8'],categories:[],source:'Fab',versions:[]}]};if(name==='vault_epic_status')return {directory:'',items:[],warnings:[]};if(name==='vault_download'){window.channel=args.onProgress;window.p={phase:'Загружаем и проверяем файлы',done:50,total:100,filesDone:1,filesTotal:2,networkBytes:40,bytesPerSecond:10,paused:false,canPause:true};window.channel.onmessage(window.p);return new Promise((resolve,reject)=>{window.finish=()=>{window.finished=true;window.tasks=[];resolve(pkg)};window.stop=()=>reject('Загрузка остановлена. Готовые файлы сохранены для повторной попытки')});}if(name==='vault_pause'){window.p={...window.p,paused:args.paused,bytesPerSecond:args.paused?0:10};window.channel.onmessage(window.p);}if(name==='vault_cancel')window.stop();if(name==='vault_resume_forget')window.tasks=[];if(name==='vault_install')return 2;}`;
-const code=`import React from 'react';import {createRoot}from'react-dom/client';import {useVault}from'./src/Vault';window.calls=[];window.projectRefresh=0;function Harness(){const v=useVault([],()=>{window.projectRefresh++});return <>{v.view}{v.dialog}</>;}createRoot(document.getElementById('root')).render(<Harness/>);`;
-const bundle=await build({stdin:{contents:code,resolveDir:root,loader:'tsx'},bundle:true,write:false,loader:{'.svg':'dataurl'},plugins:[{name:'mock',setup(p){p.onResolve({filter:/^@tauri-apps\/api\/core$/},a=>({path:a.path,namespace:'mock'}));p.onLoad({filter:/.*/,namespace:'mock'},()=>({contents:mock.replaceAll("kind:'Asset'","kind:(window.kind||'Asset')").replace("mode:'install'","mode:window.kind==='Plugin'?'vault':'install'"),loader:'js'}));}}]});
+const mock=queueMock+`export class Channel{constructor(fn){this.onmessage=fn}};export async function invoke(name,args){window.calls.push({name,args});window.publishQueue=publishQueue;window.queueSnapshot=queueSnapshot;if(name.startsWith("vault_queue_"))return queueCommand(name,args);if(name==="vault_discard")return;const pkg={id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',assetId:'asset',artifactId:'exact-artifact',selectedEngine:'5.8',buildVersion:'pinned-build',title:'Test Material',kind:'Asset',engines:['5.8'],bytes:100,downloadBytes:100,files:2,path:'X:/Fixture/Vault/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'};if(name==='vault_resume_tasks')return window.tasks??[{id:pkg.id,assetId:pkg.assetId,title:pkg.title,kind:pkg.kind,selectedEngine:'5.8',path:pkg.path,phase:'На паузе',done:50,total:100,filesDone:1,filesTotal:2,intent:{mode:'install',project:'X:/Fixture/Game.uproject',projectName:'Game',engineVersion:'5.8'}}];if(name==='vault_resume_prepare')return pkg;if(name==='vault_list')return window.finished?[pkg]:[];if(name==='engine_resume_tasks')return [];if(name==='fab_cached_library')return {items:[{id:'asset',title:'Test Material',kind:'Asset',engineVersions:['5.8'],categories:[],source:'Fab',versions:[]}]};if(name==='vault_epic_status')return {directory:'',items:[],warnings:[]};if(name==='vault_download'){window.channel=args.onProgress;window.p={phase:'Загружаем и проверяем файлы',done:50,total:100,filesDone:1,filesTotal:2,networkBytes:40,bytesPerSecond:10,paused:false,canPause:true};window.channel.onmessage(window.p);return new Promise((resolve,reject)=>{window.finish=()=>{window.finished=true;window.tasks=[];resolve(pkg)};window.stop=()=>reject('Загрузка остановлена. Готовые файлы сохранены для повторной попытки')});}if(name==='vault_pause'){if(window.queue?.activeId){const active=window.queue.items.find(item=>item.id===window.queue.activeId);active.progress={...active.progress,paused:args.paused,bytesPerSecond:args.paused?0:10};publishQueue();return;}window.p={...window.p,paused:args.paused,bytesPerSecond:args.paused?0:10};window.channel.onmessage(window.p);}if(name==='vault_cancel')window.stop();if(name==='vault_resume_forget')window.tasks=[];if(name==='project_update_preview'){window.previewWork=args.onWorkProgress;return new Promise(resolve=>window.finishPreview=()=>resolve({target:'X:/Fixture/Game',token:'checked-token',compatible:true,changed:['Content/A.uasset'],added:[],conflicts:[],localChanges:[],removed:[],unchanged:0,alreadyCurrent:0,allFiles:1,backupName:'Game_backup',backupDirectory:'X:/Fixture/Backups'}));}if(name==='project_update_apply'){window.updateWork=args.onWorkProgress;window.updateLog=args.onProgress;return new Promise((resolve,reject)=>{window.failUpdate=()=>reject('Файлы изменились. Изменения отменены.');});}if(name==='vault_install'){window.installChannel=args.onProgress;if(window.holdInstall)return new Promise(resolve=>window.finishInstall=()=>resolve(2));return 2;}}`;
+const code=`import React from 'react';import {createRoot}from'react-dom/client';import {useVault}from'./src/Vault';import {ProjectUpdateDialog}from'./src/ProjectUpdateDialog';window.calls=[];window.projectRefresh=0;function Harness(){if(window.projectWorkTest){const[busy,setBusy]=React.useState(false);const items=['old','new'].map(id=>({id,title:'Test Material',kind:'Asset',assetId:'asset',engines:['5.8'],buildVersion:id,bytes:100,files:1,path:'X:/Fixture/Vault/'+id}));return <ProjectUpdateDialog items={items} projects={[{name:'Game',path:'X:/Fixture/Game.uproject',engineAssociation:'5.8'}]} engines={[]} initial={items[0]} initialNewId='new' busy={busy} onBusy={setBusy} onClose={()=>{}} onDone={async()=>{}}/>;}const v=useVault([],()=>{window.projectRefresh++},[],()=>{},window.engineQueueBusy?{progress:{title:'Engine fixture',phase:'Загружаем блоки',done:1,total:10,percent:10,networkBytes:0,bytesPerSecond:0},onOpen:()=>{}}:null);window.vault=v;return <>{window.queueTest&&<button onClick={()=>v.select(window.queueAsset,false,true)}>Open queue fixture</button>}{v.view}{v.dialog}</>;}createRoot(document.getElementById('root')).render(<Harness/>);`;
+const bundle=await build({stdin:{contents:code,resolveDir:root,loader:'tsx'},bundle:true,write:false,loader:{'.svg':'dataurl'},plugins:[{name:'mock',setup(p){p.onResolve({filter:/^@tauri-apps\/api\/(core|event)$/},a=>({path:a.path,namespace:'mock'}));p.onLoad({filter:/.*/,namespace:'mock'},a=>({contents:(a.path.endsWith("/event")?eventMock:mock).replaceAll("kind:'Asset'","kind:(window.kind||'Asset')").replace("mode:'install'","mode:window.kind==='Plugin'?'vault':'install'"),loader:'js'}));}}]});
 const browser=await chromium.launch(require('./test-env.cjs').browserLaunchOptions);try{
 const page=await browser.newPage({locale:'ru-RU',viewport:{width:1280,height:850}});const errors=[];page.on('pageerror',e=>errors.push(e.message));async function load(){await page.setContent('<html><head><meta charset="UTF-8"><style>'+fs.readFileSync(root+'/src/styles.css','utf8')+'</style></head><body><div id="root"></div></body></html>');await page.addScriptTag({content:bundle.outputFiles[0].text});}
 await load();await page.getByRole('button',{name:'Продолжить загрузку',exact:true}).click();const active=page.locator('.downloads-section .vault-transfer-card').first();await active.getByRole('button',{name:'Пауза',exact:true}).click();await active.getByText('UE 5.8 · На паузе',{exact:true}).waitFor();assert.equal(await active.locator('progress').getAttribute('value'),'50');assert.equal(await page.evaluate(()=>window.p.bytesPerSecond),0);assert.deepEqual(await page.evaluate(()=>window.calls.filter(c=>c.name==='vault_pause').at(-1).args),{paused:true});
 for(const width of[1280,600]){await page.setViewportSize({width,height:850});await page.screenshot({path:outputDirectory+'/vault-pause-'+width+'.png'});const rects=await active.evaluate(el=>{const meter=el.querySelector('.transfer-meter').getBoundingClientRect();return{meter:{bottom:meter.bottom},buttons:[...el.querySelectorAll('.transfer-buttons button')].map(b=>{const r=b.getBoundingClientRect();return{top:r.top,height:r.height,left:r.left,right:r.right}})}});for(const b of rects.buttons){assert(b.top>=rects.meter.bottom);assert(b.height>=44);assert(b.left>=0&&b.right<=width);} }
-await active.getByRole('button',{name:'Продолжить',exact:true}).click();assert.deepEqual(await page.evaluate(()=>window.calls.filter(c=>c.name==='vault_pause').at(-1).args),{paused:false});await page.evaluate(()=>window.finish());await page.getByText('Test Material',{exact:true}).first().waitFor();assert.deepEqual(await page.evaluate(()=>window.calls.find(c=>c.name==='vault_install').args),{id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',project:'X:/Fixture/Game.uproject',projectName:null,engineVersion:null});assert.equal(await page.evaluate(()=>window.projectRefresh),1);assert(!await page.evaluate(()=>window.calls.some(c=>c.name==='vault_prepare')));
+await active.getByRole('button',{name:'Продолжить',exact:true}).click();assert.deepEqual(await page.evaluate(()=>window.calls.filter(c=>c.name==='vault_pause').at(-1).args),{paused:false});await page.evaluate(()=>{window.holdInstall=true;window.finish();});
+await page.waitForFunction(()=>window.calls.some(c=>c.name==='vault_install'));
+await page.waitForFunction(()=>document.querySelector('.vault-transfer-card .transfer-meter strong')?.textContent==='—');
+assert.equal(await active.locator('progress').getAttribute('value'),null,'Local validation begins indeterminate instead of keeping downloaded 100%');
+await page.evaluate(()=>window.installChannel.onmessage({phase:'Копируем и проверяем файлы',done:1048576,total:4194304,filesDone:0,filesTotal:2,networkBytes:0,bytesPerSecond:0,canPause:false}));
+await active.getByText('UE 5.8 · Копируем и проверяем файлы',{exact:true}).waitFor();assert.equal(await active.locator('progress').getAttribute('value'),'25');assert.equal(await active.getByRole('button',{name:'Пауза',exact:true}).count(),0);assert(await active.getByRole('button',{name:'Остановить',exact:true}).isDisabled());await page.screenshot({path:outputDirectory+'/vault-copy-progress.png'});
+await page.evaluate(()=>window.finishInstall());await page.waitForFunction(()=>window.projectRefresh===1);
+await page.getByText('Test Material',{exact:true}).first().waitFor();assert.deepEqual(await page.evaluate(()=>{const {onProgress,...args}=window.calls.find(c=>c.name==='vault_install').args;return args;}),{id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',project:'X:/Fixture/Game.uproject',projectName:null,engineVersion:null});assert.equal(await page.evaluate(()=>window.projectRefresh),1);assert(!await page.evaluate(()=>window.calls.some(c=>c.name==='vault_prepare')));
 await page.close();const second=await browser.newPage({locale:'ru-RU',viewport:{width:1280,height:850}});second.on('pageerror',e=>errors.push(e.message));await second.setContent('<html><head><meta charset="UTF-8"><style>'+fs.readFileSync(root+'/src/styles.css','utf8')+'</style></head><body><div id="root"></div></body></html>');await second.addScriptTag({content:bundle.outputFiles[0].text});await second.getByRole('button',{name:'Продолжить загрузку',exact:true}).click();await second.getByRole('button',{name:'Остановить',exact:true}).click();await second.getByRole('button',{name:'Продолжить загрузку',exact:true}).waitFor();await second.getByRole('button',{name:'Убрать из списка: Test Material',exact:true}).click();const dialog=second.getByRole('dialog',{name:'Убрать задачу из списка?',exact:true});await dialog.getByRole('button',{name:'Отмена',exact:true}).click();assert(!await second.evaluate(()=>window.calls.some(c=>c.name==='vault_resume_forget')));await second.getByRole('button',{name:'Убрать из списка: Test Material',exact:true}).click();await dialog.getByRole('button',{name:'Убрать из списка',exact:true}).click();await dialog.waitFor({state:'hidden'});assert.deepEqual(await second.evaluate(()=>window.calls.find(c=>c.name==='vault_resume_forget').args),{id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'});
 for(const kind of ['Project','Plugin']){
  const child=await browser.newPage({locale:'ru-RU',viewport:{width:1280,height:850}});child.on('pageerror',e=>errors.push(e.message));
@@ -16,10 +33,215 @@ for(const kind of ['Project','Plugin']){
  await child.getByRole('button',{name:'Продолжить загрузку',exact:true}).click();await child.getByRole('button',{name:'Пауза',exact:true}).waitFor();await child.evaluate(()=>window.finish());
  await child.getByText('Нет активных загрузок',{exact:true}).waitFor();
  const installs=await child.evaluate(()=>window.calls.filter(c=>c.name==='vault_install'));
- if(kind==='Project'){assert.equal(installs.length,1);assert.deepEqual(installs[0].args,{id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',project:'X:/Fixture/Game.uproject',projectName:'Game',engineVersion:'5.8'});}
+ if(kind==='Project'){assert.equal(installs.length,1);const {onProgress,...installArgs}=installs[0].args;assert(onProgress);assert.deepEqual(installArgs,{id:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',project:'X:/Fixture/Game.uproject',projectName:'Game',engineVersion:'5.8'});}
  else{assert.equal(installs.length,0);assert.equal(await child.evaluate(()=>window.projectRefresh),0);assert.equal(await child.evaluate(()=>window.calls.find(c=>c.name==='vault_download').args.intent.mode),'vault');}
  await child.close();
 }
-assert.deepEqual(errors,[]);console.log('PASS pause/resume keeps 50%, speed zero on pause, saved exact version and project intent resumed without network preparation, project refreshed, stop keeps task, forget requires confirmation; aligned 44px buttons below meter at 1280/600');
+const updatePage=await browser.newPage({locale:'ru-RU',viewport:{width:900,height:650}});updatePage.on('pageerror',e=>errors.push(e.message));
+await updatePage.setContent('<html><head><meta charset="UTF-8"><style>'+fs.readFileSync(root+'/src/styles.css','utf8')+'</style></head><body><div id="root"></div></body></html>');await updatePage.evaluate(()=>window.projectWorkTest=true);await updatePage.addScriptTag({content:bundle.outputFiles[0].text});
+await updatePage.locator('.project-update-dialog select').last().selectOption('X:/Fixture/Game.uproject');await updatePage.getByRole('button',{name:'Далее',exact:true}).click();await updatePage.waitForFunction(()=>!!window.previewWork);
+await updatePage.evaluate(()=>window.previewWork.onmessage({phase:'Проверяем файлы проекта',done:0,total:0,filesDone:3,filesTotal:0}));let updateStatus=updatePage.getByRole('status');await updateStatus.getByText('Проверяем файлы проекта',{exact:true}).waitFor();assert.equal(await updateStatus.locator('progress').getAttribute('value'),null);
+await updatePage.evaluate(()=>window.previewWork.onmessage({phase:'Проверяем файлы проекта',done:1048576,total:2097152,filesDone:1,filesTotal:2}));await updatePage.waitForFunction(()=>document.querySelector('[role=status] progress')?.value===1048576);assert((await updateStatus.innerText()).includes('Файлы: 1 / 2'));assert((await updateStatus.innerText()).includes('Обработано: 1 МБ / 2 МБ'));
+await updatePage.evaluate(()=>window.finishPreview());await updatePage.getByRole('button',{name:'Далее',exact:true}).click();await updatePage.getByRole('button',{name:/Обновить\s+1\s+файлов/}).click();await updatePage.waitForFunction(()=>!!window.updateWork&&!!window.updateLog);
+await updatePage.evaluate(()=>{window.updateLog.onmessage('Подготовка: 1 / 1');window.updateWork.onmessage({phase:'Подготавливаем замену…',done:1048576,total:4194304,filesDone:0,filesTotal:1});});updateStatus=updatePage.getByRole('status');await updateStatus.getByText('Подготавливаем замену…',{exact:true}).waitFor();assert.equal(await updateStatus.locator('progress').getAttribute('value'),'1048576');assert.equal(await updateStatus.locator('progress').getAttribute('max'),'4194304');assert((await updateStatus.innerText()).includes('Подготовка: 1 / 1'));assert(await updatePage.getByRole('button',{name:'Закрыть обновление',exact:true}).isDisabled());const visibleWork=await updateStatus.locator('progress').boundingBox();assert(visibleWork&&visibleWork.y>=0&&visibleWork.y+visibleWork.height<=650,'Progress remains visible above the long form');const visiblePhase=await updateStatus.locator('strong').boundingBox(),headerRect=await updatePage.locator('.project-update-dialog>.section-head').boundingBox();assert(visiblePhase.y>=headerRect.y+headerRect.height&&visiblePhase.y+visiblePhase.height<=650,'Current phase is visible below header '+JSON.stringify({visiblePhase,headerRect}));assert(await updateStatus.locator('strong').evaluate(n=>{const r=n.getBoundingClientRect();return n.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),'Phase is not covered by the sticky header');await updatePage.screenshot({path:outputDirectory+'/project-update-work-progress.png'});
+await updatePage.evaluate(()=>window.failUpdate());await updatePage.getByRole('alert').getByText('Файлы изменились. Изменения отменены.',{exact:true}).waitFor();assert.equal(await updatePage.getByRole('status').count(),0,'A failed copy never leaves a completed meter or success state');await updatePage.close();
+await checkDownloadQueue(browser,bundle,errors);assert.deepEqual(errors,[]);console.log('PASS pause/resume keeps 50%, speed zero on pause, saved exact version and project intent resumed without network preparation, project refreshed, stop keeps task, forget requires confirmation; aligned 44px buttons below meter at 1280/600');
 }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
+
+
+async function checkDownloadQueue(browser,bundle,errors){
+ const checks=[];
+ const page=await browser.newPage({locale:'ru-RU',viewport:{width:1280,height:850}});
+ page.on('pageerror',e=>errors.push(e.message));
+ page.setDefaultTimeout(12000);
+ const seed=['First','Second','Third'].map((title,index)=>({id:'saved-'+index,assetId:'asset-'+index,artifactId:'artifact-'+index,selectedEngine:'5.8',title:'Queue '+title,requestedVaultPath:'X:/Fixture/Vault',status:'pending',packageId:null,error:null,progress:null}));
+ await page.setContent('<html><head><meta charset="UTF-8"><style>'+fs.readFileSync(root+'/src/styles.css','utf8')+'</style></head><body><div id="root"></div></body></html>');
+ await page.evaluate(items=>{window.queueTest=true;window.engineQueueBusy=true;window.tasks=[];window.finished=true;window.queue={revision:20,paused:true,activeId:null,items,error:null,completed:null};window.queueAsset={id:'queued-asset',title:'Queue Added',kind:'Asset',engineVersions:['5.8'],categories:[],source:'Fab',versions:[{artifactId:'pinned-artifact',engines:['5.8'],platforms:['Windows']}]};},seed);
+ await page.addScriptTag({content:bundle.outputFiles[0].text});
+ const queue=page.locator('.vault-download-queue');
+ const current=page.locator('.downloads-current');
+ const row=id=>page.locator('.downloads-content [data-queue-id="'+id+'"]');
+ const ids=()=>page.locator('.downloads-content [data-queue-id]').evaluateAll(nodes=>nodes.map(node=>node.dataset.queueId));
+ await queue.getByRole('button',{name:'Запустить очередь',exact:true}).waitFor();
+ await page.waitForFunction(()=>window.eventListeners?.['vault-queue-changed']?.length>0);
+ assert.deepEqual(await ids(),seed.map(item=>item.id));
+ const copyButton=page.locator('.completed-download').getByRole('button',{name:'Добавить в проект',exact:true});await copyButton.waitFor();assert(await copyButton.isDisabled(),'Engine work keeps existing project-copy action disabled');
+ assert(!await page.evaluate(()=>window.calls.some(call=>call.name==='vault_prepare'||call.name==='vault_download'||call.name==='vault_queue_set_paused')));
+ checks.push('A persisted snapshot mounts paused with all saved pending entries and no implicit start/preparation');
+ // Queue scheduling is separate from the current transfer's pause state.
+ await queue.getByRole('button',{name:'Запустить очередь',exact:true}).click();
+ await queue.getByRole('button',{name:'Приостановить очередь',exact:true}).click();
+ assert.deepEqual(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_set_paused').map(call=>call.args)),[{paused:false},{paused:true}]);
+ await page.getByRole('button',{name:'Open queue fixture',exact:true}).click();
+ await page.getByRole('combobox',{name:'Версия Unreal Engine для материала',exact:true}).selectOption(JSON.stringify(['pinned-artifact','5.8']));
+ await page.getByRole('button',{name:'Добавить в очередь',exact:true}).click();
+ await row('queued-1').getByText('Queue Added',{exact:false}).waitFor();
+ const enqueue=await page.evaluate(()=>window.calls.find(call=>call.name==='vault_queue_enqueue').args);
+ assert.deepEqual(enqueue,{request:{assetId:'queued-asset',artifactId:'pinned-artifact',selectedEngine:'5.8',title:'Queue Added'}});
+ assert.equal(await page.evaluate(()=>window.queue.paused),true);
+ assert(!await page.evaluate(()=>window.calls.some(call=>['vault_prepare','vault_download','vault_install'].includes(call.name))));
+ checks.push('While an engine is busy, enqueue pins artifact/UE and respects explicit queue pause without preparing or installing');
+ // Simulate a worker-owned active head; UI mutations may reorder pending jobs only.
+ await page.evaluate(()=>{window.engineQueueBusy=false;window.queue.activeId='saved-0';window.queue.items[0]={...window.queue.items[0],status:'downloading',progress:{phase:'Загружаем и проверяем файлы',done:25,total:100,filesDone:0,filesTotal:2,networkBytes:25,bytesPerSecond:10,paused:false,canPause:true}};window.queue.revision++;publishQueue();});
+ await row('saved-0').getByText('Queue First',{exact:true}).waitFor();
+ assert.equal(await current.locator('.vault-queue-active').count(),1,'The queued active transfer belongs in Current');
+ assert.equal(await queue.locator('.vault-queue-active').count(),0,'The waiting queue cannot duplicate the active transfer');
+ assert.equal(await page.locator('.vault-queue-active').count(),1);
+ assert.equal(await current.locator('.section-head .download-count').innerText(),'1');
+ assert.equal(await queue.locator('.section-head .download-count').innerText(),'3','The queue count includes waiting rows only');
+ assert.equal(await row('saved-0').evaluate(node=>node.draggable),false);
+ assert.equal(await row('saved-0').getByRole('button',{name:/^(Выше:|Ниже:|Убрать из очереди:)/}).count(),0);
+ assert.equal(await row('saved-1').getAttribute('draggable'),'true');
+ let revision=await page.evaluate(()=>window.queue.revision);
+ await queue.getByRole('button',{name:'Ниже: Queue Second',exact:true}).click();
+ await page.waitForFunction(()=>window.calls.some(call=>call.name==='vault_queue_reorder'));
+ assert.deepEqual(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_reorder').at(-1).args),{ids:['saved-2','saved-1','queued-1'],expectedRevision:revision});
+ assert.deepEqual(await ids(),['saved-0','saved-2','saved-1','queued-1']);
+ revision=await page.evaluate(()=>window.queue.revision);
+ await queue.getByRole('button',{name:'Выше: Queue Second',exact:true}).click();
+ await page.waitForFunction(()=>window.queue.items.filter(item=>item.status==='pending')[0]?.id==='saved-1');
+ assert.deepEqual(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_reorder').at(-1).args),{ids:['saved-1','saved-2','queued-1'],expectedRevision:revision});
+ revision=await page.evaluate(()=>window.queue.revision);
+ await row('queued-1').dragTo(row('saved-1'));
+ await page.waitForFunction(()=>window.queue.items.filter(item=>item.status==='pending')[0]?.id==='queued-1');
+ assert.deepEqual(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_reorder').at(-1).args),{ids:['queued-1','saved-1','saved-2'],expectedRevision:revision});
+ assert.equal((await ids())[0],'saved-0');
+ checks.push('Up/Down and actual drag-and-drop submit the complete pending set with the current revision; the active head remains fixed');
+ // Real browser mouse pointer capture drives the grip fallback without HTML5/OLE drag events.
+ const grip=id=>row(id).locator('.vault-queue-grip');
+ const point=async locator=>{const box=await locator.boundingBox();assert(box);return{x:box.x+box.width/2,y:box.y+box.height/2};};
+ const pointerDown=async id=>{const source=grip(id);await source.evaluate(node=>node.addEventListener('pointerdown',event=>window.lastGripPointerId=event.pointerId,{once:true}));const p=await point(source);await page.mouse.move(p.x,p.y);await page.mouse.down();};
+ const pointerUp=async target=>{const p=await point(target);await page.mouse.move(p.x,p.y,{steps:3});await page.mouse.up();};
+ const reorders=()=>page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_reorder'));
+ revision=await page.evaluate(()=>window.queue.revision);
+ let reorderCount=(await reorders()).length;
+ await pointerDown('queued-1');await pointerUp(row('saved-2'));
+ await page.waitForFunction(()=>window.queue.items.filter(item=>item.status==='pending').at(-1)?.id==='queued-1');
+ assert.equal((await reorders()).length,reorderCount+1,'A grip pointer gesture submits exactly one CAS reorder');
+ assert.deepEqual((await reorders()).at(-1).args,{ids:['saved-1','saved-2','queued-1'],expectedRevision:revision});
+ assert.equal((await ids())[0],'saved-0','The active transfer remains fixed during a pointer reorder');
+ await pointerDown('queued-1');await pointerUp(row('saved-1'));
+ await page.waitForFunction(()=>window.queue.items.filter(item=>item.status==='pending')[0]?.id==='queued-1');
+ reorderCount=(await reorders()).length;
+ await pointerDown('queued-1');await pointerUp(grip('queued-1'));
+ await pointerDown('queued-1');await pointerUp(row('saved-0'));
+ await pointerDown('queued-1');
+ await grip('queued-1').evaluate(node=>node.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:window.lastGripPointerId,isPrimary:true})));
+ await pointerUp(row('saved-2'));
+ await pointerDown('queued-1');
+ await grip('queued-1').evaluate(node=>node.releasePointerCapture(window.lastGripPointerId));
+ await pointerUp(row('saved-2'));
+ await grip('queued-1').dispatchEvent('pointerdown',{button:2,isPrimary:true,pointerId:99});
+ await grip('saved-2').dispatchEvent('pointerup',{button:2,isPrimary:true,pointerId:99});
+ assert.equal((await reorders()).length,reorderCount,'Self/active targets, cancel/lost capture and secondary button never reorder');
+ revision=await page.evaluate(()=>window.queue.revision);
+ const pointerGetsBefore=await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_get').length);
+ await pointerDown('queued-1');
+ await page.evaluate(()=>{window.queue.revision++;publishQueue();});
+ await pointerUp(row('saved-2'));
+ await page.waitForFunction(before=>window.calls.filter(call=>call.name==='vault_queue_get').length>before,pointerGetsBefore);
+ assert.deepEqual((await reorders()).at(-1).args,{ids:['saved-1','saved-2','queued-1'],expectedRevision:revision},'The gesture retains its start revision for native CAS');
+ assert.deepEqual(await ids(),['saved-0','queued-1','saved-1','saved-2'],'A concurrent metadata change keeps authoritative order after stale pointer CAS');
+ checks.push('Captured primary-pointer grip reorders once with native CAS; cancel, lost capture, self/active targets and secondary buttons do nothing, and stale revisions refresh authoritative order');
+ // Native concurrent mutation must replace stale optimistic state with a fresh snapshot.
+ const getsBefore=await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_get').length);
+ await page.evaluate(()=>window.queueStaleNext=true);
+ await queue.getByRole('button',{name:'Ниже: Queue Added',exact:true}).click();
+ await row('queued-1').getByText('Queue Added (remote)',{exact:false}).waitFor();
+ assert(await page.evaluate(before=>window.calls.filter(call=>call.name==='vault_queue_get').length>before,getsBefore));
+ assert.deepEqual(await ids(),['saved-0','queued-1','saved-1','saved-2']);
+ checks.push('A stale CAS rejects the mutation and refreshes the authoritative snapshot instead of discarding pending jobs');
+ revision=await page.evaluate(()=>window.queue.revision);
+ await queue.getByRole('button',{name:'Убрать из очереди: Queue Third (remote)',exact:true}).click();
+ await row('saved-2').waitFor({state:'detached'});
+ assert.deepEqual(await page.evaluate(()=>window.calls.find(call=>call.name==='vault_queue_remove').args),{id:'saved-2',expectedRevision:revision});
+ assert(!await page.evaluate(()=>window.calls.some(call=>call.name==='vault_resume_forget'||call.name==='vault_cancel')));
+ assert.equal(await current.locator('.section-head .download-count').innerText(),'1');
+ assert.equal(await queue.locator('.section-head .download-count').innerText(),'2','Three native jobs mean one Current card and two waiting rows');
+ assert.equal(await queue.locator('.vault-queue-row').count(),2);
+ checks.push('Removing a pending entry uses CAS and never forgets cached download tasks or cancels the active transfer');
+ await queue.getByRole('button',{name:'Запустить очередь',exact:true}).click();
+ await queue.getByRole('button',{name:'Приостановить очередь',exact:true}).click();
+ assert(!await page.evaluate(()=>window.calls.some(call=>call.name==='vault_pause'||call.name==='vault_cancel')));
+ assert.equal(await page.evaluate(()=>window.queue.items.find(item=>item.id===window.queue.activeId).progress.paused),false);
+ assert(await copyButton.isDisabled(),'An active queued transfer keeps project-copy action disabled');
+ await row('saved-0').getByRole('button',{name:'Пауза',exact:true}).click();
+ await row('saved-0').getByRole('button',{name:'Продолжить',exact:true}).waitFor();
+ assert.equal(await page.evaluate(()=>window.queue.paused),true);
+ assert.deepEqual(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_pause').at(-1).args),{paused:true});
+ await row('saved-0').getByRole('button',{name:'Продолжить',exact:true}).click();
+ await row('saved-0').getByRole('button',{name:'Пауза',exact:true}).waitFor();
+ assert.equal(await page.evaluate(()=>window.queue.paused),true);
+ checks.push('Queue scheduling pause and transfer pause are independent; both engine work and a queued active job block existing project-copy actions');
+ const finalIds=await ids();
+ await page.evaluate(()=>{for(const listener of window.eventListeners['vault-queue-changed']||[])listener({payload:{...queueSnapshot(),revision:window.queue.revision-1,items:[]}});});
+ assert.deepEqual(await ids(),finalIds);
+ await page.evaluate(()=>{window.queue.items[0].progress={...window.queue.items[0].progress,done:3*1048576,total:4*1048576,networkBytes:5*1048576,bytesPerSecond:1048576,filesDone:1,filesTotal:2};publishQueue();});
+ await page.waitForFunction(()=>document.querySelector('.downloads-current [data-queue-id="saved-0"] progress')?.value===75);
+ checks.push('Older events cannot replace current queue metadata; equal-revision events can update active progress');
+ const metrics=row('saved-0').locator('.transfer-metrics');
+ const value=label=>metrics.locator('div').filter({has:page.getByText(label,{exact:true})}).locator('b').innerText();
+ assert.equal(await value('Обработано'),'3 МБ / 4 МБ');
+ assert.equal(await value('Скорость сети'),'1 МБ/с');
+ assert.equal(await value('Получено по сети'),'5 МБ');
+ assert.equal(await value('Файлы'),'1 / 2');
+ for(const id of ['queued-1','saved-1'])assert.equal(await row(id).locator('progress,.transfer-meter,.transfer-metrics').count(),0,'Pending entries do not invent progress or speed');
+ checks.push('Active bytes, network speed, received bytes and file counts use actual event values; pending entries have no fabricated progress');
+ await page.screenshot({path:outputDirectory+'/vault-download-queue-1280.png'});
+ await page.setViewportSize({width:600,height:850});
+ await page.screenshot({path:outputDirectory+'/vault-download-queue-600.png'});
+ const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+1);
+ assert.equal(overflow,false,'Queue controls must fit the narrow viewport');
+ // The native worker requires a pending head. An interrupted/attention head
+ // blocks dispatch even when later pending rows are visually grouped first.
+ const attentionHint='Очередь требует внимания: продолжите, повторите или уберите первое задание.';
+ const hint=queue.locator('.downloads-hint');
+ const mutationsBeforeHints=await page.evaluate(()=>window.calls.filter(call=>/^(vault_(prepare|download|install|pause|cancel|discard)|vault_queue_(enqueue|set_paused|reorder|remove|retry))$/.test(call.name)));
+ await page.evaluate(()=>{window.queue.paused=false;window.queue.activeId=null;Object.assign(window.queue.items[0],{status:'interrupted',packageId:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',error:'Продолжите сохранённую загрузку в списке задач.',progress:null});window.queue.revision++;publishQueue();});
+ await hint.getByText(attentionHint,{exact:true}).waitFor();
+ assert.equal(await current.locator('.section-head .download-count').innerText(),'0');
+ assert(await current.getByText('Нет активных загрузок',{exact:true}).isVisible(),'Pending work must not leave Current blank when nothing is active');
+ assert(await row('saved-0').getByRole('button',{name:'Продолжить загрузку',exact:true}).isVisible());
+ assert(await row('queued-1').isVisible(),'Later pending work remains present while the interrupted head needs action');
+ await page.evaluate(()=>{Object.assign(window.queue.items[0],{status:'needsAction',packageId:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',error:null});window.queue.revision++;publishQueue();});
+ await hint.getByText(attentionHint,{exact:true}).waitFor();
+ assert(await row('saved-0').getByRole('button',{name:'Повторить',exact:true}).isVisible());
+ assert.equal(await row('saved-0').getByRole('button',{name:'Продолжить загрузку',exact:true}).count(),0,'A package ID alone does not prove a saved resumable task');
+ const retryRevision=await page.evaluate(()=>window.queue.revision);
+ const resumePrepareCalls=await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_resume_prepare').length);
+ await row('saved-0').getByRole('button',{name:'Повторить',exact:true}).click();
+ await page.waitForFunction(()=>window.calls.some(call=>call.name==='vault_queue_retry'));
+ await page.waitForFunction(()=>document.querySelector('[data-queue-id="saved-0"]')?.dataset.status==='pending');
+ assert.deepEqual(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_retry').at(-1).args),{id:'saved-0',expectedRevision:retryRevision});
+ assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_resume_prepare').length),resumePrepareCalls,'NeedsAction retry never opens a missing saved task');
+ mutationsBeforeHints.push({name:'vault_queue_retry',args:{id:'saved-0',expectedRevision:retryRevision}});
+ await page.evaluate(()=>{Object.assign(window.queue.items[0],{status:'interrupted',packageId:null});window.queue.revision++;publishQueue();});
+ await hint.getByText(attentionHint,{exact:true}).waitFor();
+ assert(await row('saved-0').getByRole('button',{name:'Повторить',exact:true}).isVisible());
+ assert.equal(await row('saved-0').getByRole('button',{name:'Продолжить загрузку',exact:true}).count(),0,'An interrupted entry without a package cannot resume a task');
+ await page.evaluate(()=>{window.queue.paused=true;window.queue.revision++;publishQueue();});
+ await hint.getByText('Очередь приостановлена',{exact:true}).waitFor();
+ await page.evaluate(()=>{window.engineQueueBusy=true;window.queue.paused=false;window.queue.items[0].status='pending';window.queue.revision++;publishQueue();});
+ await hint.getByText('Ожидает завершения текущей операции',{exact:true}).waitFor();
+ assert(await copyButton.isDisabled(),'The genuine engine-busy fixture still guards project copy');
+ await page.evaluate(()=>{window.engineQueueBusy=false;window.queue.activeId='saved-0';Object.assign(window.queue.items[0],{status:'downloading',progress:{phase:'Загружаем и проверяем файлы',done:1,total:2,filesDone:0,filesTotal:1,networkBytes:1,bytesPerSecond:1,paused:false,canPause:true}});window.queue.revision++;publishQueue();});
+ await hint.getByText('Очередь выполняется только пока открыт Unreal Manager.',{exact:true}).waitFor();
+ assert.deepEqual(await page.evaluate(()=>window.calls.filter(call=>/^(vault_(prepare|download|install|pause|cancel|discard)|vault_queue_(enqueue|set_paused|reorder|remove|retry))$/.test(call.name))),mutationsBeforeHints,'Rendering explanatory hints cannot start, pause, retry or remove jobs');
+ checks.push('Interrupted/needs-action head gives an actionable hint; paused, genuine engine-busy and active states retain their prior hints without unintended dispatch commands');
+ checks.push('NeedsAction with a package ID retries through queue CAS without saved-task preparation; only Interrupted with a package offers Resume');
+ // The scheduler remains controllable after the final waiting row has gone.
+ await page.evaluate(()=>{window.queue.items=window.queue.items.filter(item=>item.id===window.queue.activeId);window.queue.revision++;publishQueue();});
+ await page.waitForFunction(()=>document.querySelector('.vault-download-queue .download-count')?.textContent==='0');
+ assert.equal(await current.locator('.vault-queue-active').count(),1);
+ assert.equal(await queue.locator('.vault-queue-row').count(),0);
+ const pauseOnlyActive=queue.getByRole('button',{name:'Приостановить очередь',exact:true});
+ assert(await pauseOnlyActive.isEnabled(),'An active-only queue still permits pausing future dispatch');
+ await pauseOnlyActive.click();
+ await queue.getByRole('button',{name:'Запустить очередь',exact:true}).waitFor();
+ assert.equal(await page.evaluate(()=>window.queue.items[0].progress.paused),false,'Pausing the active-only scheduler does not pause the current transfer');
+ checks.push('Queued work renders once under Current; waiting counts exclude it, idle Current is explicit, and an active-only queue keeps its scheduling control');
+ const report={schema:1,passed:true,checks,scope:'Mock native snapshots/events with the actual React UI; no account, native queue persistence or real transfer exercised.'};
+ fs.writeFileSync(outputDirectory+'/vault-download-queue-report.json',JSON.stringify(report,null,2));
+ await page.close();
+}

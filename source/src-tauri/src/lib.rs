@@ -17,6 +17,7 @@ mod epic_login;
 mod epic_redeem;
 mod epic_browser;
 mod vault;
+mod vault_queue;
 mod fab_cache;
 mod fab_details;
 mod project_actions;
@@ -281,7 +282,7 @@ pub fn run() {
         epic::epic_status, epic::epic_begin_login, epic_login::epic_cancel_login,
         epic::epic_logout, epic_redeem::epic_open_redeem, epic::fab_library, epic::fab_cached_library, epic::fab_cover,
         fab_details::fab_details, fab_details::fab_detail_image, fab_details::fab_open_listing,
-        vault::transfers::vault_pause,vault::transfers::vault_resume_tasks,vault::transfers::vault_resume_prepare,vault::transfers::vault_resume_forget,vault::project_update::project_update_preview, vault::project_update::project_update_apply, vault::vault_epic_status, vault::vault_sync_epic, vault::vault_check_update, vault::vault_prepare, vault::vault_download, vault::vault_cancel, vault::vault_list, vault::vault_reveal, vault::vault_delete_preview, vault::vault_delete, vault::plugins_installed, vault::plugin_remove_engine, vault::vault_install_preview, vault::vault_prepared_preview, vault::vault_install];
+        vault_queue::vault_queue_get,vault_queue::vault_queue_enqueue,vault_queue::vault_queue_remove,vault_queue::vault_queue_reorder,vault_queue::vault_queue_set_paused,vault_queue::vault_queue_retry,vault::vault_discard,vault::transfers::vault_pause,vault::transfers::vault_resume_tasks,vault::transfers::vault_resume_prepare,vault::transfers::vault_resume_forget,vault::project_update::project_update_preview, vault::project_update::project_update_apply, vault::vault_epic_status, vault::vault_sync_epic, vault::vault_check_update, vault::vault_prepare, vault::vault_download, vault::vault_cancel, vault::vault_list, vault::vault_reveal, vault::vault_delete_preview, vault::vault_delete, vault::plugins_installed, vault::plugin_remove_engine, vault::vault_install_preview, vault::vault_prepared_preview, vault::vault_install];
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             project_association::handle_args(app,&args);
@@ -297,6 +298,7 @@ pub fn run() {
             tauri::WebviewWindowBuilder::from_config(app,config)?
                 .data_directory(storage::root().join("WebView")).build()?;
             window_behavior::setup(app.handle())?;
+            vault_queue::setup(app.handle());
             project_association::handle_args(app.handle(),&std::env::args().collect::<Vec<_>>());
             Ok(())
         })

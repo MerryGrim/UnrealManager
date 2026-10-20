@@ -1,5 +1,6 @@
 use super::*;
 use sha1::{Digest, Sha1};
+use tauri::Manager;
 use std::{
     io::Write,
     time::{Duration, Instant},
@@ -19,12 +20,19 @@ pub struct Progress {
     paused: bool,
     can_pause: bool,
 }
+fn fab_progress(value:&serde_json::Value,engine_network:u64,received:&std::sync::atomic::AtomicU64)->Progress {
+    let done=value["done"].as_u64().unwrap_or(0);let total=value["total"].as_u64().unwrap_or(0);
+    let highest=received.fetch_max(value["networkBytes"].as_u64().unwrap_or(0),Ordering::SeqCst).max(value["networkBytes"].as_u64().unwrap_or(0));
+    let phase=value["phase"].as_str().filter(|p|!p.is_empty()).map(|p|format!("Fab: {p}")).unwrap_or_else(||"Устанавливаем Fab".into());
+    Progress{phase,done,total,percent:done.saturating_mul(100)/total.max(1),network_bytes:engine_network.saturating_add(highest),processed_bytes:value["processedBytes"].as_u64().unwrap_or(done),total_bytes:value["totalBytes"].as_u64().unwrap_or(total),files_done:value["filesDone"].as_u64().unwrap_or(0),files_total:value["filesTotal"].as_u64().unwrap_or(0),paused:false,can_pause:false}
+}
 pub(crate) struct Busy<'a>(pub(crate) &'a AtomicBool);
 struct PauseScope<'a>(&'a EngineState);
 impl Drop for PauseScope<'_>{fn drop(&mut self){self.0.pause_available.store(false,Ordering::SeqCst);self.0.paused.store(false,Ordering::SeqCst);}}
 impl Drop for Busy<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
+        crate::vault_queue::wake();
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -42,7 +50,15 @@ struct Journal {
     item: Option<(PathBuf, serde_json::Value, serde_json::Value)>,
     #[serde(default)]
     launcher: Option<(PathBuf, serde_json::Value, serde_json::Value)>,
+    #[serde(default)]
+    launcher_warning: Option<String>,
 }
+const REGISTRATION_PHASE:&str="Регистрируем движок";
+const ROLLBACK_PHASE:&str="Восстанавливаем прежние файлы";
+const REGISTRATION_WARNING:&str="Общий список Epic не обновлён. Установленный движок доступен в Unreal Manager.";
+const TASK_VALIDATION_PHASE:&str="Проверяем сохранённую задачу";
+const CACHE_INVENTORY_PHASE:&str="Проверяем наличие блоков";
+const CACHE_VALIDATION_PHASE:&str="Проверяем сохранённые блоки";
 pub(super) fn digest(b: &[u8]) -> String {
     format!("{:x}", Sha1::digest(b))
 }
@@ -93,56 +109,86 @@ pub(crate) fn atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     no_links(path)?;
     let temp = path.with_extension(format!("um-{}", uuid::Uuid::new_v4()));
     write_new(&temp, bytes)?;
-    fs::rename(temp, path).map_err(io)
+    let result=fs::rename(&temp,path).map_err(io);
+    if result.is_err(){let _=fs::remove_file(&temp);}
+    result
+}
+fn critical_engine_process(name:&str)->bool{
+    ["unrealeditor.exe","unrealeditor-cmd.exe","unrealbuildtool.exe","shadercompileworker.exe","dotnet.exe"].iter().any(|n|name.eq_ignore_ascii_case(n))
+}
+fn process_path_key(path:&Path)->Result<String,String>{
+    let text=path.to_str().ok_or("Не удалось проверить запущенные приложения")?.replace('/',"\\").to_lowercase();
+    let text=if let Some(unc)=text.strip_prefix("\\\\?\\unc\\"){format!("\\\\{unc}")}else{text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string()};
+    let absolute=text.starts_with("\\\\")||(text.as_bytes().get(1)==Some(&b':')&&text.as_bytes().get(2)==Some(&b'\\'));
+    if !absolute||text.starts_with("\\\\.\\")||text.split('\\').any(|part|part=="."||part==".."){return Err("Не удалось проверить запущенные приложения".into());}
+    Ok(text.trim_end_matches('\\').to_string())
+}
+fn guard_engine_process(root:&Path,name:&str,image:Option<&Path>)->Result<(),String>{
+    if !critical_engine_process(name){return Ok(());}
+    let unknown=||format!("Не удалось определить, какой движок использует {name}. Закройте процесс или повторите проверку.");
+    let image=image.ok_or_else(unknown)?;
+    let root=process_path_key(root).map_err(|_|unknown())?;
+    let image=process_path_key(image).map_err(|_|unknown())?;
+    if image.starts_with(&(root+"\\")){return Err(format!("Перед операцией с движком закройте {name}. Готовая загрузка сохранится."));}
+    Ok(())
+}
+fn canonical_guard_root(root:&Path)->Result<PathBuf,String>{
+    no_links(root)?;
+    let mut existing=root;let mut missing=Vec::new();
+    while !existing.exists(){missing.push(existing.file_name().ok_or("Не удалось проверить запущенные приложения")?.to_os_string());existing=existing.parent().ok_or("Не удалось проверить запущенные приложения")?;}
+    let mut canonical=existing.canonicalize().map_err(|_|"Не удалось проверить запущенные приложения")?;
+    for part in missing.into_iter().rev(){canonical.push(part);}
+    Ok(canonical)
 }
 #[cfg(all(windows, not(test)))]
-pub(crate) fn idle() -> Result<(), String> {
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-        System::Diagnostics::ToolHelp::*,
-    };
-    unsafe {
-        let handle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if handle == INVALID_HANDLE_VALUE {
-            return Err("Не удалось проверить запущенные приложения".into());
+pub(crate) fn idle(root:&Path) -> Result<(), String> {
+    use windows_sys::Win32::{Foundation::{CloseHandle,GetLastError,HANDLE,INVALID_HANDLE_VALUE,ERROR_INVALID_PARAMETER,ERROR_NO_MORE_FILES,WAIT_OBJECT_0,WAIT_TIMEOUT},System::{Diagnostics::ToolHelp::*,Threading::{OpenProcess,PROCESS_QUERY_LIMITED_INFORMATION,PROCESS_SYNCHRONIZE,QueryFullProcessImageNameW,WaitForSingleObject}}};
+    struct Handle(HANDLE);impl Drop for Handle{fn drop(&mut self){unsafe{CloseHandle(self.0);}}}
+    fn exited(handle:HANDLE)->Result<bool,()>{match unsafe{WaitForSingleObject(handle,0)}{WAIT_OBJECT_0=>Ok(true),WAIT_TIMEOUT=>Ok(false),_=>Err(())}}
+    fn process_image(pid:u32)->Result<Option<PathBuf>,()>{
+        unsafe{
+            let raw=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE,0,pid);
+            if raw.is_null(){return if GetLastError()==ERROR_INVALID_PARAMETER{Ok(None)}else{Err(())};}
+            let handle=Handle(raw);if exited(handle.0)?{return Ok(None);}
+            let mut buffer=vec![0u16;32768];let mut length=buffer.len() as u32;
+            if QueryFullProcessImageNameW(handle.0,0,buffer.as_mut_ptr(),&mut length)==0{return if exited(handle.0)?{Ok(None)}else{Err(())};}
+            use std::os::windows::ffi::OsStringExt;
+            let image=PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length as usize]));
+            let canonical=image.canonicalize();
+            if exited(handle.0)?{return Ok(None);}
+            canonical.map(Some).map_err(|_|())
         }
-        let mut p: PROCESSENTRY32W = std::mem::zeroed();
-        p.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut ok = Process32FirstW(handle, &mut p);
-        let mut blocked = None;
-        while ok != 0 {
-            let end = p
-                .szExeFile
-                .iter()
-                .position(|c| *c == 0)
-                .unwrap_or(p.szExeFile.len());
-            let name = String::from_utf16_lossy(&p.szExeFile[..end]);
-            if [
-                "unrealeditor.exe",
-                "unrealeditor-cmd.exe",
-                "epicgameslauncher.exe",
-                "unrealbuildtool.exe",
-                "shadercompileworker.exe",
-            ]
-            .contains(&name.to_lowercase().as_str())
-            {
-                blocked = Some(name);
-                break;
+    }
+    let root=canonical_guard_root(root)?;
+    unsafe{
+        let raw=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
+        if raw==INVALID_HANDLE_VALUE{return Err("Не удалось проверить запущенные приложения".into());}
+        let snapshot=Handle(raw);let mut entry:PROCESSENTRY32W=std::mem::zeroed();entry.dwSize=std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut available=Process32FirstW(snapshot.0,&mut entry);
+        let mut enumeration_error=if available==0{GetLastError()}else{0};
+        while available!=0{
+            let end=entry.szExeFile.iter().position(|c|*c==0).unwrap_or(entry.szExeFile.len());let name=String::from_utf16_lossy(&entry.szExeFile[..end]);
+            if critical_engine_process(&name){
+                match process_image(entry.th32ProcessID){
+                    Ok(None)=>(),
+                    Ok(Some(image))=>{let actual=image.file_name().and_then(|n|n.to_str()).ok_or("Не удалось проверить запущенные приложения")?;guard_engine_process(&root,actual,Some(&image))?;},
+                    Err(())=>guard_engine_process(&root,&name,None)?,
+                }
             }
-            ok = Process32NextW(handle, &mut p);
+            available=Process32NextW(snapshot.0,&mut entry);
+            if available==0{enumeration_error=GetLastError();}
         }
-        CloseHandle(handle);
-        if let Some(name) = blocked {
-            return Err(format!(
-                "Перед операцией с движком закройте {name}. Готовая загрузка сохранится."
-            ));
-        }
+        if enumeration_error!=ERROR_NO_MORE_FILES{return Err("Не удалось проверить запущенные приложения".into());}
     }
     Ok(())
 }
 #[cfg(all(not(windows), not(test)))]
-pub(crate) fn idle() -> Result<(), String> {
+pub(crate) fn idle(_: &Path) -> Result<(), String> {
     Err("Поддерживается Windows".into())
+}
+fn idle_checkpoint_due(last:Instant)->bool{
+    #[cfg(test)]if MOCK_IDLE_PROCESSES.with(|s|s.borrow().is_some()){return true;}
+    last.elapsed()>=Duration::from_secs(1)
 }
 #[tauri::command]
 pub fn engine_cancel(state: tauri::State<'_, EngineState>) {
@@ -319,7 +365,12 @@ fn verify_current(root: &Path, op: &Operation) -> Result<(), String> {
     Ok(())
 }
 fn rollback(root: &Path, stage: &Path, operations: &[Operation]) -> Result<(), String> {
-    for op in operations.iter().rev() {
+    rollback_reported(root,stage,operations,|_,_|{})
+}
+fn rollback_reported(root:&Path,stage:&Path,operations:&[Operation],mut progress:impl FnMut(u64,u64))->Result<(),String>{
+    progress(0,operations.len() as u64);
+    let mut last=Instant::now();
+    for (index,op) in operations.iter().rev().enumerate() {
         let rel = relative(&op.name)?;
         let target = root.join(&rel);
         let original = stage.join("originals").join(&rel);
@@ -360,6 +411,7 @@ fn rollback(root: &Path, stage: &Path, operations: &[Operation]) -> Result<(), S
             }
             fs::remove_file(target).map_err(io)?;
         }
+        if last.elapsed()>=Duration::from_millis(250)||index+1==operations.len(){progress((index+1) as u64,operations.len() as u64);last=Instant::now();}
     }
     Ok(())
 }
@@ -374,11 +426,11 @@ fn commit(
 }
 #[cfg(test)]
 fn commit_controlled(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,progress:impl FnMut(&str,u64,u64))->Result<(),String>{
-    commit_checkpointed(plan,stage,ops,paused,None,progress)
+    commit_checkpointed(plan,stage,ops,paused,None,None,progress).map(|_|())
 }
-fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,mut progress:impl FnMut(&str,u64,u64))->Result<(),String>{
-    idle()?;
+fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,preflight_warning:Option<String>,mut progress:impl FnMut(&str,u64,u64))->Result<Option<String>,String>{
     let root = target(&plan.info.path)?;
+    idle(&root)?;
     let journal_path=stage.join("journal.json");no_links(&journal_path)?;
     let previous:Option<Journal>=if journal_path.exists(){Some(serde_json::from_slice(&fs::read(&journal_path).map_err(io)?).map_err(|_|"Повреждён журнал установки")?)}else{None};
     let restoring=previous.as_ref().is_some_and(|j|j.status=="applying");
@@ -386,8 +438,13 @@ fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&At
         let j=previous.unwrap();if j.root!=plan.info.path||j.build!=plan.info.build{return Err("Журнал относится к другой установке".into());}j
     }else{
         let mut all_ops=ops.to_vec();let item=prepare_metadata(plan,stage,&mut all_ops)?;
-        Journal{root:plan.info.path.clone(),build:plan.info.build.clone(),operations:all_ops,status:"applying".into(),item,launcher:launcher_update(plan)?}
+        let (launcher,launcher_warning)=match launcher_update(plan){Ok(value)=>(value,None),Err(_)=>(None,Some(REGISTRATION_WARNING.to_string()))};
+        Journal{root:plan.info.path.clone(),build:plan.info.build.clone(),operations:all_ops,status:"applying".into(),item,launcher,launcher_warning}
     };
+    if preflight_warning.is_some(){journal.launcher_warning=preflight_warning;}
+    if let Some((path,_,after))=&journal.launcher{
+        if no_links(path).is_ok() && fs::read(path).ok().and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok()).as_ref()==Some(after){journal.launcher_warning=None;}
+    }
     let ops=journal.operations.clone();for op in &ops{relative(&op.name)?;}
     fs::create_dir_all(&root).map_err(io)?;
     if !restoring{atomic(&journal_path,&serde_json::to_vec(&journal).map_err(|e|e.to_string())?)?;}
@@ -400,10 +457,10 @@ fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&At
     let mut last_idle = Instant::now();
     let result = (|| -> Result<(), String> {
         if bulk_layout(&root,stage,&ops,paused,suspend,&mut progress)? {
-            verify_bulk(stage,&ops,paused,suspend,&mut progress)?;
+            verify_bulk(&root,stage,&ops,paused,suspend,&mut progress)?;
             pause_checkpoint(paused,||progress("Проверяем файлы перед установкой",ops.len() as u64,ops.len() as u64));
             super::resume::check_suspend(suspend)?;
-            idle()?;
+            idle(&root)?;
             if !empty_installation(&root)? {return Err("В папке появились файлы во время установки".into());}
             
             for entry in fs::read_dir(stage.join("files")).map_err(io)? {
@@ -416,14 +473,15 @@ fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&At
                 if !restoring{for op in &ops{if relative(&op.name)?.starts_with(&branch){started.push(op.clone());}}}
             }
             progress("Устанавливаем движок",ops.len() as u64,ops.len() as u64);
-            update_item(&journal.item,false)?;update_item(&journal.launcher,false)?;
+            progress(REGISTRATION_PHASE,0,0);
+            update_item(&journal.item,false)?;
             return Ok(());
         }
         for (i, op) in ops.iter().enumerate() {
             pause_checkpoint(paused,||progress("Устанавливаем движок",i as u64,ops.len() as u64));
             super::resume::check_suspend(suspend)?;
-            if last_idle.elapsed() >= Duration::from_secs(1) {
-                idle()?;
+            if idle_checkpoint_due(last_idle) {
+                idle(&root)?;
                 last_idle = Instant::now();
             }
             if restoring && operation_applied(&root,stage,op)? {
@@ -457,13 +515,13 @@ fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&At
                 last_progress = Instant::now();
             }
         }
+        progress(REGISTRATION_PHASE,0,0);
         update_item(&journal.item, false)?;
-        update_item(&journal.launcher, false)?;
         Ok(())
     })();
     if let Err(error) = result {
         if error==super::resume::SUSPENDED{return Err(error);}
-        match rollback(&root, stage, &started)
+        match rollback_reported(&root, stage, &started,|done,total|progress(ROLLBACK_PHASE,done,total))
             .and_then(|_| update_item(&journal.item, true))
             .and_then(|_| update_item(&journal.launcher, true))
         {
@@ -481,10 +539,21 @@ fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&At
             }
         }
     }
+    // Global Epic discovery is optional. A protected LauncherInstalled.dat must
+    // never undo verified engine files or the independent Epic .item record.
+    if journal.launcher_warning.is_none() && update_item(&journal.launcher,false).is_err(){journal.launcher_warning=Some(REGISTRATION_WARNING.to_string());}
     journal.status = "complete".into();
     atomic(&journal_path, &serde_json::to_vec(&journal).unwrap())?;
-    fs::remove_file(marker).map_err(io)?;
-    Ok(())
+    finish_completed_marker(&root,stage,&journal)?;
+    Ok(journal.launcher_warning)
+}
+fn finish_completed_marker(root:&Path,stage:&Path,journal:&Journal)->Result<(),String>{
+    let marker=root.join(".um-engine-update.json");no_links(&marker)?;
+    if !marker.exists(){return Ok(());}
+    if journal.status!="complete" || !super::same_installation_path(&journal.root,&root.to_string_lossy()) || Path::new(&fs::read_to_string(&marker).map_err(io)?)!=stage{
+        return Err("Есть другая незавершённая установка".into());
+    }
+    fs::remove_file(marker).map_err(io)
 }
 fn operation_applied(root:&Path,stage:&Path,op:&Operation)->Result<bool,String>{
     let rel=relative(&op.name)?;let target=root.join(&rel);let source=stage.join("files").join(&rel);let backup=stage.join("originals").join(&rel);
@@ -520,7 +589,7 @@ fn bulk_layout(root:&Path,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool
     }
     Ok(found==expected)
 }
-fn verify_bulk(stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,progress:&mut impl FnMut(&str,u64,u64))->Result<(),String>{
+fn verify_bulk(root:&Path,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,progress:&mut impl FnMut(&str,u64,u64))->Result<(),String>{
     let mut last=Instant::now();let mut last_idle=Instant::now();
     progress("Проверяем файлы перед установкой",0,ops.len() as u64);
     std::thread::scope(|scope|->Result<(),String>{
@@ -547,7 +616,7 @@ fn verify_bulk(stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:O
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)=>(),
                 Err(_)=>{failed.store(true,Ordering::SeqCst);return Err("Проверка установки прервана".into());}
             }
-            if last_idle.elapsed()>=Duration::from_secs(1){if let Err(e)=idle(){failed.store(true,Ordering::SeqCst);return Err(e);}last_idle=Instant::now();}
+            if idle_checkpoint_due(last_idle){if let Err(e)=idle(root){failed.store(true,Ordering::SeqCst);return Err(e);}last_idle=Instant::now();}
             if last.elapsed()>=Duration::from_millis(250)||contiguous==ops.len(){progress("Проверяем файлы перед установкой",contiguous as u64,ops.len() as u64);last=Instant::now();}
         }
         Ok(())
@@ -636,6 +705,7 @@ fn update_item(
         } else {
             (before, after)
         };
+        if !restore && current == *after { return Ok(()); }
         if restore && current == *before {
             return Ok(());
         }
@@ -651,6 +721,66 @@ fn update_item(
         }
     }
     Ok(())
+}
+fn launcher_write_access(path:&Path)->Result<(),String>{
+    no_links(path)?;
+    if !path.exists(){return Ok(());}
+    if fs::metadata(path).map_err(io)?.permissions().readonly(){return Err(REGISTRATION_WARNING.into());}
+    #[cfg(windows)]{
+        use std::os::windows::fs::OpenOptionsExt;
+        // Replacement of an existing file needs DELETE, not merely permission
+        // to create a sibling. Opening with this access does not change bytes,
+        // attributes or ACLs and never requests elevation.
+        fs::OpenOptions::new().access_mode(0x0001_0000).share_mode(0x7).open(path)
+            .map_err(|_|REGISTRATION_WARNING.to_string())?;
+    }
+    Ok(())
+}
+fn commit_progress(phase:&str,done:u64,total:u64,network:u64,prefix:&[u64],total_bytes:u64,paused:bool)->Progress{
+    let registration=phase==REGISTRATION_PHASE;
+    let can_pause=!registration && phase!=ROLLBACK_PHASE;
+    let (done,total)=if registration{(0,0)}else{(done,total)};
+    Progress{phase:phase.into(),done,total,percent:done.saturating_mul(100)/total.max(1),network_bytes:network,
+        processed_bytes:if can_pause{prefix.get(done as usize).copied().unwrap_or(total_bytes)}else{0},total_bytes:if can_pause{total_bytes}else{0},
+        files_done:done,files_total:total,paused:can_pause&&paused,can_pause}
+}
+fn validation_progress(phase:&str,done:u64,total:u64,bytes:u64,total_bytes:u64,paused:bool)->Progress{
+    Progress{phase:phase.into(),done,total,percent:done.saturating_mul(100)/total.max(1),network_bytes:0,
+        processed_bytes:bytes,total_bytes,files_done:done,files_total:total,paused,can_pause:true}
+}
+fn validation_checkpoint(cancel:&AtomicBool,paused:&AtomicBool,suspend:&AtomicBool,mut report:impl FnMut())->Result<(),String>{
+    loop{
+        super::resume::check_suspend(Some(suspend))?;
+        if cancel.load(Ordering::SeqCst){return Err("Загрузка остановлена. Готовые блоки сохранятся для продолжения.".into());}
+        if !paused.load(Ordering::SeqCst){return Ok(());}
+        report();std::thread::sleep(Duration::from_millis(250));
+    }
+}
+fn validate_cached_chunks(stage:&Path,chunks:BTreeMap<String,reqwest::Url>,cancel:&AtomicBool,paused:&AtomicBool,suspend:&AtomicBool,mut progress:impl FnMut(Progress))->Result<(u64,Vec<(String,reqwest::Url)>),String>{
+    let total=chunks.len() as u64;let mut cached=Vec::new();let mut pending=Vec::new();let mut total_bytes=0u64;
+    progress(validation_progress(CACHE_INVENTORY_PHASE,0,total,0,0,paused.load(Ordering::SeqCst)));
+    let mut last=Instant::now();
+    for (index,(guid,url)) in chunks.into_iter().enumerate(){
+        validation_checkpoint(cancel,paused,suspend,||progress(validation_progress(CACHE_INVENTORY_PHASE,index as u64,total,0,0,true)))?;
+        if !guid.chars().all(|c|c.is_ascii_hexdigit()||c=='-')||guid.is_empty(){return Err("Некорректный идентификатор блока".into());}
+        let path=stage.join("chunks").join(&guid);no_links(&path)?;
+        if path.exists(){let size=fs::metadata(&path).map_err(io)?.len();total_bytes=total_bytes.saturating_add(size);cached.push((path,size));}
+        else{pending.push((guid,url));}
+        if last.elapsed()>=Duration::from_millis(250)||index as u64+1==total{progress(validation_progress(CACHE_INVENTORY_PHASE,index as u64+1,total,0,0,paused.load(Ordering::SeqCst)));last=Instant::now();}
+    }
+    let total=cached.len() as u64;let mut done=0u64;let mut bytes=0u64;
+    progress(validation_progress(CACHE_VALIDATION_PHASE,0,total,0,total_bytes,paused.load(Ordering::SeqCst)));
+    last=Instant::now();
+    for (path,size) in cached{
+        validation_checkpoint(cancel,paused,suspend,||progress(validation_progress(CACHE_VALIDATION_PHASE,done,total,bytes,total_bytes,true)))?;
+        no_links(&path)?;let stored=fs::read(path).map_err(io)?;
+        if stored.len() as u64!=size{return Err("Скачанный файл изменился до установки".into());}
+        crate::vault::decode_chunk(&stored)?;
+        done+=1;bytes=bytes.saturating_add(stored.len() as u64);
+        if last.elapsed()>=Duration::from_millis(250)||done==total{progress(validation_progress(CACHE_VALIDATION_PHASE,done,total,bytes,total_bytes,paused.load(Ordering::SeqCst)));last=Instant::now();}
+    }
+    validation_checkpoint(cancel,paused,suspend,||progress(validation_progress(CACHE_VALIDATION_PHASE,done,total,bytes,total_bytes,true)))?;
+    Ok((done,pending))
 }
 #[tauri::command]
 pub async fn engine_install(
@@ -692,6 +822,8 @@ pub async fn engine_install(
     let _=on_progress.send(Progress{phase:"Сохраняем задачу установки".into(),done:0,total:0,percent:0,network_bytes:0,processed_bytes:0,total_bytes:0,files_done:0,files_total:0,paused:false,can_pause:false});
     plan=tauri::async_runtime::spawn_blocking(move||{super::resume::save(&plan)?;Ok::<_,String>(plan)}).await.map_err(|_|"Сохранение установки прервано")??;
     state.resumable.store(true,Ordering::SeqCst);
+    // Probe the optional global record before download without changing it.
+    let launcher_preflight_warning=launcher_write_access(&launcher_path()).err().map(|_|REGISTRATION_WARNING.to_string());
     if stage.join("journal.json").exists() {
         let j: Journal = serde_json::from_slice(&fs::read(stage.join("journal.json")).map_err(io)?)
             .map_err(|_| "Не удалось прочитать журнал восстановления")?;
@@ -718,16 +850,18 @@ pub async fn engine_install(
             network_bytes,
             processed_bytes: if phase=="Собираем и проверяем файлы" {done}else{0},
             total_bytes: if phase=="Собираем и проверяем файлы" {total}else{0},
-            files_done: 0, files_total: 0,
+            files_done: if phase==TASK_VALIDATION_PHASE{done}else{0}, files_total: if phase==TASK_VALIDATION_PHASE{total}else{0},
             paused:state.paused.load(Ordering::SeqCst),can_pause:state.pause_available.load(Ordering::SeqCst),
         });
     };
-    emit("Проверяем установленные файлы", 0, 0, 0);
-    let copy = plan.clone();
-    let cancel = state.cancel.clone();
-    let channel = on_progress.clone();
+    emit(TASK_VALIDATION_PHASE, 0, 0, 0);
     let saved_ops=super::resume::load_operations(&stage)?.map(|ops|ops.into_iter().filter(|o|!o.name.starts_with(".egstore/")).collect::<Vec<_>>());
-    let ops = if let Some(ops)=saved_ops {ops} else {tauri::async_runtime::spawn_blocking(move || {
+    let ops = if let Some(ops)=saved_ops {ops} else {
+        emit("Проверяем установленные файлы",0,0,0);
+        let copy = plan.clone();
+        let cancel = state.cancel.clone();
+        let channel = on_progress.clone();
+        tauri::async_runtime::spawn_blocking(move || {
         operations(&copy, &cancel, |done, total| {
             let _ = channel.send(Progress {
                 phase: "Проверяем установленные файлы".into(),
@@ -751,21 +885,23 @@ pub async fn engine_install(
     let mut chunks = BTreeMap::new();
     let already_committed=super::resume::commit_complete(&stage)?;
     let applying=super::resume::commit_applying(&stage)?;
-    for op in &ops {
-        if op.new_hash.is_none() {
-            continue;
+    let mut remaining_bytes=0u64;
+    let mut task_validation_last=Instant::now();
+    emit(TASK_VALIDATION_PHASE,0,ops.len() as u64,0);
+    for (index,op) in ops.iter().enumerate() {
+        super::resume::check_suspend(Some(&state.suspend))?;cancelled(&state)?;
+        if op.new_hash.is_some() && !already_committed && !applying {
+            let file=plan.files.get(&op.name).ok_or("Повреждена сохранённая задача установки")?;
+            if op.new_hash.as_ref()!=Some(&file.file_hash){return Err("Файлы задачи не совпадают с манифестом".into());}
+            if !stage.join("files").join(&op.name).exists(){remaining_bytes=remaining_bytes.saturating_add(file.size() as u64);}
+            for part in &file.file_chunk_parts {chunks.entry(part.guid.clone()).or_insert(part.link.clone().ok_or("Нет адреса блока")?);}
         }
-        if already_committed || applying {continue;}
-        let file=plan.files.get(&op.name).ok_or("Повреждена сохранённая задача установки")?;
-        if op.new_hash.as_ref()!=Some(&file.file_hash){return Err("Файлы задачи не совпадают с манифестом".into());}
-        for part in &file.file_chunk_parts {
-            chunks
-                .entry(part.guid.clone())
-                .or_insert(part.link.clone().ok_or("Нет адреса блока")?);
+        if task_validation_last.elapsed()>=Duration::from_millis(250)||index+1==ops.len(){
+            let mut p=validation_progress(TASK_VALIDATION_PHASE,index as u64+1,ops.len() as u64,0,0,false);p.can_pause=false;
+            super::resume::report(&plan.info.id,TASK_VALIDATION_PHASE,p.done,p.total);let _=on_progress.send(p);task_validation_last=Instant::now();
         }
     }
     // Reserve the assembled files and a conservative uncompressed chunk cache.
-    let remaining_bytes=if already_committed || applying {0} else {ops.iter().filter(|o|o.new_hash.is_some()&&!stage.join("files").join(&o.name).exists()).filter_map(|o|plan.files.get(&o.name)).map(|f|f.size() as u64).sum()};
     let reserve = remaining_bytes
         .saturating_add(
             chunks
@@ -789,23 +925,13 @@ pub async fn engine_install(
         .build()
         .map_err(|_| "Не удалось создать загрузчик")?;
     let total = chunks.len() as u64;
-    let mut done = 0u64;
     let meter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let mut pending = Vec::new();
-    for (guid, url) in chunks {
-        if !guid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-            return Err("Некорректный идентификатор блока".into());
-        }
-        let p = stage.join("chunks").join(&guid);
-        no_links(&p)?;
-        if p.exists() {
-            crate::vault::decode_chunk(&fs::read(&p).map_err(io)?)?;
-            done += 1;
-        } else {
-            pending.push((guid, url));
-        }
-    }
     state.pause_available.store(true,Ordering::SeqCst);
+    let validation_stage=stage.clone();let validation_cancel=state.cancel.clone();let validation_pause=state.paused.clone();let validation_suspend=state.suspend.clone();
+    let validation_channel=on_progress.clone();let validation_id=plan.info.id.clone();
+    let (mut done,pending)=tauri::async_runtime::spawn_blocking(move||validate_cached_chunks(&validation_stage,chunks,&validation_cancel,&validation_pause,&validation_suspend,|p|{
+        super::resume::report(&validation_id,&p.phase,p.done,p.total);let _=validation_channel.send(p);
+    })).await.map_err(|_|"Проверка прервана")??;
     emit("Скачиваем движок", done, total, meter.load(Ordering::SeqCst));
     for batch in pending.chunks(8) {
         while state.paused.load(Ordering::SeqCst){cancelled(&state)?;emit("Скачиваем движок",done,total,meter.load(Ordering::SeqCst));tokio::time::sleep(Duration::from_millis(250)).await;}
@@ -834,9 +960,10 @@ pub async fn engine_install(
         }
     }
     let network = meter.load(Ordering::SeqCst);
+    if !already_committed && !applying {
     let assembly_id=plan.info.id.clone();
     let assembly_plan=plan.clone();let assembly_stage=stage.clone();let assembly_ops=ops.clone();let assembly_cancel=state.cancel.clone();let assembly_channel=on_progress.clone();let assembly_pause=state.paused.clone();
-    if !already_committed && !applying {tauri::async_runtime::spawn_blocking(move||assemble_files_controlled(&assembly_plan,&assembly_stage,&assembly_ops,&assembly_cancel,Some(&assembly_pause),|done,files_done,files_total|{
+    tauri::async_runtime::spawn_blocking(move||assemble_files_controlled(&assembly_plan,&assembly_stage,&assembly_ops,&assembly_cancel,Some(&assembly_pause),|done,files_done,files_total|{
         super::resume::report(&assembly_id,"Собираем и проверяем файлы",done,bytes);
         let _=assembly_channel.send(Progress{phase:"Собираем и проверяем файлы".into(),done,total:bytes,percent:done*100/bytes.max(1),network_bytes:network,processed_bytes:done,total_bytes:bytes,files_done,files_total,paused:assembly_pause.load(Ordering::SeqCst),can_pause:true});
     })).await.map_err(|_|"Сборка прервана")??;}
@@ -850,22 +977,20 @@ pub async fn engine_install(
     let total_bytes=prefix.last().copied().unwrap_or(0);
     let commit_id=plan.info.id.clone();
     let commit_pause=state.paused.clone();let commit_suspend=state.suspend.clone();
-    if !already_committed {tauri::async_runtime::spawn_blocking(move || {
-        commit_checkpointed(&copy, &stage_copy, &ops,Some(&commit_pause),Some(&commit_suspend), |phase, done, total| {
+    let commit_app=app.clone();
+    let registration_warning=if !already_committed {tauri::async_runtime::spawn_blocking(move || {
+        commit_checkpointed(&copy, &stage_copy, &ops,Some(&commit_pause),Some(&commit_suspend),launcher_preflight_warning, |phase, done, total| {
+            if phase==REGISTRATION_PHASE||phase==ROLLBACK_PHASE {commit_app.state::<EngineState>().pause_available.store(false,Ordering::SeqCst);commit_pause.store(false,Ordering::SeqCst);}
             super::resume::report(&commit_id,phase,done,total);
-            let _ = channel.send(Progress {
-                phase: phase.into(),
-                done,
-                total,
-                percent: done * 100 / total.max(1),
-                network_bytes: network,
-                processed_bytes: prefix.get(done as usize).copied().unwrap_or(total_bytes),total_bytes,
-                files_done:done, files_total:total,paused:commit_pause.load(Ordering::SeqCst),can_pause:true,
-            });
+            let _=channel.send(commit_progress(phase,done,total,network,&prefix,total_bytes,commit_pause.load(Ordering::SeqCst)));
         })
     })
     .await
-    .map_err(|_| "Установка прервана. Проверьте журнал восстановления")??;}
+    .map_err(|_| "Установка прервана. Проверьте журнал восстановления")??}else{
+        let journal:Journal=serde_json::from_slice(&fs::read(stage.join("journal.json")).map_err(io)?).map_err(|_|"Повреждён журнал установки")?;
+        finish_completed_marker(&target(&plan.info.path)?,&stage,&journal)?;
+        journal.launcher_warning
+    };
     super::resume::check_suspend(Some(&state.suspend))?;
     state.pause_available.store(false,Ordering::SeqCst);state.paused.store(false,Ordering::SeqCst);
     let installed_root = target(&plan.info.path)?;
@@ -874,32 +999,39 @@ pub async fn engine_install(
     let fab_needed=!installed_root.join("Engine/Plugins/Fab/Fab.uplugin").is_file()&&!installed_root.join("Engine/Plugins/Marketplace/Fab/Fab.uplugin").is_file()
         && branch.split('.').filter_map(|n|n.parse::<u32>().ok()).collect::<Vec<_>>().as_slice()>=[5,3].as_slice();
     let mut fab_warning=None;
+    let fab_received=std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     if fab_needed {
         emit("Устанавливаем Fab",0,0,network);
         let channel=on_progress.clone();
+        let fab_meter=fab_received.clone();
         let fab_channel=tauri::ipc::Channel::<crate::vault::Progress>::new(move|body|{
             if let tauri::ipc::InvokeResponseBody::Json(json)=body {
                 if let Ok(p)=serde_json::from_str::<serde_json::Value>(&json) {
-                    let done=p["done"].as_u64().unwrap_or(0);let total=p["total"].as_u64().unwrap_or(0);
-                    let _=channel.send(Progress{phase:"Устанавливаем Fab".into(),done,total,percent:done*100/total.max(1),network_bytes:network+p["networkBytes"].as_u64().unwrap_or(0),processed_bytes:done,total_bytes:total,files_done:p["filesDone"].as_u64().unwrap_or(0),files_total:p["filesTotal"].as_u64().unwrap_or(0),paused:false,can_pause:false});
+                    let _=channel.send(fab_progress(&p,network,&fab_meter));
                 }
             }
             Ok(())
         });
         if let Err(error)=crate::vault::install_fab_locked(&app,&epic,&vault,&installed_root,branch,fab_channel).await {fab_warning=Some(error);}
     }
+    let network=network.saturating_add(fab_received.load(Ordering::SeqCst));
     super::resume::check_suspend(Some(&state.suspend))?;
     emit("Устанавливаем системные компоненты",0,0,network);
     let prerequisite_plan=plan.clone();
-    let prerequisite_channel=on_progress.clone();
-    let prerequisites=tauri::async_runtime::spawn_blocking(move||super::prerequisites::install(&prerequisite_plan,|done,total|{
-        let _=prerequisite_channel.send(Progress{phase:"Устанавливаем системные компоненты".into(),done,total,percent:done*100/total.max(1),network_bytes:network,processed_bytes:0,total_bytes:0,files_done:0,files_total:0,paused:false,can_pause:false});
+    let prerequisite_channel=on_progress.clone();let prerequisite_suspend=state.suspend.clone();
+    let prerequisites=tauri::async_runtime::spawn_blocking(move||super::prerequisites::install(&prerequisite_plan,Some(&prerequisite_suspend),|phase,done,total|{
+        let waiting=phase=="Ожидаем завершения установки системных компонентов";
+        let _=prerequisite_channel.send(Progress{phase:phase.into(),done:if waiting{0}else{done},total:if waiting{0}else{total},percent:if waiting{0}else{done.saturating_mul(100)/total.max(1)},network_bytes:network,processed_bytes:0,total_bytes:0,files_done:done,files_total:total,paused:false,can_pause:false});
     })).await.map_err(|_|"Проверка системных компонентов прервана")?;
     super::resume::check_suspend(Some(&state.suspend))?;
     emit("Очищаем временные файлы", 0, 0, network);
     let cleanup_root=installed_root.clone();
     let cleanup_stage=stage.clone();
-    let cleanup=tauri::async_runtime::spawn_blocking(move || cleanup_completed(&cleanup_root,&cleanup_stage,crate::storage::keep_engine_backup())).await.map_err(|_|"Очистка прервана")?;
+    let cleanup_suspend=state.suspend.clone();let cleanup_channel=on_progress.clone();
+    let cleanup=tauri::async_runtime::spawn_blocking(move || cleanup_completed_controlled(&cleanup_root,&cleanup_stage,crate::storage::keep_engine_backup(),Some(&cleanup_suspend),|phase,done,total,bytes,total_bytes|{
+        let mut p=removal_progress(phase,done,total,bytes,total_bytes);p.network_bytes=network;let _=cleanup_channel.send(p);
+    })).await.map_err(|_|"Очистка прервана")?;
+    super::resume::check_suspend(Some(&state.suspend))?;
     super::resume::remove(&plan.info.id)?;
     state.resumable.store(false,Ordering::SeqCst);
     *state.plan.lock().map_err(|_| "Ошибка состояния")? = None;
@@ -910,10 +1042,52 @@ pub async fn engine_install(
     };
     match prerequisites {Ok(true)=>result.push_str(" Требуется перезагрузка Windows."),Ok(false)=>(),Err(error)=>{result.push_str(" Движок установлен, но системные компоненты требуют внимания: ");result.push_str(&error);}}
     if let Some(error)=fab_warning {result.push_str(" Fab не установлен: ");result.push_str(&error);}
+    if registration_warning.is_some(){result.push('\n');result.push_str(REGISTRATION_WARNING);}
     Ok(result)
 }
 
-fn cleanup_completed(root:&Path,stage:&Path,keep_backup:bool)->Result<(),String> {
+#[derive(Clone,Copy,PartialEq)]
+enum RemovalKind{File,Directory,FileLink,DirectoryLink}
+struct RemovalEntry{path:PathBuf,kind:RemovalKind,bytes:u64}
+fn removal_metadata(path:&Path)->Result<(RemovalKind,u64),String>{
+    let meta=fs::symlink_metadata(path).map_err(io)?;
+    #[cfg(windows)]let (link,directory)={use std::os::windows::fs::MetadataExt;((meta.file_attributes()&0x400)!=0,(meta.file_attributes()&0x10)!=0)};
+    #[cfg(not(windows))]let (link,directory)=(meta.file_type().is_symlink(),meta.is_dir());
+    if link{return Ok((if directory{RemovalKind::DirectoryLink}else{RemovalKind::FileLink},0));}
+    Ok(if directory{(RemovalKind::Directory,0)}else{(RemovalKind::File,meta.len())})
+}
+pub(super) fn removal_progress(phase:&str,done:u64,total:u64,bytes:u64,total_bytes:u64)->Progress{
+    let mut p=validation_progress(phase,done,total,bytes,total_bytes,false);p.can_pause=false;p
+}
+pub(super) fn remove_trees_counted(roots:&[PathBuf],inventory_phase:&str,removal_phase:&str,suspend:Option<&AtomicBool>,mut progress:impl FnMut(&str,u64,u64,u64,u64))->Result<(),String>{
+    let mut entries=Vec::new();let mut pending=Vec::new();let mut total_bytes=0u64;let mut last=Instant::now();
+    progress(inventory_phase,0,0,0,0);
+    for root in roots{no_links(root)?;if root.exists(){pending.push(root.clone());}}
+    while let Some(path)=pending.pop(){
+        super::resume::check_suspend(suspend)?;
+        no_links(path.parent().ok_or("Путь файла")?)?;
+        let (kind,bytes)=removal_metadata(&path)?;
+        if kind==RemovalKind::Directory{for child in fs::read_dir(&path).map_err(io)?{pending.push(child.map_err(io)?.path());}}
+        total_bytes=total_bytes.saturating_add(bytes);entries.push(RemovalEntry{path,kind,bytes});
+        if last.elapsed()>=Duration::from_millis(250){progress(inventory_phase,entries.len() as u64,0,0,0);last=Instant::now();}
+    }
+    progress(inventory_phase,entries.len() as u64,0,0,0);
+    let total=entries.len() as u64;let mut done=0u64;let mut bytes=0u64;last=Instant::now();
+    progress(removal_phase,0,total,0,total_bytes);
+    for entry in entries.into_iter().rev(){
+        super::resume::check_suspend(suspend)?;
+        no_links(entry.path.parent().ok_or("Путь файла")?)?;
+        let current=removal_metadata(&entry.path)?;
+        if current!=(entry.kind,entry.bytes){return Err("Файлы изменились во время удаления. Повторите проверку.".into());}
+        match entry.kind{RemovalKind::Directory|RemovalKind::DirectoryLink=>fs::remove_dir(&entry.path),RemovalKind::File|RemovalKind::FileLink=>fs::remove_file(&entry.path)}.map_err(io)?;
+        done+=1;bytes=bytes.saturating_add(entry.bytes);
+        if last.elapsed()>=Duration::from_millis(250)||done==total{progress(removal_phase,done,total,bytes,total_bytes);last=Instant::now();}
+    }
+    Ok(())
+}
+#[cfg(test)]
+fn cleanup_completed(root:&Path,stage:&Path,keep_backup:bool)->Result<(),String>{cleanup_completed_controlled(root,stage,keep_backup,None,|_,_,_,_,_|{})}
+fn cleanup_completed_controlled(root:&Path,stage:&Path,keep_backup:bool,suspend:Option<&AtomicBool>,mut progress:impl FnMut(&str,u64,u64,u64,u64))->Result<(),String> {
     no_links(root)?; no_links(stage)?;
     let mut journal:Journal=serde_json::from_slice(&fs::read(stage.join("journal.json")).map_err(io)?).map_err(|_|"Повреждён журнал установки")?;
     let fingerprint=digest(format!("{}\n{}",journal.root.to_lowercase(),journal.build).as_bytes());
@@ -922,12 +1096,16 @@ fn cleanup_completed(root:&Path,stage:&Path,keep_backup:bool)->Result<(),String>
         || stage.parent()!=root.parent() || !stage.file_name().and_then(|n|n.to_str()).is_some_and(|n|n==prefix || n.strip_prefix(&(prefix.clone()+"-")).is_some_and(|s|uuid::Uuid::parse_str(s).is_ok())) {
         return Err("Очистка разрешена только для завершённой установки и её рабочей папки.".into());
     }
+    let mut cleanup_roots=Vec::new();
     for name in ["chunks","files","originals"] {
         if name=="originals" && keep_backup {continue;}
         let folder=stage.join(name);
         no_links(&folder)?;
-        if folder.exists() {fs::remove_dir_all(&folder).map_err(io)?;}
+        if folder.exists() {cleanup_roots.push(folder);}
     }
+    remove_trees_counted(&cleanup_roots,"Считаем временные файлы","Удаляем временные файлы",suspend,&mut progress)?;
+    super::resume::check_suspend(suspend)?;
+    progress("Завершаем очистку",0,0,0,0);
     let saved_ops=stage.join("resume-operations.zlib");no_links(&saved_ops)?;if saved_ops.exists(){fs::remove_file(saved_ops).map_err(io)?;}
     let originals=stage.join("originals");
     let has_backup=originals.is_dir() && fs::read_dir(&originals).map_err(io)?.next().is_some();
@@ -1001,13 +1179,149 @@ mod tests {
 }
 
 #[cfg(test)]
-pub(crate) fn idle() -> Result<(), String> {
+#[derive(Clone)]
+struct MockEngineProcess{name:String,image:Option<PathBuf>}
+#[cfg(test)]
+thread_local!{static MOCK_IDLE_PROCESSES:std::cell::RefCell<Option<std::collections::VecDeque<Vec<MockEngineProcess>>>>=const{std::cell::RefCell::new(None)};}
+#[cfg(test)]
+pub(crate) fn idle(root:&Path) -> Result<(), String> {
+    let processes=MOCK_IDLE_PROCESSES.with(|slot|{let mut slot=slot.borrow_mut();slot.as_mut().map(|snapshots|if snapshots.len()>1{snapshots.pop_front().unwrap()}else{snapshots.front().cloned().unwrap_or_default()})});
+    let Some(processes)=processes else{return Ok(());};
+    let root=canonical_guard_root(root)?;
+    for process in processes{guard_engine_process(&root,&process.name,process.image.as_deref())?;}
     Ok(())
 }
 
 #[cfg(test)]
 mod transaction_tests {
     use super::*;
+    struct MockIdleScope(Option<std::collections::VecDeque<Vec<MockEngineProcess>>>);
+    impl MockIdleScope{fn new(snapshots:Vec<Vec<MockEngineProcess>>)->Self{Self(MOCK_IDLE_PROCESSES.with(|s|s.replace(Some(snapshots.into()))))}}
+    impl Drop for MockIdleScope{fn drop(&mut self){MOCK_IDLE_PROCESSES.with(|s|{s.replace(self.0.take());});}}
+    #[test]
+    fn engine_process_guard_scopes_case_extended_unc_and_sibling_paths(){
+        let root=Path::new(r"X:\Fixture\UE_5.7");
+        assert!(guard_engine_process(root,"UnrealEditor-Cmd.exe",Some(Path::new(r"\\?\x:\fixture\ue_5.7\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"))).is_err());
+        assert!(guard_engine_process(root,"ShaderCompileWorker.exe",Some(Path::new("X:/Fixture/UE_5.7/Engine/Binaries/Win64/ShaderCompileWorker.exe"))).is_err());
+        assert!(guard_engine_process(root,"UnrealBuildTool.exe",Some(Path::new(r"X:\Fixture\UE_5.8\Engine\Binaries\UnrealBuildTool.exe"))).is_ok());
+        assert!(guard_engine_process(root,"UnrealEditor.exe",Some(Path::new(r"X:\Fixture\UE_5.7_other\UnrealEditor.exe"))).is_ok());
+        assert!(guard_engine_process(root,"dotnet.exe",Some(Path::new(r"X:\Fixture\UE_5.7\Engine\Binaries\ThirdParty\DotNet\dotnet.exe"))).is_err());
+        assert!(guard_engine_process(root,"EpicGamesLauncher.exe",None).is_ok());
+        assert!(guard_engine_process(Path::new(r"\\server\share\UE"),"UnrealEditor.exe",Some(Path::new(r"\\?\UNC\SERVER\share\UE\Engine\UnrealEditor.exe"))).is_err());
+        assert!(guard_engine_process(Path::new(r"\\server\share\UE"),"UnrealEditor.exe",Some(Path::new(r"\\server\other\UE\UnrealEditor.exe"))).is_ok());
+        let error=guard_engine_process(root,"UnrealEditor.exe",None).unwrap_err();assert!(error.contains("Не удалось определить, какой движок"));
+        assert!(guard_engine_process(root,"UnrealEditor.exe",Some(Path::new("UnrealEditor.exe"))).unwrap_err().contains("Не удалось определить"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn canonical_process_image_alias_cannot_bypass_target_guard(){
+        let base=std::env::temp_dir().join(format!("um-process-alias-{}",uuid::Uuid::new_v4()));let root=base.join("engine");let alias=base.join("alias");
+        fs::create_dir_all(root.join("Engine/Binaries")).unwrap();fs::write(root.join("Engine/Binaries/UnrealEditor.exe"),b"fixture").unwrap();
+        let status=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command","$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:UM_TEST_LINK -Target $env:UM_TEST_TARGET | Out-Null"]).env("UM_TEST_LINK",&alias).env("UM_TEST_TARGET",&root).status().unwrap();assert!(status.success());
+        let image=alias.join("Engine/Binaries/UnrealEditor.exe").canonicalize().unwrap();let canonical=canonical_guard_root(&root).unwrap();
+        assert!(guard_engine_process(&canonical,"UnrealEditor.exe",Some(&image)).is_err());
+        assert_eq!(canonical_guard_root(&base.join("missing/target")).unwrap(),base.canonicalize().unwrap().join("missing/target"));
+        fs::remove_dir(alias).unwrap();fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn midcommit_unrelated_editor_is_allowed_but_target_editor_rolls_back(){
+        for own in [false,true]{
+            let (base,stage,plan,mut ops)=fixture();let root=PathBuf::from(&plan.info.path);let b="Engine/new-file";
+            write_new(&stage.join("files").join(b),b"new file").unwrap();ops.push(Operation{name:b.into(),old_hash:None,new_hash:Some(digest(b"new file"))});
+            let process_root=if own{root.clone()}else{base.join("unrelated-engine")};let process=MockEngineProcess{name:"UnrealEditor-Cmd.exe".into(),image:Some(process_root.join("Engine/Binaries/Win64/UnrealEditor-Cmd.exe"))};
+            // Initial guard and the first file pass; the process appears before
+            // the next file. Test-only checkpoint scheduling avoids wall time.
+            let _scope=MockIdleScope::new(vec![vec![],vec![],vec![process]]);
+            let mut phases=vec![];let result=commit_checkpointed(&plan,&stage,&ops,None,None,None,|phase,_,_|phases.push(phase.to_string()));
+            if own{assert!(result.unwrap_err().contains("закройте UnrealEditor-Cmd.exe"));assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"old");assert!(!root.join(b).exists());assert!(phases.iter().any(|p|p==ROLLBACK_PHASE));}
+            else{result.unwrap();assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"new");assert_eq!(fs::read(root.join(b)).unwrap(),b"new file");assert!(!phases.iter().any(|p|p==ROLLBACK_PHASE));}
+            assert!(!root.join(".um-engine-update.json").exists());fs::remove_dir_all(base).unwrap();
+        }
+    }
+    #[test]
+    fn engine_install_future_has_bounded_inline_state(){
+        fn return_size<F>(_:fn(tauri::AppHandle,tauri::State<'static,crate::epic::EpicState>,tauri::State<'static,EngineState>,tauri::State<'static,crate::vault::VaultState>,String,tauri::ipc::Channel<Progress>)->F)->usize{std::mem::size_of::<F>()}
+        let bytes=return_size(engine_install);
+        println!("engine_install future inline bytes: {bytes}");
+        assert!(bytes<=64*1024,"engine command future must not embed large I/O buffers; inline bytes: {bytes}");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn protected_launcher_record_does_not_roll_back_engine_or_epic_item(){
+        use std::os::windows::fs::OpenOptionsExt;
+        for fresh in [false,true]{
+            let (base,stage,plan,ops)=if fresh{fresh_fixture()}else{fixture()};
+            let root=PathBuf::from(&plan.info.path);let launcher=base.join("LauncherInstalled.dat");
+            let before=br#"{"InstallationList":[{"AppName":"Game","InstallLocation":"X:/Fixture/Game"}]}"#;
+            fs::write(&launcher,before).unwrap();
+            assert!(launcher_write_access(&launcher).is_ok());
+            let metadata=launcher_update_at(&launcher,&plan.info.app_name,&plan.info.build,&root).unwrap();
+            let mut all_ops=ops.clone();let item=prepare_metadata(&plan,&stage,&mut all_ops).unwrap();
+            let journal=Journal{root:plan.info.path.clone(),build:plan.info.build.clone(),operations:all_ops,status:"applying".into(),item:item.clone(),launcher:Some(metadata),launcher_warning:None};
+            atomic(&stage.join("journal.json"),&serde_json::to_vec(&journal).unwrap()).unwrap();
+            // Simulate permissions/sharing changing after a successful preflight:
+            // reading and sibling creation work, replacement is denied.
+            let held=fs::OpenOptions::new().read(true).share_mode(0x3).open(&launcher).unwrap();
+            assert!(launcher_write_access(&launcher).is_err());
+            let mut phases=vec![];
+            let preflight=if fresh{launcher_write_access(&launcher).err().map(|_|REGISTRATION_WARNING.to_string())}else{None};
+            let warning=commit_checkpointed(&plan,&stage,&ops,None,None,preflight,|phase,_,_|phases.push(phase.to_string())).unwrap();
+            assert_eq!(warning.as_deref(),Some(REGISTRATION_WARNING));
+            assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"new");
+            assert_eq!(fs::read(&launcher).unwrap(),before);
+            if let Some((path,_,after))=item{assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap(),after);}
+            let completed:Journal=serde_json::from_slice(&fs::read(stage.join("journal.json")).unwrap()).unwrap();
+            assert_eq!(completed.status,"complete");assert_eq!(completed.launcher_warning.as_deref(),Some(REGISTRATION_WARNING));
+            assert!(!root.join(".um-engine-update.json").exists());assert!(!phases.iter().any(|p|p==ROLLBACK_PHASE));
+            assert!(phases.iter().any(|p|p==REGISTRATION_PHASE));
+            assert!(!fs::read_dir(&base).unwrap().flatten().any(|e|e.path().extension().is_some_and(|s|s.to_string_lossy().starts_with("um-"))));
+            drop(held);fs::remove_dir_all(base).unwrap();
+        }
+    }
+    #[test]
+    fn registration_is_exactly_idempotent_and_never_overwrites_foreign_changes(){
+        let (base,_,plan,_)=fixture();let path=base.join("idempotent.item");
+        let before=serde_json::json!({"version":"before"});let after=serde_json::json!({"version":"after"});
+        let item=Some((path.clone(),before,after.clone()));
+        fs::write(&path,after.to_string()).unwrap();let modified=fs::metadata(&path).unwrap().modified().unwrap();
+        update_item(&item,false).unwrap();assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(),modified);
+        fs::write(&path,br#"{"version":"foreign-change"}"#).unwrap();
+        assert!(update_item(&item,false).is_err());assert_eq!(fs::read(&path).unwrap(),br#"{"version":"foreign-change"}"#);
+        let _=plan;fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn completed_journal_finalizes_only_its_own_marker_after_restart(){
+        let (base,stage,plan,ops)=fixture();let root=PathBuf::from(&plan.info.path);
+        commit(&plan,&stage,&ops,|_,_,_|{}).unwrap();
+        let journal:Journal=serde_json::from_slice(&fs::read(stage.join("journal.json")).unwrap()).unwrap();
+        fs::write(root.join(".um-engine-update.json"),stage.to_string_lossy().as_bytes()).unwrap();
+        finish_completed_marker(&root,&stage,&journal).unwrap();finish_completed_marker(&root,&stage,&journal).unwrap();
+        assert!(!root.join(".um-engine-update.json").exists());
+        fs::write(root.join(".um-engine-update.json"),base.join("unrelated-stage").to_string_lossy().as_bytes()).unwrap();
+        assert!(finish_completed_marker(&root,&stage,&journal).is_err());
+        assert!(root.join(".um-engine-update.json").exists());fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn metadata_and_rollback_progress_cannot_show_stale_installation_bytes_or_pause(){
+        let progress=commit_progress(REGISTRATION_PHASE,999,999,50,&[0,500],500,true);
+        assert_eq!((progress.done,progress.total,progress.percent,progress.files_done,progress.files_total,progress.processed_bytes,progress.total_bytes),(0,0,0,0,0,0,0));
+        assert!(!progress.can_pause);assert!(!progress.paused);
+        let progress=commit_progress(ROLLBACK_PHASE,3,6,50,&[0,500],500,true);
+        assert_eq!((progress.done,progress.total,progress.percent,progress.files_done,progress.files_total),(3,6,50,3,6));
+        assert_eq!((progress.processed_bytes,progress.total_bytes),(0,0));assert!(!progress.can_pause);assert!(!progress.paused);
+    }
+    #[test]
+    fn real_rollback_reports_its_own_phase_and_restores_original_file(){
+        let (base,stage,plan,mut ops)=fixture();let root=PathBuf::from(&plan.info.path);
+        write_new(&stage.join("files/Engine/b"),b"corrupt").unwrap();
+        ops.push(Operation{name:"Engine/b".into(),old_hash:None,new_hash:Some(digest(b"expected"))});
+        let mut phases=vec![];
+        assert!(commit_checkpointed(&plan,&stage,&ops,None,None,None,|phase,done,total|phases.push((phase.to_string(),done,total))).is_err());
+        assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"old");
+        assert!(phases.iter().any(|(phase,done,total)|phase==ROLLBACK_PHASE&&*done==0&&*total>0));
+        assert!(phases.iter().any(|(phase,done,total)|phase==ROLLBACK_PHASE&&done==total));
+        fs::remove_dir_all(base).unwrap();
+    }
     #[test]
     fn registration_creates_launcher_record_preserves_games_and_rolls_back(){
         let (base,_,plan,_)=fixture();let path=base.join("LauncherInstalled.dat");let root=Path::new(&plan.info.path);
@@ -1024,14 +1338,62 @@ mod transaction_tests {
     fn cleanup_only_complete_owned_stage_and_optional_backup(){
         let (base,old_stage,plan,ops)=fixture();let root=Path::new(&plan.info.path);let stage=stage_root(&plan).unwrap();fs::rename(old_stage,&stage).unwrap();commit(&plan,&stage,&ops,|_,_,_|{}).unwrap();fs::create_dir_all(stage.join("chunks")).unwrap();fs::write(stage.join("chunks/cache"),b"download").unwrap();
         fs::write(root.join(".um-engine-update.json"),b"pending").unwrap();assert!(cleanup_completed(root,&stage,false).is_err());assert!(stage.join("chunks/cache").exists());fs::remove_file(root.join(".um-engine-update.json")).unwrap();
-        cleanup_completed(root,&stage,true).unwrap();assert!(!stage.join("chunks").exists());assert!(stage.join("originals/Engine/a").is_file());assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"new");
+        let suspend=AtomicBool::new(false);let mut interrupted=vec![];
+        assert_eq!(cleanup_completed_controlled(root,&stage,true,Some(&suspend),|phase,done,total,bytes,total_bytes|{
+            interrupted.push((phase.to_string(),done,total,bytes,total_bytes));if phase=="Удаляем временные файлы"{suspend.store(true,Ordering::SeqCst);}
+        }).unwrap_err(),super::super::resume::SUSPENDED);
+        assert!(stage.join("chunks/cache").is_file());assert!(stage.join("journal.json").is_file());assert!(stage.join("originals/Engine/a").is_file());
+        assert!(interrupted.iter().any(|e|e.0=="Считаем временные файлы"&&e.1>=2&&e.2==0));
+        assert!(interrupted.iter().all(|e|e.0!="Завершаем очистку"));
+        suspend.store(false,Ordering::SeqCst);let mut events=vec![];
+        cleanup_completed_controlled(root,&stage,true,Some(&suspend),|phase,done,total,bytes,total_bytes|events.push((phase.to_string(),done,total,bytes,total_bytes))).unwrap();
+        let removed=events.iter().filter(|e|e.0=="Удаляем временные файлы").last().unwrap();assert_eq!(removed.1,removed.2);assert_eq!(removed.3,removed.4);assert!(removed.3>=8);
+        assert_eq!(events.last().unwrap(),&("Завершаем очистку".into(),0,0,0,0));
+        assert!(!stage.join("chunks").exists());assert!(stage.join("originals/Engine/a").is_file());assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"new");
         cleanup_completed(root,&stage,false).unwrap();assert!(!stage.join("originals").exists());assert_eq!(fs::read(root.join("Engine/Plugins/UserPlugin/x")).unwrap(),b"user plugin");
         let receipt:serde_json::Value=serde_json::from_slice(&fs::read(root.join(".egstore/um-install.json")).unwrap()).unwrap();assert!(receipt["backup"].is_null());fs::remove_dir_all(base).unwrap();
+    }
+    #[test]
+    fn counted_removal_rejects_changed_entry_before_deleting_it(){
+        let root=std::env::temp_dir().join(format!("um-removal-test-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();fs::write(root.join("a"),b"old").unwrap();
+        let mut events=vec![];
+        let error=remove_trees_counted(&[root.clone()],"inventory","remove",None,|phase,done,total,bytes,total_bytes|{
+            events.push((phase.to_string(),done,total,bytes,total_bytes));if phase=="remove"&&done==0{fs::write(root.join("a"),b"changed after inventory").unwrap();}
+        }).unwrap_err();
+        assert_eq!(error,"Файлы изменились во время удаления. Повторите проверку.");assert_eq!(fs::read(root.join("a")).unwrap(),b"changed after inventory");
+        assert!(events.iter().all(|e|e.0!="remove"||e.1==0));fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn fab_child_local_work_retains_phase_counts_and_received_network(){
+        let received=std::sync::atomic::AtomicU64::new(0);
+        let download=fab_progress(&serde_json::json!({"phase":"Скачиваем файлы","done":4,"total":8,"networkBytes":40,"filesDone":1,"filesTotal":2}),100,&received);
+        assert_eq!(download.phase,"Fab: Скачиваем файлы");assert_eq!((download.done,download.total,download.network_bytes),(4,8,140));
+        let copy=fab_progress(&serde_json::json!({"phase":"Копируем и проверяем файлы","done":12,"total":20,"networkBytes":0,"filesDone":1,"filesTotal":2}),100,&received);
+        assert_eq!(copy.phase,"Fab: Копируем и проверяем файлы");assert_eq!((copy.percent,copy.processed_bytes,copy.total_bytes,copy.files_done,copy.files_total,copy.network_bytes),(60,12,20,1,2,140));assert!(!copy.can_pause);
+        let next=fab_progress(&serde_json::json!({"phase":"Подготавливаем файлы","done":0,"total":0,"networkBytes":60}),100,&received);
+        assert_eq!(next.network_bytes,160);assert_eq!(next.total,0);
     }
     fn test_chunk(data:&[u8])->Vec<u8>{let mut bytes=vec![0u8;41];bytes[0..4].copy_from_slice(&2986228386u32.to_le_bytes());bytes[4..8].copy_from_slice(&1u32.to_le_bytes());bytes[8..12].copy_from_slice(&41u32.to_le_bytes());bytes[12..16].copy_from_slice(&(data.len() as u32).to_le_bytes());bytes.extend_from_slice(data);bytes}
     #[test]
     fn block_cache_reuses_interleaved_blocks_and_evicts_within_bound(){
         let (base,stage,_,_)=fixture();fs::create_dir_all(stage.join("chunks")).unwrap();for (n,data) in [("aa",b"AAAA"),("bb",b"BBBB"),("cc",b"CCCC")]{fs::write(stage.join("chunks").join(n),test_chunk(data)).unwrap();}
+        let inputs=||["aa","bb","cc","dd"].into_iter().map(|name|(name.to_string(),format!("https://example.invalid/{name}").parse().unwrap())).collect();
+        let cancel=AtomicBool::new(false);let paused=AtomicBool::new(false);let suspend=AtomicBool::new(false);
+        let mut reports=vec![];let mut saw_pause=false;
+        let (valid,pending)=validate_cached_chunks(&stage,inputs(),&cancel,&paused,&suspend,|p|{
+            if p.phase==CACHE_VALIDATION_PHASE&&p.done==0{if p.paused{saw_pause=true;paused.store(false,Ordering::SeqCst);}else if !saw_pause{paused.store(true,Ordering::SeqCst);}}
+            reports.push(p);
+        }).unwrap();
+        assert_eq!(valid,3);assert_eq!(pending.len(),1);assert_eq!(pending[0].0,"dd");assert!(saw_pause);
+        let checked:Vec<_>=reports.iter().filter(|p|p.phase==CACHE_VALIDATION_PHASE).collect();
+        assert_eq!((checked[0].done,checked[0].total,checked[0].processed_bytes),(0,3,0));
+        let last=checked.last().unwrap();assert_eq!((last.done,last.total,last.percent,last.processed_bytes,last.total_bytes,last.files_done,last.files_total),(3,3,100,135,135,3,3));
+        assert!(checked.windows(2).all(|p|p[0].done<=p[1].done&&p[0].processed_bytes<=p[1].processed_bytes));
+        assert!(reports.iter().all(|p|p.network_bytes==0));
+        assert!(validate_cached_chunks(&stage,inputs(),&cancel,&paused,&suspend,|p|{if p.phase==CACHE_VALIDATION_PHASE{cancel.store(true,Ordering::SeqCst);}}).is_err());
+        cancel.store(false,Ordering::SeqCst);
+        assert_eq!(validate_cached_chunks(&stage,inputs(),&cancel,&paused,&suspend,|p|{if p.phase==CACHE_VALIDATION_PHASE{suspend.store(true,Ordering::SeqCst);}}).unwrap_err(),super::super::resume::SUSPENDED);
+        suspend.store(false,Ordering::SeqCst);assert_eq!(fs::read(stage.join("chunks/aa")).unwrap(),test_chunk(b"AAAA"));
         let mut cache=BlockCache::new(8);assert_eq!(cache.get(&stage,"aa").unwrap(),b"AAAA");assert_eq!(cache.get(&stage,"bb").unwrap(),b"BBBB");fs::remove_file(stage.join("chunks/aa")).unwrap();assert_eq!(cache.get(&stage,"aa").unwrap(),b"AAAA");cache.get(&stage,"cc").unwrap();assert!(cache.bytes<=8);assert!(!cache.blocks.contains_key("bb"));assert!(cache.get(&stage,"../x").is_err());fs::remove_dir_all(base).unwrap();
     }
     #[test]
@@ -1066,13 +1428,13 @@ mod transaction_tests {
     fn restart_continues_update_without_recopying_applied_files() {
         let (base,stage,plan,ops)=fixture();let root=PathBuf::from(&plan.info.path);
         let stop=AtomicBool::new(true);
-        assert_eq!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),|_,_,_|{}).unwrap_err(),super::super::resume::SUSPENDED);
+        assert_eq!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),None,|_,_,_|{}).unwrap_err(),super::super::resume::SUSPENDED);
         write_new(&stage.join("originals/Engine/a"),b"old").unwrap();
         fs::remove_file(root.join("Engine/a")).unwrap();
         fs::rename(stage.join("files/Engine/a"),root.join("Engine/a")).unwrap();
         let modified=fs::metadata(root.join("Engine/a")).unwrap().modified().unwrap();
         stop.store(false,Ordering::SeqCst);
-        commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),|_,_,_|{}).unwrap();
+        commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),None,|_,_,_|{}).unwrap();
         assert_eq!(fs::metadata(root.join("Engine/a")).unwrap().modified().unwrap(),modified);
         assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"new");
         assert_eq!(fs::read(stage.join("originals/Engine/a")).unwrap(),b"old");
@@ -1081,28 +1443,28 @@ mod transaction_tests {
     #[test]
     fn restart_recovers_between_backup_and_replacement() {
         let (base,stage,plan,ops)=fixture();let root=PathBuf::from(&plan.info.path);let stop=AtomicBool::new(true);
-        assert!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),|_,_,_|{}).is_err());
+        assert!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),None,|_,_,_|{}).is_err());
         fs::create_dir_all(stage.join("originals/Engine")).unwrap();
         fs::rename(root.join("Engine/a"),stage.join("originals/Engine/a")).unwrap();
-        stop.store(false,Ordering::SeqCst);commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),|_,_,_|{}).unwrap();
+        stop.store(false,Ordering::SeqCst);commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),None,|_,_,_|{}).unwrap();
         assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"new");fs::remove_dir_all(base).unwrap();
     }
     #[test]
     fn restart_after_bulk_directory_move_preserves_completed_branch() {
         let (base,stage,plan,ops)=fresh_fixture();let root=PathBuf::from(&plan.info.path);let stop=AtomicBool::new(true);
-        assert!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),|_,_,_|{}).is_err());
+        assert!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),None,|_,_,_|{}).is_err());
         fs::rename(stage.join("files/Engine"),root.join("Engine")).unwrap();
         let modified=fs::metadata(root.join("Engine/a")).unwrap().modified().unwrap();
-        stop.store(false,Ordering::SeqCst);commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),|_,_,_|{}).unwrap();
+        stop.store(false,Ordering::SeqCst);commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),None,|_,_,_|{}).unwrap();
         assert_eq!(fs::metadata(root.join("Engine/a")).unwrap().modified().unwrap(),modified);
         assert!(root.join(".egstore/um-install.json").exists());fs::remove_dir_all(base).unwrap();
     }
     #[test]
     fn restart_never_overwrites_an_edited_applied_file() {
         let (base,stage,plan,ops)=fixture();let root=PathBuf::from(&plan.info.path);let stop=AtomicBool::new(true);
-        assert!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),|_,_,_|{}).is_err());
+        assert!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),None,|_,_,_|{}).is_err());
         write_new(&stage.join("originals/Engine/a"),b"old").unwrap();fs::write(root.join("Engine/a"),b"user edit").unwrap();
-        stop.store(false,Ordering::SeqCst);assert!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),|_,_,_|{}).is_err());
+        stop.store(false,Ordering::SeqCst);assert!(commit_checkpointed(&plan,&stage,&ops,None,Some(&stop),None,|_,_,_|{}).is_err());
         assert_eq!(fs::read(root.join("Engine/a")).unwrap(),b"user edit");assert_eq!(fs::read(stage.join("originals/Engine/a")).unwrap(),b"old");fs::remove_dir_all(base).unwrap();
     }
     #[test]
@@ -1474,8 +1836,8 @@ pub async fn engine_recover(
     }
     let _vault = Busy(&vault.active);
     tauri::async_runtime::spawn_blocking(move || {
-        idle()?;
         let root = target(&path)?;
+        idle(&root)?;
         let _installation_lock = lock_installation(&root)?;
         let (stage, mut j) = recovery(&root)?;
         if j.status != "complete" {
@@ -1597,19 +1959,19 @@ mod lock_tests {
 
 
 #[tauri::command]
-pub async fn engine_register_managed(state:tauri::State<'_,EngineState>)->Result<usize,String>{
+pub async fn engine_register_managed(state:tauri::State<'_,EngineState>,vault:tauri::State<'_,crate::vault::VaultState>)->Result<usize,String>{
     let _update_operation=crate::app_updates::operation()?;
  if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции с движком.".into());}
  let _busy=Busy(&state.active);
+ if vault.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции с хранилищем".into());}let _vault=Busy(&vault.active);
  tauri::async_runtime::spawn_blocking(repair_managed_registration).await.map_err(|e|e.to_string())?
 }
 pub(crate) fn repair_managed_registration()->Result<usize,String>{
- idle()?;
  let mut count=0;
  for engine in crate::scan_engines(){
   let root=target(&engine.path)?;let receipt=root.join(".egstore/um-install.json");
   if !receipt.exists()||root.join(".um-engine-update.json").exists(){continue;}
-  let _lock=lock_installation(&root)?;no_links(&receipt)?;
+  let _lock=lock_installation(&root)?;idle(&root)?;no_links(&receipt)?;
   let value:serde_json::Value=serde_json::from_slice(&fs::read(&receipt).map_err(io)?).map_err(|e|e.to_string())?;
   let app_name=value["appName"].as_str().ok_or("Нет идентификатора установки")?;
   if app_name!=format!("UE_{}",engine.version){return Err("Идентификатор установки не совпадает с версией движка".into());}

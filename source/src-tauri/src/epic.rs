@@ -4,6 +4,17 @@ use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
 
 use tokio::sync::Mutex;
 
+// Login resets the shared website profile. Reserve it before either flow can
+// await so a pending login cannot replace cookies underneath redemption.
+static WEB_FLOW:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+pub(crate) struct WebFlowGuard(());
+impl Drop for WebFlowGuard {
+    fn drop(&mut self){WEB_FLOW.store(false,std::sync::atomic::Ordering::SeqCst);}
+}
+pub(crate) fn reserve_web_flow()->Result<WebFlowGuard,String>{
+    WEB_FLOW.compare_exchange(false,true,std::sync::atomic::Ordering::SeqCst,std::sync::atomic::Ordering::SeqCst)
+        .map(|_|WebFlowGuard(())).map_err(|_|"Сначала закройте окно Epic Games".into())
+}
 
 pub struct EpicState(Mutex<Session>);
 struct Session { api: EpicGames, loaded: bool, remember: bool, library: Vec<LibraryItem> }
@@ -116,6 +127,8 @@ pub async fn epic_status(app: tauri::AppHandle, state: tauri::State<'_, EpicStat
 
 #[tauri::command]
 pub async fn epic_begin_login(app: tauri::AppHandle, state: tauri::State<'_, EpicState>, remember: bool) -> Result<AccountStatus, String> {
+    if super::epic_redeem::is_open(){return Err("Сначала закройте окно Epic Games".into());}
+    let _web_flow=reserve_web_flow()?;
     let code = super::epic_login::authorize(&app, remember).await?;
     epic_complete_login(app, state, code, remember).await
 }
@@ -137,6 +150,7 @@ pub async fn epic_complete_login(app: tauri::AppHandle, state: tauri::State<'_, 
     let _update_operation=crate::app_updates::operation()?;
     let code = parse_code(&code)?;
     let mut session = state.0.lock().await;
+    if super::epic_redeem::is_open(){return Err("Сначала закройте окно Epic Games".into());}
     let mut next = Session { api: EpicGames::new(), loaded: true, remember, library: Vec::new() };
     let success = tokio::time::timeout(Duration::from_secs(40), next.api.try_auth_code(None, Some(code))).await
         .map_err(|_| "Epic не ответил вовремя. Повторите вход")?
@@ -152,6 +166,7 @@ pub async fn epic_complete_login(app: tauri::AppHandle, state: tauri::State<'_, 
 pub async fn epic_logout(app: tauri::AppHandle, state: tauri::State<'_, EpicState>) -> Result<(), String> {
     let _update_operation=crate::app_updates::operation()?;
     let mut session = state.0.lock().await;
+    if super::epic_redeem::is_open(){return Err("Сначала закройте окно Epic Games".into());}
     forget(&app)?;
     let mut old = std::mem::replace(&mut session.api, EpicGames::new());
     session.loaded = true; session.remember = false;
@@ -229,7 +244,25 @@ pub async fn fab_cover(state: tauri::State<'_, EpicState>, id:String, revision:u
 
 pub(crate) async fn download_manifest(app: &tauri::AppHandle, state: &EpicState, id: &str, artifact: &str)
     -> Result<(LibraryItem, egs_api::api::types::download_manifest::DownloadManifest), String> {
+    download_manifest_bound(app,state,id,artifact,None).await
+}
+
+// Opaque, native-only queue binding. Never return account/session data to queue IPC.
+fn queue_identity(session:&Session)->Result<String,String>{
+    use sha2::{Digest,Sha256};
+    let account=session.api.user_details().account_id.ok_or("Сначала войдите в Epic")?;
+    Ok(format!("{:x}",Sha256::digest(account.as_bytes())))
+}
+pub(crate) async fn queue_account(app:&tauri::AppHandle,state:&EpicState)->Result<String,String>{
+    let mut session=state.0.lock().await;
+    load(app,&mut session)?;
+    queue_identity(&session)
+}
+pub(crate) async fn download_manifest_bound(app: &tauri::AppHandle, state: &EpicState, id: &str, artifact: &str, account:Option<&str>)
+    -> Result<(LibraryItem, egs_api::api::types::download_manifest::DownloadManifest), String> {
     let mut session = state.0.lock().await;
+    load(app,&mut session)?;
+    if let Some(expected)=account {if queue_identity(&session)?!=expected{return Err("Аккаунт изменился. Удалите задание и добавьте его заново.".into());}}
     if !ensure(app, &mut session).await? { return Err("Сначала войдите в Epic".into()); }
     let item = session.library.iter().find(|i| i.id == id && i.versions.iter().any(|v| v.artifact_id == artifact))
         .cloned().ok_or("Обновите библиотеку и выберите доступную версию материала")?;
@@ -289,6 +322,15 @@ async fn fetch_library(client: &reqwest::Client, endpoint: &str, token: &str, mu
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+    #[test]
+    fn website_flow_is_exclusive_and_released_on_error() {
+        let attempt=||->Result<(),String>{let _guard=reserve_web_flow()?;Err("synthetic-flow-failure".into())};
+        let held=reserve_web_flow().unwrap();
+        assert!(attempt().is_err());
+        drop(held);
+        assert_eq!(attempt().unwrap_err(),"synthetic-flow-failure");
+        assert!(reserve_web_flow().is_ok());
+    }
     fn mock(responses: Vec<(u16, serde_json::Value)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url=format!("http://{}/library",listener.local_addr().unwrap());
@@ -334,6 +376,79 @@ mod tests {
         assert!(fetch_library(&reqwest::Client::new(),&url,"synthetic-test-token", |_, _| {}).await.is_err());
         server.join().unwrap();
     }
+    #[tokio::test]
+    async fn web_exchange_uses_one_native_bearer_request() {
+        let code="synthetic_Exchange_Code012345";
+        let (url,server)=mock(vec![(200,serde_json::json!({"code":code,"expiresInSeconds":30,"creatingClientId":"synthetic-client"}))]);
+        let client=exchange_client().unwrap();
+        let built=client.get(&url).bearer_auth("synthetic-access-token").build().unwrap();
+        assert!(built.headers()[reqwest::header::AUTHORIZATION].is_sensitive());
+        assert_eq!(request_web_exchange(&client,&url,"synthetic-access-token").await.unwrap(),code);
+        let requests=server.join().unwrap();
+        assert_eq!(requests.len(),1);
+        assert!(requests[0].starts_with("GET /library HTTP/1.1\r\n"));
+        assert!(requests[0].to_ascii_lowercase().contains("authorization: bearer synthetic-access-token\r\n"));
+    }
+    #[tokio::test]
+    async fn web_exchange_rejects_failed_expired_and_oversized_responses_without_echoing() {
+        for (status,body) in [
+            (403,serde_json::json!({"error":"synthetic-sensitive-response"})),
+            (200,serde_json::json!({"code":"synthetic-sensitive-response","expiresInSeconds":0})),
+            (200,serde_json::json!({"code":"synthetic-sensitive-response","expiresInSeconds":-1})),
+            (200,serde_json::json!({"unexpected":"synthetic-sensitive-response"})),
+            (200,serde_json::json!({"code":"synthetic-sensitive-response","expiresInSeconds":30,"padding":"x".repeat(9*1024)})),
+        ] {
+            let (url,server)=mock(vec![(status,body)]);
+            let error=request_web_exchange(&exchange_client().unwrap(),&url,"synthetic-access-token").await.unwrap_err();
+            assert_eq!(error,WEB_EXCHANGE_ERROR);
+            assert!(!error.contains("synthetic"));assert!(!error.contains(&url));
+            server.join().unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn web_exchange_bounds_unknown_length_and_malformed_body() {
+        for body in [b"synthetic-invalid-json-response".to_vec(),vec![b'x';9*1024]] {
+            let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url=format!("http://{}/exchange",listener.local_addr().unwrap());
+            let server=std::thread::spawn(move || {
+                let (mut stream,_)=listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request=[0u8;4096];stream.read(&mut request).unwrap();
+                // No Content-Length: the streaming bound must still apply.
+                let _=stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+                let _=stream.write_all(&body);
+            });
+            assert_eq!(request_web_exchange(&exchange_client().unwrap(),&url,"synthetic-access-token").await.unwrap_err(),WEB_EXCHANGE_ERROR);
+            server.join().unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn web_exchange_never_follows_a_redirect_with_native_credentials() {
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url=format!("http://{}/exchange",listener.local_addr().unwrap());
+        let redirect=format!("http://{}/redirected",listener.local_addr().unwrap());
+        let server=std::thread::spawn(move || {
+            let (mut stream,_)=listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request=[0u8;4096];stream.read(&mut request).unwrap();
+            write!(stream,"HTTP/1.1 302 Found\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            drop(stream);listener.set_nonblocking(true).unwrap();
+            let until=std::time::Instant::now()+Duration::from_millis(250);
+            while std::time::Instant::now()<until {
+                match listener.accept() {
+                    Ok((mut stream,_))=>{
+                        let _=stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        return true;
+                    },
+                    Err(e) if e.kind()==std::io::ErrorKind::WouldBlock=>std::thread::sleep(Duration::from_millis(5)),
+                    Err(e)=>panic!("Loopback accept failed: {e}"),
+                }
+            }
+            false
+        });
+        assert_eq!(request_web_exchange(&exchange_client().unwrap(),&url,"synthetic-access-token").await.unwrap_err(),WEB_EXCHANGE_ERROR);
+        assert!(!server.join().unwrap(),"A redirected request was sent");
+    }
     #[test] fn code_formats_and_rejections() {
         assert_eq!(parse_code("{\"authorizationCode\":\"abcdefghijklmnop\"}").unwrap(), "abcdefghijklmnop");
         assert!(parse_code("{\"error\":\"no code\"}").is_err());
@@ -363,10 +478,50 @@ mod tests {
 
 pub(crate) async fn library_snapshot(state:&EpicState)->Vec<LibraryItem>{state.0.lock().await.library.clone()}
 
-pub async fn remember_web_session(app: &tauri::AppHandle, state: &EpicState) -> Result<bool,String> {
+// Native-only handoff. Do not derive Debug/Serialize or expose the exchange code
+// to frontend IPC, scripts, logs, settings or the saved DPAPI session.
+pub(crate) struct WebSession {
+    pub remember: bool,
+    pub exchange_code: Option<String>,
+}
+
+const WEB_EXCHANGE_URL:&str="https://account-public-service-prod03.ol.epicgames.com/account/api/oauth/exchange";
+const WEB_EXCHANGE_ERROR:&str="Не удалось открыть окно активации";
+fn exchange_client()->Result<reqwest::Client,String>{
+    reqwest::Client::builder().timeout(Duration::from_secs(40)).redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|_|WEB_EXCHANGE_ERROR.into())
+}
+async fn request_web_exchange(client:&reqwest::Client,url:&str,access_token:&str)->Result<String,String>{
+    // Use bounded, silent parsing here: egs-api's generic parser can log a raw
+    // response body on failure. Never include tokens, URLs or bodies in errors.
+    let mut response=client.get(url).bearer_auth(access_token).send().await.map_err(|_|WEB_EXCHANGE_ERROR)?;
+    const LIMIT:usize=8*1024;
+    if response.status()!=reqwest::StatusCode::OK || response.content_length().is_some_and(|n|n>LIMIT as u64){return Err(WEB_EXCHANGE_ERROR.into());}
+    let mut body=Vec::new();
+    while let Some(chunk)=response.chunk().await.map_err(|_|WEB_EXCHANGE_ERROR)?{
+        if body.len()+chunk.len()>LIMIT{return Err(WEB_EXCHANGE_ERROR.into());}body.extend_from_slice(&chunk);
+    }
+    #[derive(Deserialize)]#[serde(rename_all="camelCase")]
+    struct Exchange {code:String,expires_in_seconds:i64}
+    let parsed=serde_json::from_slice::<Exchange>(&body).map_err(|_|WEB_EXCHANGE_ERROR);
+    body.fill(0);
+    let parsed=parsed?;
+    if parsed.expires_in_seconds<=0{return Err(WEB_EXCHANGE_ERROR.into());}
+    Ok(parsed.code)
+}
+
+pub(crate) async fn prepare_web_session(app: &tauri::AppHandle, state: &EpicState) -> Result<WebSession,String> {
+    let _update_operation=crate::app_updates::operation()?;
     let mut session=state.0.lock().await;
-    load(app,&mut session)?;
-    Ok(session.remember)
+    let signed_in=ensure(app,&mut session).await?;
+    let remember=session.remember;
+    if !signed_in { return Ok(WebSession { remember, exchange_code: None }); }
+    // A fresh single-use code binds the website to the currently connected
+    // account even when website cookies are missing, expired or InPrivate.
+    let details=session.api.user_details();
+    let access_token=details.access_token().ok_or(WEB_EXCHANGE_ERROR)?;
+    let code=request_web_exchange(&exchange_client()?,WEB_EXCHANGE_URL,access_token).await?;
+    Ok(WebSession { remember, exchange_code: Some(code) })
 }
 
 pub(crate) async fn library_item(state: &EpicState, id: &str) -> Result<LibraryItem,String> {

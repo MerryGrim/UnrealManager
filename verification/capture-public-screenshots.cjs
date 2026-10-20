@@ -68,6 +68,10 @@ const packages=${JSON.stringify(demoPackages)};
 const activePackage=${JSON.stringify(activePackage)};
 const engines=${JSON.stringify(demoEngines)};
 const covers=${JSON.stringify(covers)};
+const queue={revision:7,paused:false,activeId:'11111111-1111-4111-8111-111111111111',error:null,completed:null,items:[
+ {id:'11111111-1111-4111-8111-111111111111',assetId:items[0].id,artifactId:items[0].versions[0].artifactId,selectedEngine:'5.7',title:items[0].title,requestedVaultPath:'X:/Fixture/Demo/UnrealManager/Vault',status:'downloading',packageId:activePackage.id,error:null,progress:{phase:'Загружаем и проверяем файлы',done:2.52*1024**3,total:4*1024**3,filesDone:781,filesTotal:1240,networkBytes:1.51*1024**3,bytesPerSecond:24*1024**2,paused:false,canPause:true}},
+ ...items.slice(2,4).map((item,index)=>({id:index?'33333333-3333-4333-8333-333333333333':'22222222-2222-4222-8222-222222222222',assetId:item.id,artifactId:item.versions[0].artifactId,selectedEngine:'5.7',title:item.title,requestedVaultPath:'X:/Fixture/Demo/UnrealManager/Vault',status:'pending',packageId:null,error:null,progress:null}))
+]};
 export class Channel { constructor(callback){this.onmessage=callback;} }
 export async function invoke(name,args={}) {
   window.demoCalls.push(name);
@@ -82,7 +86,8 @@ export async function invoke(name,args={}) {
     ];
     case 'engine_pending':case 'engine_resume_tasks':return [];
     case 'vault_list':return packages;
-    case 'vault_resume_tasks':return window.demoTransferStarted?[]:[{id:activePackage.id,assetId:activePackage.assetId,title:activePackage.title,kind:'Asset',selectedEngine:'5.7',path:activePackage.path,phase:'На паузе',done:2*1024**3,total:4*1024**3,filesDone:620,filesTotal:1240,intent:{mode:'vault',project:'',projectName:'',engineVersion:'5.7'}}];
+    case 'vault_resume_tasks':return [];
+    case 'vault_queue_get':return structuredClone(queue);
     case 'vault_epic_status':return {directory:'X:/Fixture/Demo/Epic/VaultCache',items:[],warnings:[]};
     case 'fab_cached_library':return {items,cachedAt:1792368000,stale:false};
     case 'fab_library':return {items,scope:'fictional-public-demo'};
@@ -98,14 +103,14 @@ export async function invoke(name,args={}) {
       window.demoProgress={...window.demoProgress,paused:args.paused,bytesPerSecond:args.paused?0:24*1024**2};
       window.demoProgressChannel.onmessage(window.demoProgress);return;
     case 'close_behavior_get':return 'ask';
-    case 'app_update_settings_get':return {enabled:true,channel:'beta',configured:true,currentVersion:${JSON.stringify(require('../source/package.json').version)},mode:'portable',supported:true};
+    case 'app_update_settings_get':return {enabled:true,channel:'stable',configured:true,currentVersion:${JSON.stringify(require('../source/package.json').version)},mode:'portable',supported:true};
     case 'app_update_check':return {status:'current',release:null,checkedAt:1792396800,cached:true};
     case 'download_limit_get':return 32*1024**2;
     case 'project_association_get':return {enabled:true,windowsChoiceRequired:false};
     case 'vault_storage_get':return {vaultPath:'X:/Fixture/Demo/UnrealManager/Vault',keepEngineBackup:false};
     case 'storage_info':return {dataPath:'X:/Fixture/Demo/UnrealManager/Data',cachePath:'X:/Fixture/Demo/UnrealManager/Data/Cache',settingsPath:'X:/Fixture/Demo/UnrealManager/Data/Settings',cacheBytes:84*1024**2};
     case 'settings_read':return {'unreal-manager.language.v1':'en'};
-    case 'settings_write':case 'set_ui_language':case 'engine_discard':return;
+    case 'settings_write':case 'set_ui_language':case 'engine_discard':case 'vault_discard':return;
     default:window.unexpectedDemoCalls.push(name);throw Error('Unsupported fictional screenshot command: '+name);
   }
 }`;
@@ -179,8 +184,9 @@ async function main() {
     await page.locator('#app-update-channel:not(:disabled)').waitFor();
     await capture('settings');
     await page.locator('.workspace-footer button').first().click();
-    await page.getByRole('button',{name:'Resume download',exact:true}).click();
-    await page.locator('.vault-transfer-card').first().getByRole('button',{name:'Pause',exact:true}).waitFor();
+    await page.locator('.vault-queue-active').waitFor();
+    assert.equal(await page.locator('.vault-queue-row').count(),2);
+    await page.locator('.vault-queue-active').getByRole('button',{name:'Pause',exact:true}).waitFor();
     await capture('downloads');
     fs.writeFileSync(path.join(evidenceDirectory,'capture-manifest.json'),JSON.stringify({
       capturedAt:new Date().toISOString(),sourceRoot:root,

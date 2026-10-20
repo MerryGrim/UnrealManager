@@ -22,7 +22,7 @@ pub async fn engine_delete_preview(path:String)->Result<DeletePreview,String>{
     tauri::async_runtime::spawn_blocking(move||{
         let root=checked_root(&path,&known_roots())?;
         let _lock=install::lock_installation(&root)?;
-        install::idle()?;
+        install::idle(&root)?;
         Ok(DeletePreview{path:root.to_string_lossy().into_owned(),version:version(&root)?.0})
     }).await.map_err(|e|e.to_string())?
 }
@@ -62,20 +62,25 @@ fn unregister(root:&Path)->Result<(),String>{
 }
 
 #[tauri::command]
-pub async fn engine_delete(path:String,expected_version:String,state:tauri::State<'_,EngineState>)->Result<String,String>{
+pub async fn engine_delete(path:String,expected_version:String,state:tauri::State<'_,EngineState>,vault:tauri::State<'_,crate::vault::VaultState>,webview:tauri::Webview,on_progress:Option<tauri::ipc::JavaScriptChannelId>)->Result<String,String>{
+    let on_progress=on_progress.map(|id|id.channel_on::<_,install::Progress>(webview));
     let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции с движком.".into());}
     let _busy=install::Busy(&state.active);
+    if vault.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции с хранилищем".into());}let _vault=install::Busy(&vault.active);
     tauri::async_runtime::spawn_blocking(move||{
         let root=checked_root(&path,&known_roots())?;
         let _lock=install::lock_installation(&root)?;
-        install::idle()?;
+        install::idle(&root)?;
         if version(&root)?.0!=expected_version{return Err("Версия движка изменилась. Повторите подтверждение.".into());}
-        install::idle()?;
-        // The root has been resolved and checked against installed engines above.
-        // remove_dir_all removes links themselves and does not traverse their targets.
-        fs::remove_dir_all(&root).map_err(|e|format!("Не все файлы удалось удалить: {e}. Папка: {}",root.display()))?;
+        install::idle(&root)?;
+        // Count and remove only this already-checked root. Junctions are entries,
+        // never traversal roots, so outside data retains the original protection.
+        let mut progress=|phase:&str,done,total,bytes,total_bytes|{if let Some(channel)=&on_progress{let _=channel.send(install::removal_progress(phase,done,total,bytes,total_bytes));}};
+        install::remove_trees_counted(&[root.clone()],"Считаем файлы движка","Удаляем файлы движка",None,&mut progress)
+            .map_err(|e|format!("Не все файлы удалось удалить: {e}. Папка: {}",root.display()))?;
         if root.exists(){return Err("Папка движка осталась на диске.".into());}
+        progress("Удаляем записи движка",0,0,0,0);
         match unregister(&root) {
             Ok(())=>Ok("Движок удалён.".into()),
             Err(e)=>Ok(format!("Папка движка удалена, но не удалось убрать запись Epic: {e}")),
@@ -105,8 +110,10 @@ mod tests {
         fs::write(root.join("Engine/Plugins/Example/Content/Asset.uasset"), b"asset").unwrap();
         fs::write(root.join("Engine/Plugins/Example/Example.uproject"), b"{}").unwrap();
         fs::write(base.join("outside.uproject"), b"keep").unwrap();
-        fs::remove_dir_all(&root).unwrap();
+        let mut events=vec![];
+        install::remove_trees_counted(&[root.clone()],"inventory","remove",None,|phase,done,total,bytes,total_bytes|events.push((phase.to_string(),done,total,bytes,total_bytes))).unwrap();
         assert!(!root.exists());
+        assert_eq!(events.last().unwrap().1,events.last().unwrap().2);assert_eq!((events.last().unwrap().3,events.last().unwrap().4),(7,7));
         assert_eq!(fs::read(base.join("outside.uproject")).unwrap(), b"keep");
         fs::remove_dir_all(base).unwrap();
     }
@@ -123,8 +130,10 @@ mod tests {
             .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:UM_TEST_LINK -Target $env:UM_TEST_TARGET | Out-Null"])
             .env("UM_TEST_LINK", &junction).env("UM_TEST_TARGET", &outside).status().unwrap();
         assert!(status.success());
-        fs::remove_dir_all(&root).unwrap();
+        let mut events=vec![];
+        install::remove_trees_counted(&[root.clone()],"inventory","remove",None,|phase,done,total,bytes,total_bytes|events.push((phase.to_string(),done,total,bytes,total_bytes))).unwrap();
         assert!(!root.exists());
+        assert_eq!((events.last().unwrap().3,events.last().unwrap().4),(0,0));
         assert_eq!(fs::read(outside.join("keep.txt")).unwrap(), b"keep");
         fs::remove_dir_all(base).unwrap();
     }

@@ -1,10 +1,12 @@
 import { tr, getLocale } from './i18n';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { FolderOpen, RefreshCw, ShieldCheck, X } from 'lucide-react';
 import type { VaultPackage } from './Vault';
 import type { EngineInstall, UnrealProject } from './lib/backend';
 import { engineVersion } from './lib/materialVersions';
+type WorkProgress={phase:string;done:number;total:number;filesDone:number;filesTotal:number};
+const workSize=(bytes:number)=>`${(bytes/1048576).toLocaleString(getLocale(),{maximumFractionDigits:1})} ${tr('МБ')}`;
 type Preview = {
     target: string;
     token: string;
@@ -39,6 +41,9 @@ export function ProjectUpdateDialog({ items, projects, engines, initial, initial
     const [oldId, setOldId] = useState(initial?.id || ''), [newId, setNewId] = useState(initialNewId || ''), [target, setTarget] = useState(''), [destination, setDestination] = useState<'project' | 'engine'>('project');
     const [step, setStep] = useState(0), [backup, setBackup] = useState(true), [mode, setMode] = useState<'changed' | 'all'>('changed'), [accept, setAccept] = useState(false);
     const [preview, setPreview] = useState<Preview | null>(null), [result, setResult] = useState<Result | null>(null), [error, setError] = useState(''), [progress, setProgress] = useState('');
+    const [work,setWork]=useState<WorkProgress|null>(null);
+    const operation=useRef<HTMLDivElement>(null),operationVisible=!!progress;
+    useEffect(()=>{if(operationVisible)operation.current?.closest<HTMLElement>('[role="dialog"]')?.scrollTo({top:0});},[operationVisible]);
     const lock = useRef(false);
     const old = items.find(p => p.id === oldId), fresh = items.find(p => p.id === newId);
     const sameMaterial = (a: VaultPackage, b: VaultPackage) => !!a.assetId && a.assetId === b.assetId && a.kind === b.kind && a.id !== b.id && a.engines.some(e => b.engines.map(engineVersion).includes(engineVersion(e)));
@@ -48,7 +53,8 @@ export function ProjectUpdateDialog({ items, projects, engines, initial, initial
     const reset = () => { setPreview(null); setStep(0); setError(''); setAccept(false); };
     const inspect = async () => { if (lock.current || busy)
         return; lock.current = true; onBusy(true); setError(''); setProgress('Сравниваем пакеты и файлы назначения…'); try {
-        setPreview(await invoke<Preview>('project_update_preview', { oldId, newId, target }));
+        setWork(null);const onWorkProgress=new Channel<WorkProgress>(setWork);
+        setPreview(await invoke<Preview>('project_update_preview', { oldId, newId, target,onWorkProgress }));
         setStep(1);
     }
     catch (e) {
@@ -58,6 +64,7 @@ export function ProjectUpdateDialog({ items, projects, engines, initial, initial
         lock.current = false;
         onBusy(false);
         setProgress('');
+        setWork(null);
     } };
     const browse = async () => { if (lock.current || busy)
         return; lock.current = true; onBusy(true); setError(''); try {
@@ -77,7 +84,8 @@ export function ProjectUpdateDialog({ items, projects, engines, initial, initial
     const apply = async () => { if (!preview || lock.current || busy)
         return; lock.current = true; onBusy(true); setError(''); setProgress(backup ? 'Создаём резервную копию…' : 'Подготавливаем замену…'); try {
         const onProgress = new Channel<string>(setProgress);
-        const next = await invoke<Result>('project_update_apply', { oldId, newId, target, token: preview.token, mode, backup, acceptVersion: accept, onProgress });
+        setWork(null);const onWorkProgress=new Channel<WorkProgress>(setWork);
+        const next = await invoke<Result>('project_update_apply', { oldId, newId, target, token: preview.token, mode, backup, acceptVersion: accept, onProgress,onWorkProgress });
         setResult(next);
         await onDone();
     }
@@ -88,11 +96,14 @@ export function ProjectUpdateDialog({ items, projects, engines, initial, initial
         lock.current = false;
         onBusy(false);
         setProgress('');
+        setWork(null);
     } };
     const count = preview ? (mode === 'all' ? preview.allFiles : preview.changed.length + preview.added.length) : 0;
     return <div className="modal-backdrop" onKeyDown={e => { if (e.key === 'Escape' && !busy)
         onClose(); }}><section className="login-dialog vault-dialog project-update-dialog" role="dialog" aria-modal="true" aria-label={tr("Обновление установленного материала")}>
   <div className="section-head"><h2>{tr(old?.kind === 'Plugin' ? 'Обновление плагина' : 'Обновление в проекте')}</h2><button disabled={busy} aria-label={tr("Закрыть обновление")} onClick={onClose}><X /></button></div>
+  {tr(progress && <div ref={operation} role="status" className="update-operation"><RefreshCw className="spin" size={18}/><div><strong>{tr(work?.phase||progress)}</strong>{work&&<><progress max={Math.max(1,work.total)} value={work.total?work.done:undefined}/><p>{tr('Файлы')}: {work.filesDone} / {work.filesTotal||'…'} · {tr('Обработано')}: {workSize(work.done)}{work.total>0&&<> / {workSize(work.total)}</>}</p></>}<p>{tr(progress)}{tr(" · Дождитесь завершения перед закрытием приложения.")}</p></div></div>)}
+
   {tr(!result && <ol className="vault-steps"><li className={step === 0 ? 'current' : 'done'}>{tr("1. Материал и место")}</li><li className={step === 1 ? 'current' : step > 1 ? 'done' : ''}>{tr("2. Резервная копия")}</li><li className={step === 2 ? 'current' : ''}>{tr("3. Замена файлов")}</li></ol>)}
   {tr(!result && step === 0 && <div className="wizard-fields"><p className="muted">{tr("Выберите копию, из которой материал был установлен, и свежую копию из Vault. Обе нужны для точного сравнения изменений автора.")}</p>
    {tr(!sources.length && <p>{tr("Сначала скачайте свежую версию материала в Vault, сохранив предыдущую. Для старых пакетов без идентификатора Fab сравнение недоступно.")}</p>)}
@@ -111,7 +122,7 @@ export function ProjectUpdateDialog({ items, projects, engines, initial, initial
    <p className="muted">{tr("Перед обновлением закройте Unreal Editor. ")}{tr(backup ? 'Сначала будет создана резервная копия.' : 'Резервная копия отключена.')}</p>
    <div className="wizard-footer"><button disabled={busy} onClick={() => setStep(1)}>{tr("Назад")}</button><button disabled={busy} onClick={onClose}>{tr("Отказаться от обновления")}</button><button className="primary" disabled={busy || !count || (!preview.compatible && !accept)} onClick={() => void apply()}><RefreshCw size={17}/>{tr("Обновить ")}{tr(count)}{tr(" файлов")}</button></div>
   </>)}
-  {tr(progress && <p role="status" className="update-operation"><RefreshCw className="spin" size={18}/>{tr(progress)}{tr(" · Дождитесь завершения перед закрытием приложения.")}</p>)}{tr(error && <p role="alert" className="error-text">{tr(error)}</p>)}
+{tr(error && <p role="alert" className="error-text">{tr(error)}</p>)}
   {tr(result && <><p className="vault-success" role="status">{tr("Обновлено файлов: ")}{tr(result.copied)}{tr(". Сохранено конфликтующих файлов: ")}{tr(result.preserved)}{tr(".")}</p>{tr(result.backupPath && <><p>{tr("Резервная копия:")}</p><p className="project-delete-path">{tr(result.backupPath)}</p></>)}<div className="wizard-footer"><button className="primary" onClick={onClose}>{tr("Готово")}</button></div></>)}
  </section></div>;
 }

@@ -1,7 +1,7 @@
 import {ClosePrompt} from './WindowSettings';
 import {AppUpdateNotice,useAppUpdates} from './AppUpdateSettings';
 import {SettingsView,type SettingsCategory} from './SettingsView';
-import type {EngineTransfer} from './EngineTransferCard';
+import {formatEnginePhase,type EngineTransfer} from './EngineTransferCard';
 import { tr, getLocale } from './i18n';
 import metadata from '../package.json';
 import { AboutDialog } from './AboutDialog';
@@ -76,6 +76,11 @@ export default function App() {
     };
     useEffect(() => { refresh(); }, []);
     const filteredProjects = useMemo(() => projects.filter(p => p.name.toLowerCase().includes(query.toLowerCase())), [projects, query]);
+    const queueProgress = vault.queueActive?.progress;
+    const downloadPhase = engineProgress ? `${engineProgress.paused ? tr('На паузе') : formatEnginePhase(engineProgress.phase)}${engineProgress.total ? ` · ${engineProgress.percent}%` : ''}`
+        : vault.queueActive ? `${queueProgress?.paused ? tr('На паузе') : queueProgress?.phase || tr('Подготовка загрузки')}${queueProgress?.total ? ` · ${Math.min(100,Math.floor(queueProgress.done/queueProgress.total*100))}%` : ''}`
+        : vault.tileProgress ? `${vault.tileProgress.phase} · ${vault.tileProgress.percent}%`
+        : vault.busy ? 'Операция с хранилищем…' : vault.queuedCount ? vault.queue.paused ? 'Очередь приостановлена' : 'Ожидает завершения текущей операции' : 'Нет активных загрузок';
     return <div className="app-shell">
     <header className="workspace-topbar">
       <button className="workspace-brand" onClick={() => setSection('home')} aria-label={tr("Unreal Manager — Главная")}><img className="workspace-logo" src={logo} alt={tr("")}/><span>{tr("Unreal Manager")}<small>{metadata.version}</small></span></button>
@@ -95,7 +100,7 @@ export default function App() {
       <div className="library-view" hidden={section !== 'redeem'}><RedeemView account={epic.account} onActivated={() => setLibraryRefresh(n => n + 1)} onLibrary={() => { setSection('library'); setLibraryRefresh(n => n + 1); }}/></div>
       </div>
     </main></PageActionsTarget.Provider>
-    <footer className="workspace-footer"><button className={section === 'downloads' ? 'active' : ''} aria-current={section === 'downloads' ? 'page' : undefined} onClick={() => setSection('downloads')}><Download size={16}/>{tr((engineProgress ? `${engineProgress.paused?tr('На паузе'):engineProgress.phase}${engineProgress.total ? ` · ${engineProgress.percent}%` : ''}` : '') || (vault.tileProgress ? `${vault.tileProgress.phase} · ${vault.tileProgress.percent}%` : vault.busy ? 'Операция с хранилищем…' : 'Нет активных загрузок'))}</button><button className={section === 'settings' ? 'active' : ''} aria-current={section === 'settings' ? 'page' : undefined} onClick={() => setSection('settings')}><Settings size={16}/>{tr("Настройки")}</button></footer>
+    <footer className="workspace-footer"><button className={section === 'downloads' ? 'active' : ''} aria-current={section === 'downloads' ? 'page' : undefined} onClick={() => setSection('downloads')}><Download size={16}/>{tr(downloadPhase)}{vault.queuedCount>0&&<> · {tr('В очереди')}: {vault.queuedCount}</>}</button><button className={section === 'settings' ? 'active' : ''} aria-current={section === 'settings' ? 'page' : undefined} onClick={() => setSection('settings')}><Settings size={16}/>{tr("Настройки")}</button></footer>
     {tr(epic.accountError && <div className="account-notice" role="alert">{tr(epic.accountError)}<span>{tr("Вход доступен в меню аккаунта справа сверху.")}</span></div>)}
     {section !== 'settings' && <AppUpdateNotice updates={appUpdates} onOpen={() => { setSettingsCategory('appupdates'); setSection('settings'); }}/>}
     <ClosePrompt/>{tr(epic.dialog)}{tr(vault.dialog)}{tr(about && <AboutDialog onClose={() => setAbout(false)}/>)}

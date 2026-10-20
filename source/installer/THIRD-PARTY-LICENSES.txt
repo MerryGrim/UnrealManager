@@ -1,4 +1,4 @@
-Unreal Manager 0.2.0-beta.8 - Third-Party Licenses and Source Notices
+Unreal Manager 0.9.0 - Third-Party Licenses and Source Notices
 
 Original Unreal Manager code is MIT licensed; the following components retain their own licenses.
 This overinclusive inventory includes build-time and non-Windows packages from the locked dependency graph.

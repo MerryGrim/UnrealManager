@@ -237,7 +237,7 @@ fn target(path: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 #[cfg(windows)]
-fn free(root: &Path) -> Result<u64, String> {
+pub(crate) fn free(root: &Path) -> Result<u64, String> {
     use std::os::windows::ffi::OsStrExt;
     let mut p = root;
     while !p.exists() {
@@ -260,7 +260,7 @@ fn free(root: &Path) -> Result<u64, String> {
     }
 }
 #[cfg(not(windows))]
-fn free(_: &Path) -> Result<u64, String> {
+pub(crate) fn free(_: &Path) -> Result<u64, String> {
     Err("Поддерживается Windows".into())
 }
 #[tauri::command]
@@ -268,6 +268,7 @@ pub async fn engine_prepare(
     app: tauri::AppHandle,
     epic: tauri::State<'_, crate::epic::EpicState>,
     state: tauri::State<'_, EngineState>,
+    vault: tauri::State<'_, crate::vault::VaultState>,
     app_name: String,
     path: String,
     selected: Option<Vec<String>>,
@@ -278,6 +279,8 @@ pub async fn engine_prepare(
     if state.active.load(Ordering::SeqCst) {
         return Err("Дождитесь текущей операции с движком".into());
     }
+    if vault.active.swap(true,Ordering::SeqCst){return Err("Дождитесь текущей операции с хранилищем".into());}
+    let _vault=install::Busy(&vault.active);
     let modify = modify.unwrap_or(false);
     if modify && !update { return Err("Установленный движок не найден. Повторите сканирование.".into()); }
     let root = target(&path)?;

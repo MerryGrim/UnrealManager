@@ -68,7 +68,7 @@ export function FabDetails({ item, busy, onClose, onDownload }: {
     </div>)}
     <h3>{tr("Описание")}</h3><div className="fab-info-description">{descriptionText(info?.description || item.description || '') || tr('Автор не предоставил описание.')}</div>
    </div><aside><h3>{tr("Совместимость")}</h3><div className="fab-info-versions">{tr(item.engineVersions.length ? item.engineVersions.map(v => <span className="engine-pill" key={v}>{tr("UE ")}{tr(v)}</span>) : <p className="muted">{tr("Версии не указаны")}</p>)}</div><h3>{tr("Платформы")}</h3><p>{tr([...new Set(item.versions.flatMap(v => v.platforms))].join(', ') || 'Не указаны')}</p>
-    <button className="primary" disabled={busy} onClick={() => { onClose(); onDownload(item, false, true); }}><Download size={17}/>{tr("Скачать в хранилище")}</button>
+    <button className="primary" onClick={() => { onClose(); onDownload(item, false, true); }}><Download size={17}/>{tr("Скачать в хранилище")}</button>
     {tr(item.kind !== 'Plugin' && <button disabled={busy} onClick={() => { onClose(); onDownload(item, true); }}>{tr(item.kind === 'Project' ? 'Создать проект' : 'Добавить в проект')}</button>)}
     {tr(info?.url && <button onClick={openSite}><ExternalLink size={17}/>{tr("Открыть на Fab")}</button>)}
     {tr(!!info?.cachedAt && <p className="muted">{tr("Информация сохранена ")}{tr(new Date(info.cachedAt * 1000).toLocaleString(getLocale()))}</p>)}

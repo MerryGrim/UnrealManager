@@ -8,15 +8,15 @@ pub mod project_update;
 pub mod transfers;
 const CHUNK_LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Default)]
-pub struct VaultState { plan: Mutex<Option<Plan>>, pub(crate) active: AtomicBool, pub(crate) cancel: AtomicBool, pub(crate) updating: AtomicBool, paused:AtomicBool, pause_generation:AtomicU64, pause_available:AtomicBool, channel:Mutex<Option<tauri::ipc::Channel<Progress>>>, latest:Mutex<Option<Progress>>, rate:Mutex<Option<(Instant,u64,u64)>> }
+pub struct VaultState { plan: Mutex<Option<Plan>>, pub(crate) active: AtomicBool, pub(crate) cancel: AtomicBool, pub(crate) updating: AtomicBool, paused:AtomicBool, pause_generation:AtomicU64, pause_available:AtomicBool, channel:Mutex<Option<tauri::ipc::Channel<Progress>>>, progress_sink:Mutex<Option<std::sync::Arc<dyn Fn(Progress)+Send+Sync>>>, latest:Mutex<Option<Progress>>, rate:Mutex<Option<(Instant,u64,u64)>> }
 #[derive(Clone,Serialize,Deserialize)]
 struct Plan { info: Package, #[serde(default)] intent:Option<transfers::Intent>, #[serde(with="crate::engine::resume::snapshot_files")] files: BTreeMap<String, FileManifestList> }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
-pub struct Package { #[serde(default)] artifact_id: String, #[serde(default)] selected_engine: String, #[serde(default)] build_version: String, #[serde(default)] source: String, #[serde(default)] asset_id: String, id: String, title: String, kind: String, engines: Vec<String>, bytes: u64, download_bytes: u64, files: usize, path: String, hashes: BTreeMap<String, String> }
+pub struct Package { #[serde(default)] artifact_id: String, #[serde(default)] selected_engine: String, #[serde(default)] build_version: String, #[serde(default)] source: String, #[serde(default)] asset_id: String, pub(crate) id: String, title: String, kind: String, engines: Vec<String>, bytes: u64, download_bytes: u64, files: usize, path: String, hashes: BTreeMap<String, String> }
 #[derive(Clone, Serialize)]
 #[serde(rename_all="camelCase")]
-pub struct Progress { phase: String, done: u64, total: u64, files_done: usize, files_total: usize, network_bytes: u64, bytes_per_second: u64, paused:bool, can_pause:bool }
+pub struct Progress { pub(crate) phase: String, done: u64, total: u64, files_done: usize, files_total: usize, network_bytes: u64, bytes_per_second: u64, pub(crate) paused:bool, pub(crate) can_pause:bool }
 fn io_error(_: std::io::Error) -> String { "Ошибка файловой системы. Проверьте свободное место и доступ к каталогу".into() }
 fn digest(bytes: &[u8]) -> String { format!("{:x}", Sha1::digest(bytes)) }
 
@@ -49,13 +49,64 @@ pub(crate) fn no_links(path: &Path) -> Result<(), String> {
     Ok(())
 }
 pub(crate) fn hash_file(path: &Path) -> Result<String, String> {
+    hash_file_progress(path, |_| {})
+}
+fn hash_file_progress(path:&Path,mut progress:impl FnMut(u64))->Result<String,String>{
     no_links(path)?;
     let mut file = File::open(path).map_err(io_error)?;
     let mut hash = Sha1::new(); let mut buffer = [0u8; 65536];
-    loop { let n = file.read(&mut buffer).map_err(io_error)?; if n == 0 { break; } hash.update(&buffer[..n]); }
+    loop { let n = file.read(&mut buffer).map_err(io_error)?; if n == 0 { break; } hash.update(&buffer[..n]); progress(n as u64); }
     Ok(format!("{:x}", hash.finalize()))
 }
+fn local_progress(phase:&str,done:u64,total:u64,files_done:usize,files_total:usize)->Progress{
+    Progress{phase:phase.into(),done,total,files_done,files_total,network_bytes:0,bytes_per_second:0,paused:false,can_pause:false}
+}
+struct FileProgress<'a>{phase:&'static str,done:u64,total:u64,files_done:usize,files_total:usize,last:Instant,notify:&'a mut dyn FnMut(Progress)}
+impl<'a> FileProgress<'a>{
+    fn new(phase:&'static str,total:u64,files_total:usize,notify:&'a mut dyn FnMut(Progress))->Self{
+        let mut progress=Self{phase,done:0,total,files_done:0,files_total,last:Instant::now(),notify};progress.send(false);progress
+    }
+    fn send(&mut self,complete:bool){
+        // A full buffer read is not a verified file. Reserve the final byte until checks pass.
+        let done=if complete{self.done.min(self.total)}else{self.done.min(self.total.saturating_sub(1))};
+        (self.notify)(local_progress(self.phase,done,self.total,self.files_done,self.files_total));self.last=Instant::now();
+    }
+    fn advance(&mut self,bytes:u64){self.done=self.done.saturating_add(bytes);if self.last.elapsed()>=Duration::from_millis(250){self.send(false);}}
+    fn file_done(&mut self){self.files_done+=1;if self.files_done==self.files_total||self.last.elapsed()>=Duration::from_millis(250){self.send(self.files_done==self.files_total);}}
+}
+async fn hash_download_file(state:&VaultState,path:&Path,mut progress:Progress)->Result<(String,u64),String>{
+    no_links(path)?;let mut file=File::open(path).map_err(io_error)?;let mut hash=Sha1::new();let mut buffer=vec![0u8;65536];let mut last=Instant::now();let mut since_yield=0;let initial_done=progress.done;
+    transfers::emit(state,progress.clone());
+    loop{
+        transfers::checkpoint(state).await?;
+        let n=file.read(&mut buffer).map_err(io_error)?;if n==0{break;}hash.update(&buffer[..n]);progress.done=progress.done.saturating_add(n as u64);
+        if last.elapsed()>=Duration::from_millis(250){let mut pending=progress.clone();pending.done=pending.done.min(pending.total.saturating_sub(1));transfers::emit(state,pending);last=Instant::now();}
+        since_yield+=n;if since_yield>=1024*1024{tokio::task::yield_now().await;since_yield=0;}
+    }
+    Ok((format!("{:x}",hash.finalize()),progress.done.saturating_sub(initial_done)))
+}
 fn valid_hash(hash: &str) -> bool { hash.len() == 40 && hash.bytes().all(|c| c.is_ascii_hexdigit()) }
+const EPIC_CACHE_SOURCE:&str="Epic Games Launcher";
+fn same_cached_files(left:&Package,right:&Package)->bool{left.asset_id==right.asset_id&&left.kind==right.kind&&left.hashes==right.hashes}
+fn normalized_engine(value:&str)->String{let value=value.trim();value.get(..3).filter(|p|p.eq_ignore_ascii_case("UE_")).map(|_|&value[3..]).unwrap_or(value).to_ascii_lowercase()}
+fn covers_requested_engines(cached:&Package,fresh:&Package)->bool{
+    let declared:BTreeSet<_>=cached.engines.iter().map(|e|normalized_engine(e)).filter(|e|!e.is_empty()).collect();
+    !fresh.engines.is_empty()&&fresh.engines.iter().all(|e|{let e=normalized_engine(e);!e.is_empty()&&declared.contains(&e)})
+}
+// Content identity can share physical files, but never replaces the requested
+// artifact, publisher compatibility, selected engine, title or build metadata.
+fn select_prepared_cache(mut plan:Plan,vault:&Path,external:Vec<Package>)->Plan{
+    if vault.join(&plan.info.id).exists(){return plan;}
+    if let Some(cached)=external.into_iter().find(|p|p.source==EPIC_CACHE_SOURCE&&same_cached_files(p,&plan.info)&&covers_requested_engines(p,&plan.info)&&Path::new(&p.path).is_dir()){
+        plan.info.id=cached.id;plan.info.path=cached.path;plan.info.source=cached.source;
+    }
+    plan
+}
+fn check_external_alias(info:&Package,index:&[Package])->Result<(),String>{
+    let found=index.iter().any(|p|p.source==EPIC_CACHE_SOURCE&&p.id==info.id&&p.path==info.path&&same_cached_files(p,info)&&covers_requested_engines(p,info));
+    if info.source!=EPIC_CACHE_SOURCE||!valid_hash(&info.id)||!found||!Path::new(&info.path).is_dir(){return Err("Папка Epic Vault недоступна. Выполните синхронизацию".into());}
+    no_links(Path::new(&info.path))
+}
 fn make_plan(item: super::epic::LibraryItem, artifact: &str, manifest: DownloadManifest) -> Result<Plan, String> {
     if manifest.b_is_file_data { return Err("Этот старый формат загрузки пока не поддерживается".into()); }
     let mut seen = BTreeSet::new(); let mut hashes = BTreeMap::new();
@@ -88,16 +139,19 @@ pub async fn vault_prepare(app: tauri::AppHandle, epic: tauri::State<'_, super::
     let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true,Ordering::SeqCst) { return Err("Дождитесь текущей загрузки".into()); }
     let _busy=Busy(&state.active);
-    let (item, manifest) = super::epic::download_manifest(&app, &epic, &id, &artifact).await?;
+    let plan=prepare_locked(&app,&epic,&id,&artifact,&engine_version,None).await?;
+    let info=plan.info.clone();
+    *state.plan.lock().map_err(|_| "Ошибка состояния загрузки")?=Some(plan);
+    Ok(info)
+}
+async fn prepare_locked(app:&tauri::AppHandle,epic:&crate::epic::EpicState,id:&str,artifact:&str,engine_version:&str,account:Option<&str>)->Result<Plan,String>{
+    let (item, manifest) = super::epic::download_manifest_bound(app,epic,id,artifact,account).await?;
     if !item.versions.iter().any(|v| v.artifact_id==artifact && v.engines.iter().any(|e|e.trim_start_matches("UE_")==engine_version) && (v.platforms.is_empty() || v.platforms.iter().any(|p|p.to_lowercase().contains("win")))) {
         return Err("Выбранный пакет не поддерживает указанную версию Unreal Engine для Windows".into());
     }
     let mut plan = make_plan(item, &artifact, manifest)?;
-    plan.info.selected_engine=engine_version;
-    if let Some(cached)=vault_list()?.into_iter().find(|p| p.asset_id==plan.info.asset_id && p.kind==plan.info.kind && p.hashes==plan.info.hashes && Path::new(&p.path).is_dir()) { plan.info=cached; }
-    let info = plan.info.clone();
-    *state.plan.lock().map_err(|_| "Ошибка состояния загрузки")? = Some(plan);
-    Ok(info)
+    plan.info.selected_engine=engine_version.into();
+    Ok(select_prepared_cache(plan,&crate::storage::vault(),epic_index()?.items))
 }
 
 pub(crate) fn decode_chunk(buffer: &[u8]) -> Result<Vec<u8>, String> {
@@ -115,32 +169,56 @@ pub(crate) fn decode_chunk(buffer: &[u8]) -> Result<Vec<u8>, String> {
     if version >= 2 && buffer[61] & 2 != 0 && Sha1::digest(&data).as_slice() != &buffer[41..61] { return Err(err()); }
     Ok(data)
 }
-struct Busy<'a>(&'a AtomicBool);
-impl Drop for Busy<'_> { fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); } }
+pub(crate) struct Busy<'a>(&'a AtomicBool);
+impl Drop for Busy<'_> { fn drop(&mut self) { self.0.store(false, Ordering::SeqCst);crate::vault_queue::wake(); } }
 #[tauri::command]
 pub fn vault_cancel(state: tauri::State<'_, VaultState>) { state.cancel.store(true, Ordering::SeqCst); }
 
 #[tauri::command]
-pub async fn vault_download(state: tauri::State<'_, VaultState>, id: String, on_progress: tauri::ipc::Channel<Progress>,intent:Option<transfers::Intent>) -> Result<Package, String> {
+pub async fn vault_download(app:tauri::AppHandle,state: tauri::State<'_, VaultState>, id: String, on_progress: tauri::ipc::Channel<Progress>,intent:Option<transfers::Intent>) -> Result<Package, String> {
     let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) { return Err("Уже выполняется загрузка".into()); }
     let _busy = Busy(&state.active); state.cancel.store(false, Ordering::SeqCst);
     if let Some(intent)=intent {if !matches!(intent.mode.as_str(),"vault"|"install")||intent.project.len()>2000||intent.project_name.len()>100||intent.engine_version.len()>100{return Err("Некорректное действие после загрузки".into());}let mut plan=state.plan.lock().map_err(|_|"Ошибка состояния")?;let prepared=plan.as_mut().filter(|p|p.info.id==id).ok_or("Подготовьте загрузку заново")?;prepared.intent=Some(intent);}
-    download_locked(&state,&id,on_progress).await
+    let result=download_locked(&state,&id,Some(on_progress)).await;
+    if let Ok(package)=&result{crate::vault_queue::manual_download_completed(&app,package,&package.asset_id,&package.path);}
+    let install_reserved=state.plan.lock().map(|p|p.as_ref().and_then(|p|p.intent.as_ref()).is_some_and(|i|i.mode=="install")).unwrap_or(true);
+    if result.is_ok()&&!install_reserved{discard_plan(&state);}
+    result
 }
-async fn download_locked(state:&VaultState,id:&str,on_progress:tauri::ipc::Channel<Progress>)->Result<Package,String>{
-    let _scope=transfers::Scope(state);state.paused.store(false,Ordering::SeqCst);*state.channel.lock().map_err(|_|"Ошибка состояния")?=Some(on_progress);*state.rate.lock().map_err(|_|"Ошибка состояния")?=None;
+async fn download_locked(state:&VaultState,id:&str,on_progress:Option<tauri::ipc::Channel<Progress>>)->Result<Package,String>{
+    download_locked_from(state,id,on_progress,&crate::storage::vault(),&||Ok(epic_index()?.items)).await
+}
+async fn download_locked_from(state:&VaultState,id:&str,on_progress:Option<tauri::ipc::Channel<Progress>>,vault:&Path,external_index:&(impl Fn()->Result<Vec<Package>,String>+Sync))->Result<Package,String>{
+    let _scope=transfers::Scope(state);state.paused.store(false,Ordering::SeqCst);*state.channel.lock().map_err(|_|"Ошибка состояния")?=on_progress;*state.rate.lock().map_err(|_|"Ошибка состояния")?=None;
     let plan = state.plan.lock().map_err(|_| "Ошибка состояния")?.as_ref().filter(|p| p.info.id == id).cloned().ok_or("Подготовьте загрузку заново")?;
     let destination = Path::new(&plan.info.path);
     no_links(destination)?;
-    if destination.exists() {
-        let cached=package(&id)?;
+    let external=!plan.info.source.is_empty();
+    // An unavailable external cache must never fall through to the download
+    // branch: its physical directory is not owned by Unreal Manager.
+    if external{check_external_alias(&plan.info,&external_index()?)?;}
+    else if !valid_hash(id)||destination!=vault.join(id){return Err("Хранилище изменено. Верните исходную папку Vault для продолжения этой загрузки.".into());}
+    if external || destination.exists() {
+        if !external{let cached=package_at(vault,id)?;if !cached.source.is_empty()||!same_cached_files(&cached,&plan.info){return Err("Некорректное описание Vault".into());}}
+        state.pause_available.store(true,Ordering::SeqCst);
+        let mut done=0;let mut files=0;
         for (name,hash) in &plan.info.hashes {
-            if hash_file(&destination.join(relative(name)?))? != *hash { return Err("Файлы Vault повреждены. Повторное скачивание не начато".into()); }
+            let (actual,bytes)=hash_download_file(state,&destination.join(relative(name)?),local_progress("Проверяем файлы Vault",done,plan.info.bytes,files,plan.info.files)).await?;
+            if actual != *hash { return Err("Файлы Vault повреждены. Повторное скачивание не начато".into()); }
+            done+=bytes;files+=1;transfers::emit(state,local_progress("Проверяем файлы Vault",done,plan.info.bytes,files,plan.info.files));
         }
-        let stage=crate::storage::vault().join(".partial").join(id);if stage.exists(){transfers::cleanup(&stage,id)?;}else{transfers::remove(id)?;}return Ok(cached);
+        transfers::checkpoint(state).await?;state.pause_available.store(false,Ordering::SeqCst);
+        if external{check_external_alias(&plan.info,&external_index()?)?;}
+        else{
+            no_links(destination)?;
+            let record=serde_json::to_vec_pretty(&plan.info).map_err(|_|"Не удалось сохранить описание материала")?;
+            crate::engine::install::atomic(&destination.join("package.um.json"),&record)?;
+            let stage=vault.join(".partial").join(id);if stage.exists(){transfers::cleanup(&stage,id)?;}else{transfers::remove(id)?;}
+        }
+        return Ok(plan.info);
     }
-    let staging = crate::storage::vault().as_path().join(".partial").join(&id);
+    let staging = vault.join(".partial").join(&id);
     no_links(&staging)?; fs::create_dir_all(staging.join("files")).map_err(io_error)?;
     let saved=plan.clone();tauri::async_runtime::spawn_blocking(move||transfers::save(&saved)).await.map_err(|e|e.to_string())??;
     state.pause_available.store(true,Ordering::SeqCst);
@@ -152,7 +230,7 @@ async fn download_locked(state:&VaultState,id:&str,on_progress:tauri::ipc::Chann
     for (name, file) in &plan.files {
         transfers::checkpoint(state).await?;
         let target = staging.join("files").join(relative(name)?); no_links(&target)?;
-        if target.exists() && hash_file(&target)? == file.file_hash.to_ascii_lowercase() { done += file.size() as u64; completed += 1; emit("Проверяем ранее загруженные файлы", done, completed, network); continue; }
+        if target.exists() && hash_download_file(state,&target,Progress{network_bytes:network,..local_progress("Проверяем ранее загруженные файлы",done,plan.info.bytes,completed,plan.files.len())}).await?.0 == file.file_hash.to_ascii_lowercase() { done += file.size() as u64; completed += 1; emit("Проверяем ранее загруженные файлы", done, completed, network); continue; }
         if target.exists() { return Err("Ранее загруженный файл повреждён. Сохраните его отдельно и повторите загрузку".into()); }
         fs::create_dir_all(target.parent().ok_or("Некорректный путь")?).map_err(io_error)?;
         let temporary = staging.join(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
@@ -196,7 +274,11 @@ fn package(id: &str) -> Result<Package, String> {
         for (name,hash) in &info.hashes {relative(name)?;if !valid_hash(hash){return Err("Повреждён индекс Epic Vault".into());}}
         return Ok(info);
     }
-    let root = crate::storage::vault().as_path().join(id); no_links(&root)?;
+    package_at(&crate::storage::vault(),id)
+}
+fn package_at(vault:&Path,id:&str)->Result<Package,String>{
+    if !valid_hash(id){return Err("Некорректный материал Vault".into());}
+    let root = vault.join(id); no_links(&root)?;
     let record = root.join("package.um.json");
     let mut bytes = Vec::new(); File::open(record).map_err(io_error)?.take(32*1024*1024).read_to_end(&mut bytes).map_err(io_error)?;
     let mut result: Package = serde_json::from_slice(&bytes).map_err(|_| "Повреждено описание Vault")?;
@@ -408,14 +490,22 @@ fn install_files_mode(info: &Package, project: &str, project_name: Option<&str>,
     Ok((root, entries, compatible))
 }
 fn preview(info: &Package, project: &str, project_name: Option<&str>) -> Result<InstallPreview, String> {
+    preview_progress(info,project,project_name,&mut |_|{})
+}
+fn preview_progress(info:&Package,project:&str,project_name:Option<&str>,notify:&mut dyn FnMut(Progress))->Result<InstallPreview,String>{
     let (root, entries, compatible) = install_files(info, project, project_name)?;
+    notify(local_progress("Проверяем файлы проекта",0,0,0,entries.len()));
+    let mut bytes=0u64;
+    for path in entries.values(){let target=root.join(path);no_links(&target)?;if target.is_file(){bytes=bytes.saturating_add(fs::metadata(target).map_err(io_error)?.len());}}
+    let mut progress=FileProgress::new("Проверяем файлы проекта",bytes,entries.len(),notify);
     let mut conflicts = Vec::new(); let mut existing = 0;
     for (name, path) in &entries {
         let target = root.join(path); no_links(&target)?;
         if target.exists() {
-            if target.is_file() && hash_file(&target)? == info.hashes[name] { existing += 1; }
+            if target.is_file() && hash_file_progress(&target,|n|progress.advance(n))? == info.hashes[name] { existing += 1; }
             else { conflicts.push(path.to_string_lossy().into_owned()); }
         }
+        progress.file_done();
     }
     let project_file=if info.kind=="Project" {entries.values().find(|p|p.extension().and_then(|s|s.to_str()).is_some_and(|s|s.eq_ignore_ascii_case("uproject"))).map(|p|root.join(p).to_string_lossy().into_owned())}else{None};
     let display_target=if info.kind=="Plugin"{entries.values().find(|p|p.extension().and_then(|e|e.to_str()).is_some_and(|e|e.eq_ignore_ascii_case("uplugin"))).and_then(|p|p.parent()).map(|p|root.join(p)).unwrap_or(root.clone())}else{root.clone()};
@@ -435,40 +525,57 @@ fn install(info: &Package, project: &str, project_name: Option<&str>) -> Result<
     install_for_engine(info, project, project_name, None)
 }
 fn install_for_engine(info: &Package, project: &str, project_name: Option<&str>, engine_version: Option<&str>) -> Result<usize, String> {
+    install_for_engine_progress(info,project,project_name,engine_version,&mut |_|{})
+}
+fn install_for_engine_progress(info:&Package,project:&str,project_name:Option<&str>,engine_version:Option<&str>,notify:&mut dyn FnMut(Progress))->Result<usize,String>{
     if let Some(engine)=engine_version {
         let parts:Vec<_>=engine.split('.').collect();
         if info.kind!="Project" || !(2..=3).contains(&parts.len()) || parts.iter().any(|p|p.is_empty()||!p.bytes().all(|c|c.is_ascii_digit())) {
             return Err("Укажите версию движка в формате 5.8".into());
         }
     }
-    let check = preview(info, project, project_name)?;
+    let check = preview_progress(info, project, project_name,notify)?;
     if !check.conflicts.is_empty() { return Err("Обнаружены конфликты файлов. Ничего не перезаписано".into()); }
     let (root, entries, _) = install_files(info, project, project_name)?;
-    // Validate every source before creating any project files.
-    for name in entries.keys() {
-        if hash_file(&Path::new(&info.path).join(relative(name)?))? != info.hashes[name] { return Err("Файл Vault повреждён. Установка отменена".into()); }
+    let mut sizes=BTreeMap::new();let mut source_bytes=0u64;let mut copy_bytes=0u64;
+    for (name,path) in &entries{
+        let source=Path::new(&info.path).join(relative(name)?);no_links(&source)?;
+        let bytes=fs::metadata(source).map_err(io_error)?.len();source_bytes=source_bytes.saturating_add(bytes);
+        let exists=root.join(path).is_file();copy_bytes=copy_bytes.saturating_add(bytes.saturating_mul(if exists{1}else{2}));sizes.insert(name.clone(),(bytes,exists));
     }
+    // Validate every source before creating any project files.
+    let mut progress=FileProgress::new("Проверяем файлы Vault",source_bytes,entries.len(),notify);
+    for name in entries.keys() {
+        if hash_file_progress(&Path::new(&info.path).join(relative(name)?),|n|progress.advance(n))? != info.hashes[name] { return Err("Файл Vault повреждён. Установка отменена".into()); }
+        progress.file_done();
+    }
+    drop(progress);
     if info.kind == "Project" { fs::create_dir_all(root.parent().ok_or("Некорректный каталог")?).map_err(io_error)?; fs::create_dir(&root).map_err(io_error)?; }
     let mut created = Vec::new();
+    let mut progress=FileProgress::new("Копируем и проверяем файлы",copy_bytes,entries.len(),notify);
     let result = (|| -> Result<usize, String> {
         for (name, path) in &entries {
             let target = root.join(path); no_links(&target)?;
             if target.exists() {
-                if target.is_file() && hash_file(&target)? == info.hashes[name] { continue; }
+                if !sizes[name].1{progress.total=progress.total.saturating_sub(sizes[name].0);}
+                if target.is_file() && hash_file_progress(&target,|n|progress.advance(n))? == info.hashes[name] { progress.file_done();continue; }
                 return Err("Файлы проекта изменились. Установка отменена".into());
             }
+            if sizes[name].1{progress.total=progress.total.saturating_add(sizes[name].0);}
             fs::create_dir_all(target.parent().ok_or("Некорректный путь")?).map_err(io_error)?;
             let mut output = OpenOptions::new().write(true).create_new(true).open(&target).map_err(io_error)?;
             created.push(target.clone());
             let mut input = File::open(Path::new(&info.path).join(relative(name)?)).map_err(io_error)?;
-            std::io::copy(&mut input, &mut output).map_err(io_error)?; output.sync_all().map_err(io_error)?; drop(output);
-            if hash_file(&target)? != info.hashes[name] { return Err("Проверка скопированного файла не пройдена".into()); }
+            let mut buffer=[0u8;65536];loop{let n=input.read(&mut buffer).map_err(io_error)?;if n==0{break;}output.write_all(&buffer[..n]).map_err(io_error)?;progress.advance(n as u64);}
+            output.sync_all().map_err(io_error)?; drop(output);
+            if hash_file_progress(&target,|n|progress.advance(n))? != info.hashes[name] { return Err("Проверка скопированного файла не пройдена".into()); }
             if let Some(engine)=engine_version.filter(|_| path.extension().and_then(|e|e.to_str()).is_some_and(|e|e.eq_ignore_ascii_case("uproject"))) {
                 let mut descriptor:serde_json::Value=serde_json::from_slice(&fs::read(&target).map_err(io_error)?).map_err(|_|"Не удалось прочитать файл проекта")?;
                 let object=descriptor.as_object_mut().ok_or("Некорректный файл проекта")?;
                 object.insert("EngineAssociation".into(),serde_json::Value::String(engine.into()));
                 fs::write(&target,serde_json::to_vec_pretty(&descriptor).map_err(|_|"Не удалось сохранить версию проекта")?).map_err(io_error)?;
             }
+            progress.file_done();
         }
         Ok(created.len())
     })();
@@ -476,22 +583,74 @@ fn install_for_engine(info: &Package, project: &str, project_name: Option<&str>,
         // Roll back only files exclusively created by this operation; existing files are untouched.
         for path in created.iter().rev() { if no_links(path).is_ok() { let _ = fs::remove_file(path); } }
     }
+    drop(progress);
+    if result.is_ok(){notify(local_progress("Файлы установлены и проверены",1,1,entries.len(),entries.len()));}
     result
 }
 #[tauri::command]
-pub async fn vault_install(state: tauri::State<'_, VaultState>, id: String, project: String, project_name: Option<String>, engine_version: Option<String>) -> Result<usize, String> {
+pub async fn vault_install(state: tauri::State<'_, VaultState>,webview:tauri::Webview, id: String, project: String, project_name: Option<String>, engine_version: Option<String>,on_progress:Option<tauri::ipc::JavaScriptChannelId>) -> Result<usize, String> {
+    let on_progress:Option<tauri::ipc::Channel<Progress>>=on_progress.map(|id|id.channel_on(webview));
     let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) { return Err("Дождитесь текущей операции Vault".into()); }
     let _busy=Busy(&state.active);
-    tauri::async_runtime::spawn_blocking(move || {
+    let result=tauri::async_runtime::spawn_blocking(move || {
         let info=package(&id)?;
-        match engine_version {Some(engine)=>install_for_engine(&info,&project,project_name.as_deref(),Some(&engine)),None=>install(&info,&project,project_name.as_deref())}
-    }).await.map_err(|_| "Установка прервана")?
+        install_for_engine_progress(&info,&project,project_name.as_deref(),engine_version.as_deref(),&mut |progress|{if let Some(channel)=&on_progress{let _=channel.send(progress);}})
+    }).await.map_err(|_| "Установка прервана")?;
+    if result.is_ok(){discard_plan(&state);}result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_verification_future_fits_async_stack_budget(){
+        // Constructing (not polling) this future must not embed the file I/O buffer.
+        // It is also nested in engine_install through optional Fab installation.
+        let state=VaultState::default();
+        let future=hash_download_file(&state,Path::new("X:/Fixture/not-opened"),local_progress("Проверяем файлы Vault",0,1,0,1));
+        let bytes=std::mem::size_of_val(&future);println!("cached verification future inline bytes={bytes}");
+        assert!(bytes<=4096,"Cached verification future exceeds the 4 KiB async inline-state budget: {bytes} bytes");
+    }
+    #[test]
+    fn install_progress_reports_verified_work_and_preserves_project_on_late_corruption(){
+        let root=std::env::temp_dir().join(format!("um-copy-progress-{}",uuid::Uuid::new_v4()));let source=root.join("vault");let project=root.join("project");
+        fs::create_dir_all(source.join("Content")).unwrap();fs::create_dir_all(project.join("Content")).unwrap();
+        let a=vec![7u8;1024*1024+17];let b=b"second asset";let descriptor=br#"{"EngineAssociation":"5.8","UserSetting":true}"#;
+        fs::write(source.join("Content/a.uasset"),&a).unwrap();fs::write(source.join("Content/b.uasset"),b).unwrap();fs::write(project.join("Game.uproject"),descriptor).unwrap();fs::write(project.join("Content/User.uasset"),b"user work").unwrap();
+        let info=Package{artifact_id:String::new(),selected_engine:String::new(),build_version:String::new(),source:String::new(),asset_id:"test".into(),id:"test".into(),title:"test".into(),kind:"Asset".into(),engines:vec!["UE_5.8".into()],bytes:(a.len()+b.len())as u64,download_bytes:0,files:2,path:source.to_string_lossy().into(),hashes:BTreeMap::from([("Content/a.uasset".into(),digest(&a)),("Content/b.uasset".into(),digest(b))])};
+        let target=project.join("Game.uproject");let mut events=Vec::new();
+        let result=install_for_engine_progress(&info,target.to_str().unwrap(),None,None,&mut |p|{
+            if p.phase=="Копируем и проверяем файлы"&&p.files_done==0&&p.done==0{fs::write(source.join("Content/b.uasset"),b"corrupted after validation").unwrap();}events.push(p);
+        });
+        assert!(result.is_err());assert!(!project.join("Content/a.uasset").exists());assert!(!project.join("Content/b.uasset").exists());
+        assert_eq!(fs::read(&target).unwrap(),descriptor);assert_eq!(fs::read(project.join("Content/User.uasset")).unwrap(),b"user work");
+        assert!(!events.iter().any(|p|p.phase=="Файлы установлены и проверены"));assert!(events.iter().filter(|p|p.phase=="Копируем и проверяем файлы").all(|p|p.done<p.total));
+        fs::write(source.join("Content/b.uasset"),b).unwrap();events.clear();
+        assert_eq!(install_for_engine_progress(&info,target.to_str().unwrap(),None,None,&mut |p|events.push(p)).unwrap(),2);
+        assert_eq!(hash_file(&project.join("Content/a.uasset")).unwrap(),digest(&a));assert_eq!(fs::read(project.join("Content/b.uasset")).unwrap(),b);
+        let copied=events.iter().filter(|p|p.phase=="Копируем и проверяем файлы").last().unwrap();assert_eq!(copied.done,2*info.bytes);assert_eq!(copied.total,2*info.bytes);assert_eq!(copied.files_done,2);
+        assert!(events.iter().all(|p|p.network_bytes==0&&!p.can_pause));assert_eq!(events.last().unwrap().phase,"Файлы установлены и проверены");
+        fs::remove_file(project.join("Content/a.uasset")).unwrap();events.clear();
+        assert_eq!(install_for_engine_progress(&info,target.to_str().unwrap(),None,None,&mut |p|events.push(p)).unwrap(),1);
+        let copied=events.iter().filter(|p|p.phase=="Копируем и проверяем файлы").last().unwrap();assert_eq!(copied.total,(2*a.len()+b.len())as u64,"Existing matching file is hashed, not copied again");
+        assert_eq!(fs::read(&target).unwrap(),descriptor);assert_eq!(fs::read(project.join("Content/User.uasset")).unwrap(),b"user work");fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn corrupted_source_never_creates_a_new_project_or_reports_installation_complete(){
+        let root=std::env::temp_dir().join(format!("um-invalid-source-progress-{}",uuid::Uuid::new_v4()));let source=root.join("vault");fs::create_dir_all(&source).unwrap();fs::write(source.join("Original.uproject"),b"changed").unwrap();
+        let info=Package{artifact_id:String::new(),selected_engine:String::new(),build_version:String::new(),source:String::new(),asset_id:"test".into(),id:"test".into(),title:"test".into(),kind:"Project".into(),engines:vec![],bytes:2,download_bytes:0,files:1,path:source.to_string_lossy().into(),hashes:BTreeMap::from([("Original.uproject".into(),digest(b"{}"))])};
+        let target=root.join("NewGame");let mut events=Vec::new();assert!(install_for_engine_progress(&info,target.to_str().unwrap(),Some("NewGame"),None,&mut |p|events.push(p)).is_err());assert!(!target.exists());assert!(!events.iter().any(|p|p.phase=="Копируем и проверяем файлы"||p.phase=="Файлы установлены и проверены"));fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn local_download_verification_can_stop_while_paused_without_mutating_cached_file(){
+        let root=std::env::temp_dir().join(format!("um-cached-verification-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();let path=root.join("cached");let data=vec![11u8;2*1024*1024+3];fs::write(&path,&data).unwrap();
+        let state=std::sync::Arc::new(VaultState::default());state.paused.store(true,Ordering::SeqCst);let child_state=state.clone();let child_path=path.clone();let bytes=data.len()as u64;
+        let task=tokio::spawn(async move{hash_download_file(&child_state,&child_path,local_progress("Проверяем файлы Vault",0,bytes,0,1)).await});
+        tokio::time::sleep(Duration::from_millis(30)).await;assert!(!task.is_finished());state.cancel.store(true,Ordering::SeqCst);
+        assert!(tokio::time::timeout(Duration::from_secs(2),task).await.unwrap().unwrap().is_err());assert_eq!(fs::read(&path).unwrap(),data);
+        let fresh=VaultState::default();let (hash,read)=hash_download_file(&fresh,&path,local_progress("Проверяем файлы Vault",0,bytes,0,1)).await.unwrap();assert_eq!(hash,digest(&data));assert_eq!(read,bytes);fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn plugin_targets_and_engine_compatibility(){
         let root=std::env::temp_dir().join(format!("um-plugin-{}",uuid::Uuid::new_v4()));
@@ -728,11 +887,125 @@ pub(crate) async fn install_fab_locked(app:&tauri::AppHandle,epic:&crate::epic::
  let id=plan.info.id.clone();
  *state.plan.lock().map_err(|_|"Ошибка состояния загрузки")?=Some(plan);
  state.cancel.store(false,Ordering::SeqCst);
- let info=download_locked(state,&id,on_progress).await?;
+ let install_channel=on_progress.clone();
+ let info=download_locked(state,&id,Some(on_progress)).await?;
  let destination=root.to_string_lossy().into_owned();
- tauri::async_runtime::spawn_blocking(move||{crate::engine::install::idle()?;install(&info,&destination,None)}).await.map_err(|_|"Установка Fab прервана")??;
+ tauri::async_runtime::spawn_blocking(move||{crate::engine::install::idle(Path::new(&destination))?;install_for_engine_progress(&info,&destination,None,None,&mut |progress|{let _=install_channel.send(progress);})}).await.map_err(|_|"Установка Fab прервана")??;
  *state.plan.lock().map_err(|_|"Ошибка состояния загрузки")?=None;
  Ok(())
 }
 
-pub(crate) fn discard_plan(state:&VaultState){if let Ok(mut plan)=state.plan.lock(){*plan=None;}}
+pub(crate) fn discard_plan(state:&VaultState){if let Ok(mut plan)=state.plan.lock(){*plan=None;}crate::vault_queue::wake();}
+#[tauri::command]
+pub fn vault_discard(state:tauri::State<'_,VaultState>)->Result<(),String>{
+ discard_idle(&state)
+}
+fn discard_idle(state:&VaultState)->Result<(),String>{
+ if state.active.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).is_err(){return Err("Дождитесь текущей операции Vault".into());}
+ let _busy=Busy(&state.active);discard_plan(&state);Ok(())
+}
+
+pub(crate) fn queue_plan_reserved(state:&VaultState)->bool{state.plan.lock().map(|p|p.is_some()).unwrap_or(true)}
+pub(crate) fn queue_lease<'a>(state:&'a VaultState,engine:&crate::engine::EngineState)->Option<Busy<'a>>{
+ if engine.active.load(Ordering::SeqCst)||queue_plan_reserved(state){return None;}
+ state.active.compare_exchange(false,true,Ordering::SeqCst,Ordering::SeqCst).ok()?;
+ let lease=Busy(&state.active);
+ if engine.active.load(Ordering::SeqCst)||queue_plan_reserved(state){return None;}Some(lease)
+}
+fn queue_accept_package(info:&Package,prepared:&mut impl FnMut(&Package)->Result<(),String>)->Result<(),String>{
+ prepared(info)?;
+ if transfers::has_saved_task(&info.id)?{return Err("Продолжите сохранённую загрузку в списке задач.".into());}Ok(())
+}
+pub(crate) async fn queue_download(app:&tauri::AppHandle,epic:&crate::epic::EpicState,state:&VaultState,request:&crate::vault_queue::Request,account:&str,mut prepared:impl FnMut(&Package)->Result<(),String>,sink:std::sync::Arc<dyn Fn(Progress)+Send+Sync>)->Result<Package,String>{
+ // Caller owns the same Vault lease as manual downloads and engine installation.
+ let plan=prepare_locked(app,epic,&request.asset_id,&request.artifact_id,&request.selected_engine,Some(account)).await?;
+ queue_accept_package(&plan.info,&mut prepared)?;
+ if !Path::new(&plan.info.path).exists(){let required=plan.info.bytes.checked_add(plan.info.download_bytes).and_then(|n|n.checked_add(128*1024*1024)).ok_or("Материал слишком велик")?;if crate::engine::free(Path::new(&plan.info.path))?<required{return Err("Недостаточно свободного места.".into());}}
+ let id=plan.info.id.clone();*state.plan.lock().map_err(|_|"Ошибка состояния загрузки")?=Some(plan);
+ *state.progress_sink.lock().map_err(|_|"Ошибка состояния загрузки")?=Some(sink);
+ let result=download_locked(state,&id,None).await;
+ discard_plan(state);result
+}
+
+#[cfg(test)]mod queue_tests{
+ use super::*;
+ fn info()->Package{let id=digest(uuid::Uuid::new_v4().as_bytes());Package{artifact_id:"synthetic-artifact".into(),selected_engine:"5.7".into(),build_version:"build".into(),source:String::new(),asset_id:"synthetic-asset".into(),id:id.clone(),title:"Synthetic".into(),kind:"Asset".into(),engines:vec!["5.7".into()],bytes:0,download_bytes:0,files:0,path:crate::storage::vault().join(id).to_string_lossy().into_owned(),hashes:BTreeMap::new()}}
+ #[test]fn queue_uses_existing_exclusive_lease_and_preserves_manual_prepared_plan(){
+  let vault=VaultState::default();let engine=crate::engine::EngineState::default();
+  engine.active.store(true,Ordering::SeqCst);assert!(queue_lease(&vault,&engine).is_none());assert!(!vault.active.load(Ordering::SeqCst));engine.active.store(false,Ordering::SeqCst);
+  vault.active.store(true,Ordering::SeqCst);assert!(queue_lease(&vault,&engine).is_none());assert!(vault.active.load(Ordering::SeqCst));vault.active.store(false,Ordering::SeqCst);
+  let plan=Plan{info:info(),intent:Some(transfers::Intent{mode:"install".into(),project:"X:/Fixture/Game.uproject".into(),project_name:"Game".into(),engine_version:"5.7".into(),update_id:None}),files:BTreeMap::new()};let before=serde_json::to_vec(&plan).unwrap();*vault.plan.lock().unwrap()=Some(plan);assert!(queue_lease(&vault,&engine).is_none());assert_eq!(serde_json::to_vec(vault.plan.lock().unwrap().as_ref().unwrap()).unwrap(),before);discard_plan(&vault);
+  let lease=queue_lease(&vault,&engine).unwrap();assert!(queue_lease(&vault,&engine).is_none());
+  // A late close of a manual wizard must not erase a claimed queue download.
+  let queued=Plan{info:info(),intent:None,files:BTreeMap::new()};let queued_id=queued.info.id.clone();*vault.plan.lock().unwrap()=Some(queued);assert!(discard_idle(&vault).is_err());assert_eq!(vault.plan.lock().unwrap().as_ref().unwrap().info.id,queued_id);drop(lease);assert!(!vault.active.load(Ordering::SeqCst));discard_idle(&vault).unwrap();assert!(queue_lease(&vault,&engine).is_some());
+ }
+ #[test]fn queue_cannot_replace_an_existing_partial_plan_or_its_intent(){
+  let info=info();let base=crate::storage::settings().join("VaultTasks");fs::create_dir_all(&base).unwrap();let json=base.join(format!("{}.json",info.id));let zlib=base.join(format!("{}.zlib",info.id));let metadata=b"existing project intent must remain";let data=b"existing private resumable plan";fs::write(&json,metadata).unwrap();fs::write(&zlib,data).unwrap();let mut recorded=None;
+  assert_eq!(queue_accept_package(&info,&mut |p|{recorded=Some(p.id.clone());Ok(())}).unwrap_err(),"Продолжите сохранённую загрузку в списке задач.");assert_eq!(recorded,Some(info.id));assert_eq!(fs::read(&json).unwrap(),metadata);assert_eq!(fs::read(&zlib).unwrap(),data);fs::remove_file(json).unwrap();fs::remove_file(zlib).unwrap();
+ }
+}
+
+#[cfg(test)]mod cache_metadata_tests{
+ use super::*;
+ const DATA:&[u8]=b"synthetic verified asset bytes";
+ static PROVENANCE:Mutex<()>=Mutex::new(());
+ struct Fixture{root:PathBuf,vault:PathBuf}
+ impl Fixture{
+  fn new()->Self{
+   let temp=std::env::temp_dir();assert!(temp.is_absolute(),"Fixture temporary directory must be absolute");
+   let root=temp.join(format!("um-vault-cache-test-{}-{}",std::process::id(),uuid::Uuid::new_v4()));let vault=root.join("Vault");fs::create_dir_all(&vault).unwrap();Self{root,vault}
+  }
+  fn plan(&self,artifact:&str,engines:&[&str],selected:&str)->Plan{
+   let hashes=BTreeMap::from([("Content/Demo.uasset".into(),digest(DATA))]);
+   let fingerprint=serde_json::to_string(&hashes).unwrap();let id=digest(format!("fixture-asset\n{artifact}\nfixture-build\n{fingerprint}").as_bytes());
+   Plan{intent:None,files:BTreeMap::new(),info:Package{artifact_id:artifact.into(),selected_engine:selected.into(),build_version:"fixture-build".into(),source:String::new(),asset_id:"fixture-asset".into(),id:id.clone(),title:format!("Fresh {artifact}"),kind:"Asset".into(),engines:engines.iter().map(|v|(*v).into()).collect(),bytes:DATA.len() as u64,download_bytes:DATA.len() as u64,files:1,path:self.vault.join(id).to_string_lossy().into_owned(),hashes}}
+  }
+  fn own(&self,info:&Package){let root=Path::new(&info.path);assert!(root.starts_with(&self.root));fs::create_dir_all(root.join("Content")).unwrap();fs::write(root.join("Content/Demo.uasset"),DATA).unwrap();fs::write(root.join("package.um.json"),serde_json::to_vec_pretty(info).unwrap()).unwrap();}
+  fn external(&self,fresh:&Package,engines:&[&str])->Package{
+   let mut p=fresh.clone();p.id=digest(uuid::Uuid::new_v4().as_bytes());p.source=EPIC_CACHE_SOURCE.into();p.path=self.root.join("EpicCache").join(&p.id).to_string_lossy().into_owned();p.artifact_id.clear();p.selected_engine.clear();p.title="Cached Epic title".into();p.engines=engines.iter().map(|e|(*e).into()).collect();fs::create_dir_all(Path::new(&p.path).join("Content")).unwrap();fs::write(Path::new(&p.path).join("Content/Demo.uasset"),DATA).unwrap();p
+  }
+  fn no_task_or_stage(&self,id:&str){assert!(!self.vault.join(".partial").join(id).exists());let tasks=crate::storage::settings().join("VaultTasks");for ext in["json","zlib"]{assert!(!tasks.join(format!("{id}.{ext}")).exists());}}
+  fn compatible(&self,info:&Package,version:&str)->bool{let path=self.root.join(format!("Demo-{version}.uproject"));fs::write(&path,serde_json::to_vec(&serde_json::json!({"EngineAssociation":version})).unwrap()).unwrap();preview(info,&path.to_string_lossy(),None).unwrap().compatible}
+ }
+ impl Drop for Fixture{fn drop(&mut self){
+  let mut files=0;let mut bytes=0;for e in walkdir::WalkDir::new(&self.root).follow_links(false){let e=e.unwrap();if e.file_type().is_file(){files+=1;bytes+=e.metadata().unwrap().len();}}
+  assert_eq!(self.root.parent(),Some(std::env::temp_dir().as_path()));assert!(self.root.file_name().unwrap().to_string_lossy().starts_with(&format!("um-vault-cache-test-{}-",std::process::id())));
+  fs::remove_dir_all(&self.root).unwrap();
+  if let Ok(path)=std::env::var("UM_CACHE_TEST_PROVENANCE"){let _guard=PROVENANCE.lock().unwrap();let path=PathBuf::from(path);assert!(path.is_absolute());let mut file=OpenOptions::new().create(true).append(true).open(path).unwrap();writeln!(file,"{}",serde_json::json!({"pid":std::process::id(),"root":self.root,"files":files,"bytes":bytes,"removed":!self.root.exists(),"purpose":"synthetic cache metadata regression fixture"})).unwrap();}
+ }}
+ async fn cached(f:&Fixture,plan:Plan,index:impl Fn()->Result<Vec<Package>,String>+Sync)->Result<Package,String>{let state=VaultState::default();let id=plan.info.id.clone();*state.plan.lock().unwrap()=Some(plan);download_locked_from(&state,&id,None,&f.vault,&index).await}
+
+ #[tokio::test]async fn different_artifact_same_bytes_never_reuses_old_own_compatibility(){
+  let f=Fixture::new();let old=f.plan("artifact-a",&["5.6"],"5.6");f.own(&old.info);let fresh=f.plan("artifact-b",&["5.7"],"5.7");assert_ne!(old.info.id,fresh.info.id);
+  let selected=select_prepared_cache(fresh.clone(),&f.vault,vec![old.info.clone()]);assert_eq!(selected.info.id,fresh.info.id);assert_eq!(selected.info.path,fresh.info.path);
+  f.own(&fresh.info);let result=cached(&f,selected,||Ok(vec![])).await.unwrap();assert_eq!(result.artifact_id,"artifact-b");assert!(f.compatible(&result,"5.7"));assert!(!f.compatible(&result,"5.6"));assert_eq!(package_at(&f.vault,&old.info.id).unwrap().engines,vec!["5.6"]);
+ }
+ #[tokio::test]async fn same_canonical_cache_refreshes_publisher_compatibility_after_hashes(){
+  let f=Fixture::new();let old=f.plan("shared-artifact",&["5.6"],"5.6");f.own(&old.info);let fresh=f.plan("shared-artifact",&["5.6","5.7"],"5.7");assert_eq!(old.info.id,fresh.info.id);
+  let selected=select_prepared_cache(fresh.clone(),&f.vault,vec![]);let result=cached(&f,selected,||Ok(vec![])).await.unwrap();assert_eq!(result.engines,fresh.info.engines);let reloaded=package_at(&f.vault,&result.id).unwrap();assert_eq!(reloaded.engines,fresh.info.engines);assert!(f.compatible(&reloaded,"5.7"));
+ }
+ #[tokio::test]async fn shared_artifact_retains_new_selected_engine_in_result_and_record(){
+  let f=Fixture::new();let old=f.plan("shared-artifact",&["5.6","5.7"],"5.6");f.own(&old.info);let mut fresh=old.clone();fresh.info.selected_engine="5.7".into();fresh.info.title="Fresh publisher title".into();let result=cached(&f,select_prepared_cache(fresh,&f.vault,vec![]),||Ok(vec![])).await.unwrap();assert_eq!(result.selected_engine,"5.7");let reloaded=package_at(&f.vault,&result.id).unwrap();assert_eq!(reloaded.selected_engine,"5.7");assert_eq!(reloaded.title,"Fresh publisher title");
+ }
+ #[tokio::test]async fn compatible_external_cache_keeps_physical_identity_without_writes(){
+  let f=Fixture::new();let fresh=f.plan("requested-artifact",&["5.7","5.8"],"5.7");let external=f.external(&fresh.info,&[" UE_5.7 ","ue_5.8","5.9"]);let index_path=f.root.join("external-index.json");let index_bytes=serde_json::to_vec(&external).unwrap();fs::write(&index_path,&index_bytes).unwrap();let physical=Path::new(&external.path).join("Content/Demo.uasset");let selected=select_prepared_cache(fresh.clone(),&f.vault,vec![external.clone()]);assert_eq!(selected.info.id,external.id);
+  let result=cached(&f,selected,||Ok(vec![external.clone()])).await.unwrap();assert_eq!(result.path,external.path);assert_eq!(result.source,EPIC_CACHE_SOURCE);assert_eq!(result.artifact_id,fresh.info.artifact_id);assert_eq!(result.build_version,fresh.info.build_version);assert_eq!(result.title,fresh.info.title);assert_eq!(result.selected_engine,"5.7");assert_eq!(result.engines,fresh.info.engines);assert!(f.compatible(&result,"5.8"));assert_eq!(fs::read(&physical).unwrap(),DATA);assert_eq!(fs::read(index_path).unwrap(),index_bytes);assert!(!Path::new(&external.path).join("package.um.json").exists());assert!(!f.vault.join(&fresh.info.id).exists());f.no_task_or_stage(&external.id);
+ }
+ #[tokio::test]async fn external_must_cover_all_requested_engines_not_only_selection(){
+  let f=Fixture::new();let fresh=f.plan("requested",&["5.7","5.8"],"5.7");let external=f.external(&fresh.info,&["5.7"]);let selected=select_prepared_cache(fresh.clone(),&f.vault,vec![external.clone()]);assert_eq!(selected.info.id,fresh.info.id);assert_eq!(selected.info.path,fresh.info.path);assert!(selected.info.source.is_empty());f.own(&selected.info);let result=cached(&f,selected,||Ok(vec![external.clone()])).await.unwrap();assert_eq!(result.id,fresh.info.id);assert!(f.compatible(&result,"5.8"));assert_eq!(fs::read(Path::new(&external.path).join("Content/Demo.uasset")).unwrap(),DATA);
+ }
+ #[tokio::test]async fn disappeared_external_cache_fails_before_staging_or_task_save(){
+  let f=Fixture::new();let fresh=f.plan("requested",&["5.7"],"5.7");let external=f.external(&fresh.info,&["5.7"]);let selected=select_prepared_cache(fresh,&f.vault,vec![external.clone()]);fs::remove_dir_all(&external.path).unwrap();assert!(cached(&f,selected,||Ok(vec![external.clone()])).await.err().unwrap().contains("Epic Vault"));assert!(!Path::new(&external.path).exists());f.no_task_or_stage(&external.id);
+ }
+ #[tokio::test]async fn external_index_revalidated_after_hashing_without_writes(){
+  let f=Fixture::new();let fresh=f.plan("requested",&["5.7","5.8"],"5.7");let external=f.external(&fresh.info,&["5.7","5.8"]);let selected=select_prepared_cache(fresh,&f.vault,vec![external.clone()]);let calls=std::sync::atomic::AtomicUsize::new(0);let result=cached(&f,selected,||{let mut p=external.clone();if calls.fetch_add(1,Ordering::SeqCst)>0{p.engines=vec!["5.7".into()];}Ok(vec![p])}).await;assert!(result.is_err());assert_eq!(calls.load(Ordering::SeqCst),2);assert_eq!(fs::read(Path::new(&external.path).join("Content/Demo.uasset")).unwrap(),DATA);assert!(!Path::new(&external.path).join("package.um.json").exists());f.no_task_or_stage(&external.id);
+ }
+ #[tokio::test]async fn corrupt_own_cache_leaves_previous_package_record_byte_exact(){
+  let f=Fixture::new();let old=f.plan("shared",&["5.6"],"5.6");f.own(&old.info);let record=Path::new(&old.info.path).join("package.um.json");let before=fs::read(&record).unwrap();fs::write(Path::new(&old.info.path).join("Content/Demo.uasset"),b"corrupt").unwrap();let fresh=f.plan("shared",&["5.6","5.7"],"5.7");assert!(cached(&f,select_prepared_cache(fresh,&f.vault,vec![]),||Ok(vec![])).await.is_err());assert_eq!(fs::read(record).unwrap(),before);f.no_task_or_stage(&old.info.id);
+ }
+ #[cfg(windows)]#[tokio::test]async fn locked_own_record_preserves_old_bytes_and_removes_only_own_failed_temporary(){
+  use std::os::windows::fs::OpenOptionsExt;
+  let f=Fixture::new();let old=f.plan("shared",&["5.6"],"5.6");f.own(&old.info);let directory=Path::new(&old.info.path);let record=directory.join("package.um.json");let before=fs::read(&record).unwrap();let siblings=||fs::read_dir(directory).unwrap().map(|e|e.unwrap().file_name()).collect::<BTreeSet<_>>();let before_names=siblings();
+  let held=OpenOptions::new().read(true).share_mode(1).open(&record).unwrap();let fresh=f.plan("shared",&["5.6","5.7"],"5.7");assert!(cached(&f,select_prepared_cache(fresh,&f.vault,vec![]),||Ok(vec![])).await.is_err());assert_eq!(fs::read(&record).unwrap(),before);assert_eq!(siblings(),before_names);drop(held);f.no_task_or_stage(&old.info.id);
+ }
+}

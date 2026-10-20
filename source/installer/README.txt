@@ -1,5 +1,8 @@
-Unreal Manager 0.2.0-beta.8 — Nyanma
+Unreal Manager 0.9.0 — Nyanma
 https://github.com/MerryGrim
+
+Release 0.9.0: installer, portable download and signed application updates.
+https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.0
 
 Installed edition
 The installer installs for the current Windows user. Settings, account session,
@@ -34,14 +37,33 @@ The EXE has no Windows Authenticode publisher signature. Update manifests have
 a separate ECDSA signature verified with the application's pinned public key. Original Unreal Manager source code
 is licensed under the MIT License. Third-party components retain their
 respective licenses; notices are available in Account menu > About and in
-THIRD-PARTY-LICENSES.txt. Corresponding MPL component sources are attached to
-https://github.com/MerryGrim/UnrealManager/releases/tag/v0.2.0-beta.8
+THIRD-PARTY-LICENSES.txt. The unchanged dependency versions have corresponding
+MPL component sources in the ThirdPartySources archive of this release:
+https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.0
 Unreal Engine, Epic Games and Fab belong to their owners.
 
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
-0.2.0-beta.8
+0.9.0
+- Sequential asset downloads to Vault; reorder pending items by drag or keyboard.
+- Restored queues start paused. Enqueue does not prepare or alter an active task.
+- Project copying stays a separate explicit action; old partial tasks are preserved.
+- Engine guards check the selected installation, not every running engine version.
+- Optional protected Epic global registration reports a warning without undoing
+  verified engine files. An elevated registration retry is not implemented.
+- Real counters for saved blocks, file copy/readback, cleanup and deletion;
+  external system-component installation has an explicit waiting state.
+- Fixed resume dispatch stack growth and dialog navigation/scrolling.
+- Existing signing key and installed/portable update mechanisms are preserved.
+- Active downloads appear in Current; the queue contains waiting items.
+- Verified scenarios include asset pause/restart/resume, project copying,
+  isolated engine installation/recovery, Editor launch and test-data cleanup.
+  Results cover the recorded builds and operations. Clean Windows, installed/
+  portable update migration, fresh-account SSO and real key activation are
+  separate checks.
+
+0.2.0-beta.8 (previous public release)
 - Settings grouped into Interface, Downloads, Storage, Projects and App updates.
 - Open Settings > App updates to check, download and apply application updates.
 - Category labels are translated into all nine interface languages.
@@ -57,8 +79,10 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In beta.7, select Stable and beta releases, then use
-Settings > Unreal Manager updates > Check for updates to receive beta.8.
+In 0.9.0, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.0 through the application updater. Stable
+releases are available in both the stable and beta update channels.
+In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.
 Before applying, active operations stop safely and their resumable tasks persist.
 If an Inno installer is interrupted mid-write, recovery keeps its backup and

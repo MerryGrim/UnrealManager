@@ -1,8 +1,10 @@
 import { tr } from './i18n';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { RefreshCw, FileX2 } from 'lucide-react';
+import {engineCountLabel, formatEnginePhase, isEngineObjectInventory, transferSize} from './EngineTransferCard';
+type DeleteProgress={phase:string;done:number;total:number;percent:number;filesDone:number;filesTotal:number;processedBytes:number;totalBytes:number;processingBytesPerSecond?:number};
 export function EngineDelete({ path, onClose, onDeleted }: {
     path: string;
     onClose: () => void;
@@ -10,6 +12,7 @@ export function EngineDelete({ path, onClose, onDeleted }: {
 }) {
     const [preview, setPreview] = useState<{path: string; version: string} | null>(null);
     const [error, setError] = useState(''), [busy, setBusy] = useState(false), [result, setResult] = useState('');
+    const [progress, setProgress] = useState<DeleteProgress | null>(null);
     const lock = useRef(false), cancel = useRef<HTMLButtonElement>(null);
     useEffect(() => {
         let gone = false;
@@ -24,8 +27,17 @@ export function EngineDelete({ path, onClose, onDeleted }: {
         lock.current = true;
         setBusy(true);
         setError('');
+        setProgress(null);
+        let sampleTime=performance.now(),sampleBytes=0,samplePhase='',speed=0;
+        const onProgress=new Channel<DeleteProgress>();
+        onProgress.onmessage=p=>{
+            const now=performance.now();
+            if(p.phase!==samplePhase){sampleTime=now;sampleBytes=p.processedBytes;samplePhase=p.phase;speed=0;}
+            if(now-sampleTime>=500){speed=Math.max(0,p.processedBytes-sampleBytes)*1000/(now-sampleTime);sampleTime=now;sampleBytes=p.processedBytes;}
+            setProgress({...p,processingBytesPerSecond:speed});
+        };
         try {
-            const message = await invoke<string>('engine_delete', {path: preview.path, expectedVersion: preview.version});
+            const message = await invoke<string>('engine_delete', {path: preview.path, expectedVersion: preview.version,onProgress});
             setResult(message);
             await onDeleted();
         } catch (e) { setError(String(e)); }
@@ -43,7 +55,7 @@ export function EngineDelete({ path, onClose, onDeleted }: {
         <h2>{tr("Удаление Unreal Engine ")}{preview?.version}</h2><p className="project-delete-path">{path}</p>
         {!result && <><p>{tr("Будет удалена вся папка движка, включая установленные в неё плагины. Проекты вне этой папки и Vault сохранятся.")}</p><p className="error-text">{tr("Файлы будут стёрты без возможности восстановления из корзины.")}</p></>}
         {!preview && !error && <p role="status">{tr("Проверяем установку…")}</p>}
-        {busy && <p role="status"><RefreshCw size={17} className="spin"/> {tr("Удаляем…")}</p>}
+        {busy && !result && (progress?<div className="engine-operation" role="status"><span><RefreshCw size={17} className="spin"/>{formatEnginePhase(progress.phase)}{progress.total?` · ${progress.percent}%`:''}</span><progress max={100} value={progress.total?progress.percent:undefined}/>{!!progress.filesTotal&&<span>{tr(engineCountLabel(progress.phase))}: {progress.filesDone} / {progress.filesTotal}</span>}{!progress.filesTotal&&isEngineObjectInventory(progress.phase)&&<span>{tr('Найдено объектов')}: {progress.filesDone}</span>}{!!progress.totalBytes&&<span>{tr('Обработано')}: {transferSize(progress.processedBytes)} / {transferSize(progress.totalBytes)} · {tr('Скорость обработки')}: {transferSize(progress.processingBytesPerSecond||0)}{tr('/с')}</span>}</div>:<p role="status"><RefreshCw size={17} className="spin"/> {tr("Удаляем…")}</p>)}
         {error && <p role="alert" className="error-text">{tr(error)}</p>}
         {result && <p role="status">{tr(result)}</p>}
         <div className="wizard-footer">
