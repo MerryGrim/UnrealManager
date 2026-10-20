@@ -42,9 +42,9 @@ await headerPage.screenshot({path:outputDirectory+'/engine-components-long-title
 await headerPage.setViewportSize({width:600,height:340});await footer.getByRole('button',{name:'Скачать и установить',exact:true}).click();
 await longDialog.getByRole('status').waitFor();assert.equal(await longDialog.locator('.engine-components').count(),0,'Installation step has no checklist');assert.equal(await longDialog.locator('.update-summary').count(),0);assert.equal(await longDialog.evaluate(n=>n.classList.contains('engine-component-step')),false);assert((await longDialog.innerText()).includes('X:/Fixture/UE_5.7-new'));assert.equal(await longDialog.locator('progress').count(),1);
 const progressLayout=[];
-for(const locale of ['ru','de','ja'])for(const colorScheme of ['dark','light'])for(const [width,height]of [[600,340],[900,600]]){
+for(const locale of ['ru','en','de','it','es','fr','zh','ja','ko'])for(const colorScheme of ['dark','light'])for(const [width,height]of [[600,340],[900,600]]){
  await headerPage.setViewportSize({width,height});await headerPage.emulateMedia({colorScheme});
- await headerPage.evaluate(locale=>{window.setFixtureLocale(locale);window.channel.onmessage({phase:'Проверяем установленные файлы',done:1086,total:250332,percent:0,filesDone:1086,filesTotal:250332,processedBytes:3145728,totalBytes:0,filesPerSecond:47.5,readBytesPerSecond:524288,currentFile:'Engine/Content/'+('LongGermanOrJapaneseComponent_'.repeat(20))+'CurrentAsset.uasset',networkBytes:0,canPause:true,paused:false});},locale);
+ await headerPage.evaluate(locale=>{window.setFixtureLocale(locale);window.channel.onmessage({phase:'Устанавливаем движок',done:1086,total:250332,percent:0,filesDone:1086,filesTotal:250332,processedBytes:134217728,totalBytes:1073741824,readBytes:7340032,filesPerSecond:47.5,readBytesPerSecond:524288,currentFile:'Engine/Content/'+('LongGermanOrJapaneseComponent_'.repeat(20))+'CurrentAsset.uasset',currentFileStage:'readBoth',currentFileDone:3145728,currentFileTotal:12582912,networkBytes:0,canPause:true,paused:false});},locale);
  const modal=headerPage.getByRole('dialog');await modal.locator('.engine-current-file').waitFor();
  assert.equal(await headerPage.evaluate(()=>window.devicePixelRatio),2);
  assert((await modal.locator('.engine-current-file').getAttribute('title')).endsWith('CurrentAsset.uasset'));
@@ -53,8 +53,11 @@ for(const locale of ['ru','de','ja'])for(const colorScheme of ['dark','light'])f
  const close=modal.locator('.modal-head>button'),heading=modal.locator('h2');
  for(const control of [close,heading,...await modal.locator('.engine-operation-actions button').all()]){assert(rectInside(await control.boundingBox(),viewport),'Progress heading/action is visible');assert(await controlTopHit(control),'Progress heading/action unobscured');}
  assert.equal(await modal.evaluate(n=>n.scrollWidth<=n.clientWidth+1),true,'Long current path cannot widen dialog');
- const numeric=await modal.locator('progress').getAttribute('value');assert(Math.abs(Number(numeric)-1086/250332*100)<0.00001);
- assert((await modal.getByRole('status').innerText()).includes(locale==='ru'||locale==='de'?'0,4%':'0.4%'));
+ const numeric=await modal.locator('.engine-operation>progress').getAttribute('value');assert(Math.abs(Number(numeric)-1086/250332*100)<0.00001);
+ assert.equal(await modal.locator('.engine-file-meter').getAttribute('value'),'25','Separate per-file read progress is shown');
+ assert(rectInside(await modal.locator('.engine-file-meter').boundingBox(),await modal.locator('.engine-progress-metrics').boundingBox()),'Current-file meter is visible without scrolling even in the short window');
+ assert((await modal.locator('.engine-file-work').getAttribute('title')).endsWith('CurrentAsset.uasset'),'Visible file-work row has the full relative path tooltip');
+ assert((await modal.getByRole('status').innerText()).includes(['ru','de','it','es','fr'].includes(locale)?'0,4%':'0.4%'));
  if((locale==='ru'&&colorScheme==='dark'&&width===600)||(locale==='de'&&colorScheme==='light'&&width===900)||(locale==='ja'&&colorScheme==='dark'&&width===900))await headerPage.screenshot({path:outputDirectory+'/engine-progress-'+locale+'-'+colorScheme+'-'+width+'.png'});
  progressLayout.push({locale,colorScheme,viewport:{width,height},deviceScaleFactor:2,bounds,close:await close.boundingBox(),actionsVisible:true,currentFileFullTitle:true});
 }

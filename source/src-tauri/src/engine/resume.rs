@@ -68,10 +68,20 @@ pub(super) fn commit_complete(stage:&Path)->Result<bool,String>{Ok(journal_statu
 pub(super) fn commit_applying(stage:&Path)->Result<bool,String>{Ok(journal_status(stage)?.as_deref()==Some("applying"))}
 pub(super) fn remove(id:&str)->Result<(),String>{for ext in ["json","zlib"]{let p=task_path(&directory(),id,ext)?;if p.exists(){fs::remove_file(p).map_err(io)?;}}Ok(())}
 static REPORTED:LazyLock<Mutex<BTreeMap<String,(String,Instant)>>>=LazyLock::new(||Mutex::new(BTreeMap::new()));
+fn persist_report(path:&Path,phase:&str,percent:u64)->Result<(),String>{
+ no_links(path)?;
+ let bytes=fs::read(path).map_err(io)?;
+ let mut task:Task=serde_json::from_slice(&bytes).map_err(|_|"Повреждена задача установки".to_string())?;
+ // A heartbeat inside a large-file read does not change durable recovery state.
+ if task.phase==phase && task.percent==percent{return Ok(());}
+ task.phase=phase.into();task.percent=percent;
+ super::install::atomic(path,&serde_json::to_vec(&task).map_err(|e|e.to_string())?)
+}
 pub(super) fn report(id:&str,phase:&str,done:u64,total:u64){
  let Ok(mut reported)=REPORTED.lock()else{return;};if reported.get(id).is_some_and(|(p,t)|p==phase&&t.elapsed()<Duration::from_secs(2)){return;}
- let Ok(p)=task_path(&directory(),id,"json")else{return;};let Ok(bytes)=fs::read(&p)else{return;};let Ok(mut task)=serde_json::from_slice::<Task>(&bytes)else{return;};task.phase=phase.into();task.percent=if total>0{done.saturating_mul(100)/total}else{0};
- if let Ok(bytes)=serde_json::to_vec(&task){if super::install::atomic(&p,&bytes).is_ok(){reported.insert(id.into(),(phase.into(),Instant::now()));}}
+ let Ok(p)=task_path(&directory(),id,"json")else{return;};
+ let percent=if total>0{done.saturating_mul(100)/total}else{0};
+ if persist_report(&p,phase,percent).is_ok(){reported.insert(id.into(),(phase.into(),Instant::now()));}
 }
 #[tauri::command]
 pub fn engine_resume_tasks()->Vec<Task>{let mut tasks=list_at(&directory());for task in &mut tasks{task.can_recover=Path::new(&task.path).join(".um-engine-update.json").exists();}tasks}
@@ -117,6 +127,31 @@ pub async fn engine_resume_prepare(state:tauri::State<'_,EngineState>,vault:taur
 }
 #[cfg(test)]mod tests{
  use super::*;
+ #[cfg(windows)]
+ #[test]fn unchanged_read_heartbeat_does_not_rewrite_a_locked_checkpoint(){
+  use std::os::windows::fs::OpenOptionsExt;
+  let parent=std::env::temp_dir();no_links(&parent).unwrap();
+  let id=uuid::Uuid::new_v4().to_string();let base=parent.join(format!("um-report-{id}"));
+  fs::create_dir(&base).unwrap();
+  struct Owned{base:PathBuf,parent:PathBuf,id:String}
+  impl Drop for Owned{fn drop(&mut self){
+   if self.base.parent()!=Some(self.parent.as_path())||self.base.file_name().and_then(|s|s.to_str())!=Some(format!("um-report-{}",self.id).as_str())||no_links(&self.base).is_err(){return;}
+   let p=self.base.join("task.json");if no_links(&p).is_ok()&&p.is_file(){let _=fs::remove_file(p);}
+   if fs::read_dir(&self.base).is_ok_and(|mut entries|entries.next().is_none()){let _=fs::remove_dir(&self.base);}
+  }}
+  let _owned=Owned{base:base.clone(),parent,id:id.clone()};let path=base.join("task.json");
+  let task=Task{id,path:"X:/Fixture/Engine".into(),build:"synthetic".into(),phase:"Устанавливаем движок".into(),percent:16,can_recover:true,stage:PathBuf::from("X:/Fixture/Stage")};
+  let original=serde_json::to_vec(&task).unwrap();fs::write(&path,&original).unwrap();
+  let locked=fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap();
+  // A needless atomic replacement would fail while this read handle denies DELETE.
+  assert!(persist_report(&path,"Устанавливаем движок",16).is_ok());
+  assert_eq!(fs::read(&path).unwrap(),original);
+  assert!(persist_report(&path,"Устанавливаем движок",17).is_err());
+  assert_eq!(fs::read(&path).unwrap(),original);drop(locked);
+  persist_report(&path,"Устанавливаем движок",17).unwrap();
+  let changed:Task=serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+  assert_eq!(changed.percent,17);assert!(changed.can_recover);
+ }
  #[test]fn saved_and_legacy_preparation_share_the_vault_heavy_operation_lease(){
   let vault=crate::vault::VaultState::default();vault.active.store(true,Ordering::SeqCst);assert!(resume_vault_lease(&vault).is_err());assert!(vault.active.load(Ordering::SeqCst));vault.active.store(false,Ordering::SeqCst);
   let saved=resume_vault_lease(&vault).unwrap();assert!(vault.active.load(Ordering::SeqCst));assert!(resume_vault_lease(&vault).is_err());drop(saved);assert!(!vault.active.load(Ordering::SeqCst));let legacy=resume_vault_lease(&vault).unwrap();drop(legacy);assert!(!vault.active.load(Ordering::SeqCst));

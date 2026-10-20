@@ -986,5 +986,15 @@
   "файл/с": "files/s",
   "Прочитано": "Read",
   "Скорость чтения": "Read speed",
-  "Текущий файл": "Current file"
+  "Текущий файл": "Current file",
+  "Проверяем прежний файл": "Checking the existing file",
+  "Проверяем новый файл": "Checking the new file",
+  "Проверяем прежний и новый файлы": "Checking the existing and new files",
+  "Заменяем файл": "Replacing the file",
+  "Проверяем файл после возобновления": "Checking the file after resume",
+  "Обработка текущего файла": "Processing the current file",
+  "Прогресс текущего файла": "Current file progress",
+  "Пауза применяется в ближайшей безопасной точке": "Pauses at the next safe checkpoint",
+  "Ожидаем безопасной точки для паузы…": "Waiting for a safe pause checkpoint…",
+  "Не удалось подтвердить идентичность файла перед заменой": "Could not confirm the file identity before replacement"
 }

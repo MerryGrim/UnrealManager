@@ -1,5 +1,23 @@
 # Change notes
 
+## 0.9.2 — 2026-10-20
+
+Download the installer or portable edition from
+[0.9.2](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.2).
+
+- Show read progress inside the current file while applying engine updates,
+  with actual read bytes and speed, the current check or replacement step,
+  and regular status updates while waiting for file I/O.
+- Overlap large old/new file checks within one operation on supported non-seeking
+  storage. File replacement remains sequential and retains SHA-1 verification,
+  file identity checks, protected handles and the existing rollback journal.
+- Pause and safe suspension can checkpoint within a large-file check.
+- Avoid rewriting an unchanged saved task phase and percentage for heartbeats.
+
+Performance and interrupted-installation compatibility are checked separately
+on isolated fixtures. Read speed includes the operating system cache; no
+universal SSD speed or fresh real-engine installation is claimed.
+
 ## 0.9.1 — 2026-10-20
 
 Download the installer or portable edition from

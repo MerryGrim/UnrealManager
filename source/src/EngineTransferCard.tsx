@@ -2,7 +2,7 @@ import {tr,getLocale} from './i18n';
 import {ChevronRight} from 'lucide-react';
 import logo from './assets/um-logo.svg';
 import {EnginePauseButton} from './EnginePauseButton';
-export type EngineProgress = {phase:string;done:number;total:number;percent:number;processedBytes?:number;totalBytes?:number;filesDone?:number;filesTotal?:number;processingBytesPerSecond?:number;currentFile?:string|null;filesPerSecond?:number;readBytesPerSecond?:number;paused?:boolean;canPause?:boolean};
+export type EngineProgress = {phase:string;done:number;total:number;percent:number;processedBytes?:number;totalBytes?:number;filesDone?:number;filesTotal?:number;processingBytesPerSecond?:number;currentFile?:string|null;currentFileStage?:'readOld'|'readNew'|'readBoth'|'replace'|'resumeCheck';currentFileDone?:number;currentFileTotal?:number;readBytes?:number;filesPerSecond?:number;readBytesPerSecond?:number;paused?:boolean;canPause?:boolean};
 export type EngineTransfer = EngineProgress & {networkBytes:number;bytesPerSecond:number;title:string};
 export const transferSize=(bytes:number)=>`${(bytes/1048576).toLocaleString(getLocale(),{maximumFractionDigits:1})} ${tr('МБ')}`;
 export const formatEnginePhase=(phase:string)=>phase.startsWith('Fab: ')?`Fab: ${tr(phase.slice(5))}`:tr(phase);
@@ -36,19 +36,34 @@ export function enginePercentText(progress:EngineProgress):string {
  return `${format(percent<100?Math.min(99.9,percent):100)}%`;
 }
 const count=(value:number)=>value.toLocaleString(getLocale(),{maximumFractionDigits:0});
-export function engineProgressMetrics(progress:EngineProgress):{label:string;value:string;currentFile?:boolean}[] {
- const rows:{label:string;value:string;currentFile?:boolean}[]=[];
+type EngineMetric={label:string;value:string;currentFile?:boolean;fileWork?:boolean;fileProgress?:{value:number|undefined;text:string}};
+const fileStages={readOld:'Проверяем прежний файл',readNew:'Проверяем новый файл',readBoth:'Проверяем прежний и новый файлы',replace:'Заменяем файл',resumeCheck:'Проверяем файл после возобновления'};
+export function engineProgressMetrics(progress:EngineProgress):EngineMetric[] {
+ const rows:EngineMetric[]=[];
  if(progress.filesTotal)rows.push({label:engineCountLabel(progress.phase),value:`${count(progress.filesDone||0)} / ${count(progress.filesTotal)}`});
  else if(isEngineObjectInventory(progress.phase))rows.push({label:'Найдено объектов',value:count(progress.filesDone||0)});
  if(progress.totalBytes) {
   rows.push({label:'Обработано',value:`${transferSize(progress.processedBytes||0)} / ${transferSize(progress.totalBytes)}`});
-  rows.push({label:'Скорость обработки',value:`${transferSize(progress.processingBytesPerSecond||0)}${tr('/с')}`});
- } else if(progress.readBytesPerSecond!==undefined)rows.push({label:'Прочитано',value:transferSize(progress.processedBytes||0)});
- if(Number.isFinite(progress.filesPerSecond))rows.push({label:'Скорость проверки',value:`${Math.max(0,progress.filesPerSecond!).toLocaleString(getLocale(),{maximumFractionDigits:1})} ${tr('файл/с')}`});
- if(Number.isFinite(progress.readBytesPerSecond))rows.push({label:'Скорость чтения',value:`${transferSize(Math.max(0,progress.readBytesPerSecond!))}${tr('/с')}`});
+  if(progress.readBytes===undefined)rows.push({label:'Скорость обработки',value:`${transferSize(progress.processingBytesPerSecond||0)}${tr('/с')}`});
+ }
+ // The old initial scan reported actual SHA reads in processedBytes. APPLY uses
+ // that field for logical completed output, never for measured disk reads.
+ const readBytes=progress.readBytes??(progress.phase==='Проверяем установленные файлы'&&progress.readBytesPerSecond!==undefined?progress.processedBytes:undefined);
+ if(Number.isFinite(readBytes))rows.push({label:'Прочитано',value:transferSize(Math.max(0,readBytes!))});
+ if(Number.isFinite(progress.filesPerSecond))rows.push({label:'Скорость проверки',value:`${(progress.paused?0:Math.max(0,progress.filesPerSecond!)).toLocaleString(getLocale(),{maximumFractionDigits:1})} ${tr('файл/с')}`});
+ if(Number.isFinite(progress.readBytesPerSecond))rows.push({label:'Скорость чтения',value:`${transferSize(progress.paused?0:Math.max(0,progress.readBytesPerSecond!))}${tr('/с')}`});
  if(progress.currentFile)rows.push({label:'Текущий файл',value:progress.currentFile,currentFile:true});
+ if(progress.currentFile&&progress.currentFileStage){
+  const label=fileStages[progress.currentFileStage]||'Обработка текущего файла';
+  if(progress.currentFileStage==='replace')rows.unshift({label,value:'',fileWork:true});
+  else {
+   const counter={phase:'',done:progress.currentFileDone||0,total:progress.currentFileTotal||0,percent:0};
+   const value=engineProgressPercent(counter),text=enginePercentText(counter);
+   rows.unshift({label,value:value===undefined?transferSize(progress.currentFileDone||0):`${transferSize(counter.done)} / ${transferSize(counter.total)} · ${text}`,fileWork:true,fileProgress:{value,text}});
+  }
+ }
  return rows;
 }
 export function EngineTransferCard({progress,onOpen}:{progress:EngineTransfer;onOpen:()=>void}){
- return <article className="transfer-card engine-transfer-card"><div className="transfer-main"><div className="transfer-art"><img src={logo} alt=""/></div><div className="transfer-info"><h3>{progress.title}</h3><p>{progress.paused?tr('На паузе'):formatEnginePhase(progress.phase)}</p><div className="transfer-meter"><progress aria-label={tr('Прогресс загрузки')} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><strong>{enginePercentText(progress)}</strong></div></div><div className="transfer-buttons"><EnginePauseButton paused={progress.paused} canPause={progress.canPause}/><button onClick={onOpen}>{tr('Открыть установку движка')}<ChevronRight size={17}/></button></div></div><div className="transfer-metrics"><div><small>{tr('Скорость сети')}</small><b>{transferSize(progress.bytesPerSecond)}{tr('/с')}</b></div><div><small>{tr('Получено по сети')}</small><b>{transferSize(progress.networkBytes)}</b></div><div><small>{tr('Состояние')}</small><b>{progress.paused?tr('На паузе'):formatEnginePhase(progress.phase)}</b></div>{engineProgressMetrics(progress).map(row=><div key={row.label} className={row.currentFile?'engine-current-file':undefined}><small>{tr(row.label)}</small><b title={row.currentFile?row.value:undefined}>{row.value}</b></div>)}</div></article>;
+ return <article className="transfer-card engine-transfer-card"><div className="transfer-main"><div className="transfer-art"><img src={logo} alt=""/></div><div className="transfer-info"><h3>{progress.title}</h3><p>{progress.paused?tr('На паузе'):formatEnginePhase(progress.phase)}</p><div className="transfer-meter"><progress aria-label={tr('Прогресс загрузки')} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><strong>{enginePercentText(progress)}</strong></div></div><div className="transfer-buttons"><EnginePauseButton paused={progress.paused} canPause={progress.canPause}/><button onClick={onOpen}>{tr('Открыть установку движка')}<ChevronRight size={17}/></button></div></div><div className="transfer-metrics"><div><small>{tr('Скорость сети')}</small><b>{transferSize(progress.bytesPerSecond)}{tr('/с')}</b></div><div><small>{tr('Получено по сети')}</small><b>{transferSize(progress.networkBytes)}</b></div><div><small>{tr('Состояние')}</small><b>{progress.paused?tr('На паузе'):formatEnginePhase(progress.phase)}</b></div>{engineProgressMetrics(progress).map(row=><div key={row.label} className={row.currentFile?'engine-current-file':row.fileWork?'engine-file-work':undefined}><small title={row.fileWork?progress.currentFile||undefined:undefined}>{tr(row.label)}</small>{row.value&&<b title={row.currentFile?row.value:undefined}>{row.value}</b>}{row.fileProgress&&<progress className="engine-file-meter" aria-label={tr('Прогресс текущего файла')} aria-valuetext={row.fileProgress.text} max={100} value={row.fileProgress.value}/>}</div>)}</div></article>;
 }

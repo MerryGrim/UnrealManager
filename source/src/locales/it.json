@@ -986,5 +986,15 @@
   "файл/с": "file/s",
   "Прочитано": "Letti",
   "Скорость чтения": "Velocità di lettura",
-  "Текущий файл": "File attuale"
+  "Текущий файл": "File attuale",
+  "Проверяем прежний файл": "Verifica del file esistente",
+  "Проверяем новый файл": "Verifica del nuovo file",
+  "Проверяем прежний и новый файлы": "Verifica dei file esistente e nuovo",
+  "Заменяем файл": "Sostituzione del file",
+  "Проверяем файл после возобновления": "Verifica del file dopo la ripresa",
+  "Обработка текущего файла": "Elaborazione del file attuale",
+  "Прогресс текущего файла": "Avanzamento del file attuale",
+  "Пауза применяется в ближайшей безопасной точке": "La pausa si applica al prossimo punto sicuro",
+  "Ожидаем безопасной точки для паузы…": "In attesa di un punto sicuro per la pausa…",
+  "Не удалось подтвердить идентичность файла перед заменой": "Impossibile confermare l’identità del file prima della sostituzione"
 }

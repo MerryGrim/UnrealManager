@@ -193,7 +193,13 @@ try {
             $previousCpu[$key] = $cpu
             $workingSet += [double]$processInfo.WorkingSetSize
             $privateBytes += [double]$processInfo.PrivatePageCount
-            $isWebViewBrowser = $processInfo.Name -ieq 'msedgewebview2.exe' -and $processInfo.CommandLine -notmatch '(?:^|\s)--type='
+            # This smoke measures the main window. Its browser is a direct
+            # child of the native app. Exiting descendants may have a null CIM
+            # command line; null must not be interpreted as "no --type switch".
+            $isWebViewBrowser = $processInfo.Name -ieq 'msedgewebview2.exe' -and
+                $processInfo.ParentProcessId -eq $script:LaunchedProcess.Id -and
+                -not [string]::IsNullOrWhiteSpace($processInfo.CommandLine) -and
+                $processInfo.CommandLine -notmatch '(?:^|\s)--type='
             $row = [PSCustomObject]@{
                 ProcessId = [int]$processInfo.ProcessId; ParentProcessId = [int]$processInfo.ParentProcessId
                 Name = $processInfo.Name; CreatedAt = ([DateTime]$processInfo.CreationDate).ToUniversalTime().ToString('o')
@@ -239,6 +245,14 @@ try {
 }
 
 $rootBrowsers = @($observedProcesses.Values | Where-Object { $_.IsRootWebViewBrowser })
+$unreadableRootBrowsers = @($observedProcesses.Values | Where-Object {
+    $_.Name -ieq 'msedgewebview2.exe' -and $_.ParentProcessId -eq $script:LaunchedProcess.Id -and
+        [string]::IsNullOrWhiteSpace($_.CommandLine)
+})
+$unreadableWebViewDescendants = @($observedProcesses.Values | Where-Object {
+    $_.Name -ieq 'msedgewebview2.exe' -and $_.ParentProcessId -ne $script:LaunchedProcess.Id -and
+        [string]::IsNullOrWhiteSpace($_.CommandLine)
+})
 $gpuRows = @($samples | ForEach-Object { $_.GpuEngines })
 $memoryRows = @($samples | ForEach-Object { $_.GpuMemory })
 $cpuSamples = @($samples | Where-Object { $null -ne $_.CpuPercentOneCore })
@@ -252,7 +266,10 @@ $report = [ordered]@{
     LaunchWindowStyle = 'Hidden'; NativeStdout = $stdoutPath; NativeStderr = $stderrPath
     NativeExitBeforeCleanup = $exitBeforeCleanup; NativeExitAfterCleanup = $exitAfterCleanup
     LogicalProcessors = $logicalProcessors; PowerShellVersion = $PSVersionTable.PSVersion.ToString()
-    SoftwareFlagsObserved = $rootBrowsers.Count -gt 0 -and @($rootBrowsers | Where-Object { -not ($_.DisableGpuFlag -and $_.DisableGpuCompositingFlag) }).Count -eq 0
+    SoftwareFlagsObserved = $rootBrowsers.Count -gt 0 -and $unreadableRootBrowsers.Count -eq 0 -and @($rootBrowsers | Where-Object { -not ($_.DisableGpuFlag -and $_.DisableGpuCompositingFlag) }).Count -eq 0
+    UnreadableRootBrowserCandidates = $unreadableRootBrowsers
+    UnreadableWebViewDescendants = $unreadableWebViewDescendants
+    RootBrowserScope = 'Known command line, no --type switch, direct child of the native app; main-window smoke only. Unreadable direct-child candidates prevent a software-flag pass.'
     RootWebViewBrowsers = $rootBrowsers; ObservedProcesses = @($observedProcesses.Values | Sort-Object CreatedAt, ProcessId)
     CpuPercentOneCoreAverage = Measure-OrNull $cpuSamples 'CpuPercentOneCore' 'Average'
     CpuPercentOneCorePeak = Measure-OrNull $cpuSamples 'CpuPercentOneCore' 'Maximum'

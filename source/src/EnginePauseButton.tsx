@@ -8,8 +8,8 @@ export function EnginePauseButton({paused,canPause}:{paused?:boolean;canPause?:b
  if(!canPause)return null;
  const effective=wanted??!!paused;
  async function toggle(){setBusy(true);setError('');const next=!effective;try{await invoke('engine_pause',{paused:next});setWanted(next);}catch(e){setError(String(e));}finally{setBusy(false);}}
- return <div className="engine-pause-controls"><button className="engine-pause-button" disabled={busy} onClick={()=>void toggle()} title={tr('Пауза применяется после текущего файла или блока')}>
+ return <div className="engine-pause-controls"><button className="engine-pause-button" disabled={busy} onClick={()=>void toggle()} title={tr('Пауза применяется в ближайшей безопасной точке')}>
  {effective?<Play size={16}/>:<Pause size={16}/>} {tr(effective?'Продолжить':'Пауза')}</button>
- {wanted===true&&!paused&&<small role="status">{tr('Завершаем текущий файл или блок…')}</small>}
+ {wanted===true&&!paused&&<small role="status">{tr('Ожидаем безопасной точки для паузы…')}</small>}
  {error&&<span className="error-text" role="alert">{tr(error)}</span>}</div>;
 }

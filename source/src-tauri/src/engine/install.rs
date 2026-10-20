@@ -3,6 +3,8 @@ use sha1::{Digest, Sha1};
 use tauri::Manager;
 #[path="verification.rs"]
 mod verification;
+#[path="apply.rs"]
+mod apply;
 use std::{
     io::Write,
     time::{Duration, Instant},
@@ -27,6 +29,14 @@ pub struct Progress {
     files_per_second: Option<f64>,
     #[serde(skip_serializing_if="Option::is_none")]
     read_bytes_per_second: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    current_file_stage: Option<&'static str>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    current_file_done: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    current_file_total: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    read_bytes: Option<u64>,
 }
 fn fab_progress(value:&serde_json::Value,engine_network:u64,received:&std::sync::atomic::AtomicU64)->Progress {
     let done=value["done"].as_u64().unwrap_or(0);let total=value["total"].as_u64().unwrap_or(0);
@@ -285,23 +295,6 @@ fn operations(plan:&Plan,cancel:&AtomicBool,progress:impl FnMut(verification::Sn
     let workers=super::scan_storage::workers_hint(&target(&plan.info.path)?);
     verification::operations(plan,cancel,workers,progress)
 }
-fn verify_current(root: &Path, op: &Operation) -> Result<(), String> {
-    let path = root.join(relative(&op.name)?);
-    match &op.old_hash {
-        Some(h) => {
-            if hash_file(&path)? != *h {
-                return Err(format!("Файл изменился после проверки: {}", op.name));
-            }
-        }
-        None => {
-            no_links(&path)?;
-            if path.exists() {
-                return Err(format!("В папке появился файл: {}", op.name));
-            }
-        }
-    }
-    Ok(())
-}
 fn rollback(root: &Path, stage: &Path, operations: &[Operation]) -> Result<(), String> {
     rollback_reported(root,stage,operations,|_,_|{})
 }
@@ -366,7 +359,16 @@ fn commit(
 fn commit_controlled(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,progress:impl FnMut(&str,u64,u64))->Result<(),String>{
     commit_checkpointed(plan,stage,ops,paused,None,None,progress).map(|_|())
 }
+#[cfg(test)]
 fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,preflight_warning:Option<String>,mut progress:impl FnMut(&str,u64,u64))->Result<Option<String>,String>{
+    commit_detailed(plan,stage,ops,paused,suspend,preflight_warning,|value|progress(&value.phase,value.done,value.total))
+}
+fn commit_detailed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,preflight_warning:Option<String>,progress:impl FnMut(apply::Snapshot))->Result<Option<String>,String>{
+    let workers=super::scan_storage::workers_hint(&target(&plan.info.path)?).min(2);
+    commit_detailed_with_options(plan,stage,ops,paused,suspend,preflight_warning,apply::Options{workers,..Default::default()},progress)
+}
+fn commit_detailed_with_options(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&AtomicBool>,suspend:Option<&AtomicBool>,preflight_warning:Option<String>,options:apply::Options,progress:impl FnMut(apply::Snapshot))->Result<Option<String>,String>{
+    let mut reporter=apply::Reporter::new(progress,options.interval);
     let root = target(&plan.info.path)?;
     idle(&root)?;
     let journal_path=stage.join("journal.json");no_links(&journal_path)?;
@@ -390,13 +392,10 @@ fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&At
     if marker.exists(){if Path::new(&fs::read_to_string(&marker).map_err(io)?)!=stage{return Err("Есть другая незавершённая установка".into());}}
     else{write_new(&marker,stage.to_string_lossy().as_bytes())?;}
     let mut started=if restoring{ops.clone()}else{Vec::new()};
-    let mut created_directories=BTreeSet::new();
-    let mut last_progress = Instant::now();
-    let mut last_idle = Instant::now();
     let result = (|| -> Result<(), String> {
-        if bulk_layout(&root,stage,&ops,paused,suspend,&mut progress)? {
-            verify_bulk(&root,stage,&ops,paused,suspend,&mut progress)?;
-            pause_checkpoint(paused,||progress("Проверяем файлы перед установкой",ops.len() as u64,ops.len() as u64));
+        if bulk_layout(&root,stage,&ops,paused,suspend,&mut|phase,done,total|reporter.basic(phase,done,total))? {
+            verify_bulk(&root,stage,&ops,paused,suspend,&mut|phase,done,total|reporter.basic(phase,done,total))?;
+            pause_checkpoint(paused,||reporter.basic("Проверяем файлы перед установкой",ops.len() as u64,ops.len() as u64));
             super::resume::check_suspend(suspend)?;
             idle(&root)?;
             if !empty_installation(&root)? {return Err("В папке появились файлы во время установки".into());}
@@ -410,56 +409,23 @@ fn commit_checkpointed(plan:&Plan,stage:&Path,ops:&[Operation],paused:Option<&At
                 let branch=PathBuf::from(entry.file_name());
                 if !restoring{for op in &ops{if relative(&op.name)?.starts_with(&branch){started.push(op.clone());}}}
             }
-            progress("Устанавливаем движок",ops.len() as u64,ops.len() as u64);
-            progress(REGISTRATION_PHASE,0,0);
+            reporter.basic("Устанавливаем движок",ops.len() as u64,ops.len() as u64);
+            reporter.basic(REGISTRATION_PHASE,0,0);
             update_item(&journal.item,false)?;
             return Ok(());
         }
+        apply::with_pool(options,paused,suspend,&mut reporter,|pool|{
         for (i, op) in ops.iter().enumerate() {
-            pause_checkpoint(paused,||progress("Устанавливаем движок",i as u64,ops.len() as u64));
-            super::resume::check_suspend(suspend)?;
-            if idle_checkpoint_due(last_idle) {
-                idle(&root)?;
-                last_idle = Instant::now();
-            }
-            if restoring && operation_applied(&root,stage,op)? {
-                if last_progress.elapsed()>=Duration::from_millis(250)||i+1==ops.len(){progress("Устанавливаем движок",(i+1) as u64,ops.len() as u64);last_progress=Instant::now();}continue;
-            }
-            let rel = relative(&op.name)?;
-            let target = root.join(&rel);
-            let source = stage.join("files").join(&rel);
-            let backup = stage.join("originals").join(&rel);
-            let backup_present=restoring&&backup.exists();
-            if !backup_present{verify_current(&root,op)?;}else{if op.old_hash.as_ref()!=Some(&hash_file(&backup)?){return Err("Резервный файл изменён".into());}no_links(&target)?;if target.exists(){return Err("При продолжении обнаружены внешние изменения".into());}}
-            if !restoring{started.push(op.clone());}
-            if op.old_hash.is_some() && !backup_present {
-                no_links(&backup)?;
-                fs::create_dir_all(backup.parent().unwrap()).map_err(io)?;
-                if backup.exists() {
-                    return Err("Осталась предыдущая резервная копия. Нужен откат.".into());
-                }
-                fs::rename(&target, &backup).map_err(io)?;
-            }
-            if let Some(hash) = &op.new_hash {
-                if hash_file(&source)? != *hash {
-                    return Err("Скачанный файл изменился до установки".into());
-                }
-                let parent=target.parent().unwrap();
-                if created_directories.insert(parent.to_path_buf()){fs::create_dir_all(parent).map_err(io)?;}
-                fs::rename(source, target).map_err(io)?;
-            }
-            if last_progress.elapsed() >= Duration::from_millis(250) || i + 1 == ops.len() {
-                progress("Устанавливаем движок", (i + 1) as u64, ops.len() as u64);
-                last_progress = Instant::now();
-            }
+            pool.operation(&root,stage,op,restoring,i as u64,ops.len() as u64,||{if !restoring{started.push(op.clone());}})?;
         }
-        progress(REGISTRATION_PHASE,0,0);
+        Ok(())})?;
+        reporter.basic(REGISTRATION_PHASE,0,0);
         update_item(&journal.item, false)?;
         Ok(())
     })();
     if let Err(error) = result {
         if error==super::resume::SUSPENDED{return Err(error);}
-        match rollback_reported(&root, stage, &started,|done,total|progress(ROLLBACK_PHASE,done,total))
+        match rollback_reported(&root, stage, &started,|done,total|reporter.basic(ROLLBACK_PHASE,done,total))
             .and_then(|_| update_item(&journal.item, true))
             .and_then(|_| update_item(&journal.launcher, true))
         {
@@ -492,14 +458,6 @@ fn finish_completed_marker(root:&Path,stage:&Path,journal:&Journal)->Result<(),S
         return Err("Есть другая незавершённая установка".into());
     }
     fs::remove_file(marker).map_err(io)
-}
-fn operation_applied(root:&Path,stage:&Path,op:&Operation)->Result<bool,String>{
-    let rel=relative(&op.name)?;let target=root.join(&rel);let source=stage.join("files").join(&rel);let backup=stage.join("originals").join(&rel);
-    no_links(&target)?;no_links(&source)?;no_links(&backup)?;
-    if let Some(old)=&op.old_hash{if !backup.exists(){return Ok(false);}if hash_file(&backup)?!=*old{return Err("Резервный файл изменён".into());}
-        return match &op.new_hash{None=>if target.exists(){Err("При продолжении обнаружены внешние изменения".into())}else{Ok(true)},Some(new)=>if target.exists(){if hash_file(&target)?==*new{Ok(true)}else{Err("При продолжении обнаружены внешние изменения".into())}}else{Ok(false)}};
-    }
-    if target.exists(){if op.new_hash.as_ref()==Some(&hash_file(&target)?)&&!source.exists(){Ok(true)}else{Err("При продолжении обнаружены внешние изменения".into())}}else{Ok(false)}
 }
 fn empty_installation(root:&Path)->Result<bool,String>{
     no_links(root)?;
@@ -808,7 +766,7 @@ pub async fn engine_install(
                 percent:snapshot.done.saturating_mul(100)/snapshot.total.max(1),
                 network_bytes: 0,
                 processed_bytes:snapshot.processed_bytes,total_bytes:0,files_done:snapshot.done,files_total:snapshot.total,paused:false,can_pause:false,
-                current_file:snapshot.current_file,files_per_second:Some(snapshot.files_per_second),read_bytes_per_second:Some(snapshot.read_bytes_per_second),
+                current_file:snapshot.current_file,files_per_second:Some(snapshot.files_per_second),read_bytes_per_second:Some(snapshot.read_bytes_per_second),..Default::default()
             });
         });
         (plan,result)
@@ -919,10 +877,15 @@ pub async fn engine_install(
     let commit_pause=state.paused.clone();let commit_suspend=state.suspend.clone();
     let commit_app=app.clone();
     let registration_warning=if !already_committed {tauri::async_runtime::spawn_blocking(move || {
-        commit_checkpointed(&copy, &stage_copy, &ops,Some(&commit_pause),Some(&commit_suspend),launcher_preflight_warning, |phase, done, total| {
+        commit_detailed(&copy, &stage_copy, &ops,Some(&commit_pause),Some(&commit_suspend),launcher_preflight_warning, |snapshot| {
+            let phase=snapshot.phase.as_str();let done=snapshot.done;let total=snapshot.total;
             if phase==REGISTRATION_PHASE||phase==ROLLBACK_PHASE {commit_app.state::<EngineState>().pause_available.store(false,Ordering::SeqCst);commit_pause.store(false,Ordering::SeqCst);}
             super::resume::report(&commit_id,phase,done,total);
-            let _=channel.send(commit_progress(phase,done,total,network,&prefix,total_bytes,commit_pause.load(Ordering::SeqCst)));
+            let mut value=commit_progress(phase,done,total,network,&prefix,total_bytes,commit_pause.load(Ordering::SeqCst));
+            value.current_file=snapshot.current_file;value.current_file_stage=snapshot.current_file_stage;
+            value.current_file_done=snapshot.current_file_done;value.current_file_total=snapshot.current_file_total;
+            value.read_bytes=Some(snapshot.read_bytes);value.read_bytes_per_second=Some(snapshot.read_bytes_per_second);
+            let _=channel.send(value);
         })
     })
     .await
@@ -1345,7 +1308,14 @@ mod transaction_tests {
     fn installation_progress_is_bounded_for_many_small_files(){
         let (base,stage,mut plan,mut ops)=fixture();plan.item=None;
         for i in 0..1000 {let name=format!("Engine/tiny/{i}.txt");write_new(&stage.join("files").join(&name),b"tiny").unwrap();ops.push(Operation{name,old_hash:None,new_hash:Some(digest(b"tiny"))});}
-        let start=Instant::now();let mut count=0;let mut last=(0,0);commit(&plan,&stage,&ops,|_,done,total|{count+=1;last=(done,total);}).unwrap();assert_eq!(last.0,last.1);assert!(count<=start.elapsed().as_millis() as usize/250+2);println!("1000 files installed in {:?}; {} progress messages",start.elapsed(),count);fs::remove_dir_all(base).unwrap();
+        let start=Instant::now();let mut applying=0;let mut registration=0;let mut last_apply=(0,0);
+        commit(&plan,&stage,&ops,|phase,done,total|{
+            if phase=="Устанавливаем движок"{applying+=1;last_apply=(done,total);}
+            if phase==REGISTRATION_PHASE{registration+=1;}
+        }).unwrap();
+        assert_eq!(last_apply.0,last_apply.1);assert!(last_apply.0>=1000);assert_eq!(registration,1);
+        assert!(applying<=start.elapsed().as_millis() as usize/250+2,"{} applying messages in {:?}",applying,start.elapsed());
+        println!("1000 files installed in {:?}; {} applying messages plus one registration",start.elapsed(),applying);fs::remove_dir_all(base).unwrap();
     }
 
     fn fresh_fixture() -> (PathBuf, PathBuf, Plan, Vec<Operation>) {

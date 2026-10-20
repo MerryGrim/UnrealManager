@@ -1,4 +1,4 @@
-Unreal Manager 0.9.1 — Nyanma
+Unreal Manager 0.9.2 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
@@ -46,6 +46,13 @@ Unreal Engine, Epic Games and Fab belong to their owners.
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
+0.9.2
+- Progress inside each file during engine update application, including read bytes,
+  read speed and the current check or replacement step.
+- Bounded concurrent old/new file checking on suitable SSDs. Replacements stay
+  sequential; verified files stay protected until their replacement step.
+- Compatible saved installation tasks and the existing rollback journal format.
+
 0.9.1
 - Streamlined installed-file verification with bounded storage-aware reading.
 - Fractional progress, checked files per second, read bytes and current file.
@@ -85,8 +92,8 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In 0.9.0, use Settings > App updates > Check for updates.
-Beta.7 and newer can receive 0.9.0 through the application updater. Stable
+In 0.9.2, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.2 through the application updater. Stable
 releases are available in both the stable and beta update channels.
 In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.

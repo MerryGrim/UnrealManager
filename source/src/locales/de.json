@@ -986,5 +986,15 @@
   "файл/с": "Dateien/s",
   "Прочитано": "Gelesen",
   "Скорость чтения": "Lesegeschwindigkeit",
-  "Текущий файл": "Aktuelle Datei"
+  "Текущий файл": "Aktuelle Datei",
+  "Проверяем прежний файл": "Vorhandene Datei wird geprüft",
+  "Проверяем новый файл": "Neue Datei wird geprüft",
+  "Проверяем прежний и новый файлы": "Vorhandene und neue Datei werden geprüft",
+  "Заменяем файл": "Datei wird ersetzt",
+  "Проверяем файл после возобновления": "Datei wird nach dem Fortsetzen geprüft",
+  "Обработка текущего файла": "Aktuelle Datei wird verarbeitet",
+  "Прогресс текущего файла": "Fortschritt der aktuellen Datei",
+  "Пауза применяется в ближайшей безопасной точке": "Pausiert am nächsten sicheren Punkt",
+  "Ожидаем безопасной точки для паузы…": "Warten auf einen sicheren Punkt zum Pausieren…",
+  "Не удалось подтвердить идентичность файла перед заменой": "Die Dateiidentität konnte vor dem Ersetzen nicht bestätigt werden"
 }

@@ -91,6 +91,20 @@ const render=()=>{cursor=0;return m.exports.EnginesView({engines:[{path:'X:\\Fix
  assert.equal(transfer.exports.engineProgressPercent({...verifying,total:0}),undefined);
  assert.equal(transfer.exports.enginePercentText({...verifying,done:1}),'<0,1%');
  assert.equal(transfer.exports.engineCountLabel('Fab: Проверяем сохранённые блоки'),'Блоки');
+ const applying={...verifying,phase:'Устанавливаем движок',done:532,total:12475,filesDone:532,filesTotal:12475,processedBytes:134217728,totalBytes:1073741824,readBytes:7340032,readBytesPerSecond:1048576,currentFileDone:3145728,currentFileTotal:12582912};
+ for(const[stage,label]of [['readOld','Проверяем прежний файл'],['readNew','Проверяем новый файл'],['readBoth','Проверяем прежний и новый файлы'],['resumeCheck','Проверяем файл после возобновления']]){
+  const snapshot={...applying,currentFileStage:stage};channel.onmessage(snapshot);u=render();const modalStatus=all(all(u).find(n=>n.props?.role==='dialog')).find(n=>n.props?.role==='status');
+  const card=transfer.exports.EngineTransferCard({progress:{...snapshot,title:'Unreal Engine'},onOpen:()=>{}});
+  for(const tree of [modalStatus,card]){const meters=all(tree).filter(n=>n.type==='progress');assert.equal(meters.length,2);assert.equal(meters[0].props.value,532/12475*100);assert.equal(meters[1].props.value,25);assert.equal(meters[1].props['aria-label'],'Прогресс текущего файла');assert(text(tree).includes(label)&&text(tree).includes('3 МБ / 12 МБ · 25%'));}
+  assert.equal(transfer.exports.engineProgressMetrics(snapshot).find(r=>r.label==='Прочитано').value,'7 МБ','Disk reads come from readBytes, not logical completed output');
+ }
+ channel.onmessage({...applying,currentFileStage:'readBoth',currentFileDone:9437184,readBytes:13631488});u=render();const partialStatus=all(all(u).find(n=>n.props?.role==='dialog')).find(n=>n.props?.role==='status');assert.deepEqual(all(partialStatus).filter(n=>n.type==='progress').map(n=>n.props.value),[532/12475*100,75],'Inside-file progress advances while completed file count stays fixed');
+ channel.onmessage({...applying,currentFileStage:'replace',currentFileDone:12582912,currentFileTotal:undefined});u=render();const replaceStatus=all(all(u).find(n=>n.props?.role==='dialog')).find(n=>n.props?.role==='status');assert(text(replaceStatus).includes('Заменяем файл'));assert.equal(all(replaceStatus).filter(n=>n.type==='progress').length,1,'Rename has no invented byte meter or completion percentage');
+ assert.equal(transfer.exports.engineProgressMetrics({...applying,paused:true}).find(r=>r.label==='Скорость чтения').value,'0 МБ/с');
+ assert(!transfer.exports.engineProgressMetrics({...applying,readBytes:undefined}).some(r=>r.label==='Прочитано'),'Logical APPLY prefix never becomes disk read bytes');
+ assert(!transfer.exports.engineProgressMetrics(applying).some(r=>r.label==='Скорость обработки'),'Logical completion-prefix speed is omitted when actual read metrics are available');
+ assert.equal(transfer.exports.engineProgressMetrics({...applying,currentFileStage:'readOld',currentFileTotal:undefined}).find(r=>r.fileProgress).fileProgress.value,undefined,'Unknown in-file byte total stays indeterminate');
+ assert(!transfer.exports.engineProgressMetrics({...applying,currentFile:undefined,currentFileStage:'readBoth'}).some(r=>r.fileProgress),'Phase exit clears the per-file meter when native clears currentFile');
  channel.onmessage({phase:'Скачиваем движок',percent:41,total:100,done:41,networkBytes:1048576});u=render();installModal=all(u).find(n=>n.props?.role==='dialog');
  assert.equal(all(installModal).filter(n=>n.type==='input'&&n.props.type==='checkbox').length,0,'Active downloading keeps the component list hidden');
  assert(text(installModal).includes('X:/Fixture/Engines/UE_5.7'),'Active progress retains the chosen destination');
@@ -105,6 +119,7 @@ const render=()=>{cursor=0;return m.exports.EnginesView({engines:[{path:'X:\\Fix
  all(u).find(n=>n.props?.['aria-label']===i18n.tr('Закрыть')).props.onClick();u=render();all(u).filter(n=>n.type==='engine-tile')[1].props.onInstall();u=render();all(u).find(n=>n.type==='input').props.onChange({target:{value:'X:/Fixture/Engines/UE_5.7-guard'}});u=render();
  prepareError='Не удалось определить, какой движок использует UnrealEditor-Cmd.exe. Закройте процесс или повторите проверку.';button(u,i18n.tr('Далее')).onClick();await tick();u=render();
  const nativeGuardAlert=all(u).find(n=>n.props?.role==='alert');assert(nativeGuardAlert,'Native formatted guard error is displayed');assert.equal(text(nativeGuardAlert),'Could not determine which engine is using UnrealEditor-Cmd.exe. Close the process or check again.');assert(!/[А-Яа-яЁё]/.test(text(nativeGuardAlert)),'The dynamic guard message is fully translated without a Cyrillic leak');
+ console.log('PASS APPLY inside-file meters/stage labels, real read-byte separation, paused rate zero and no rename meter; completed files stay fixed until native success');
  console.log('PASS fractional progress and matching card/modal read bytes, file rate/current file, unknown denominator and completion boundaries');
  console.log('PASS actual English i18n renders the formatted native guard error and preserves its process name');
  console.log('PASS engine UI: pre-start Back and clickable prior step, preserved component tags and changed-path reprepare, fresh-release reset, busy navigation guard, read-only resume, supplied update path, explicit destination, step 3 without checkboxes, translated completion, duplicate guard and background progress');
