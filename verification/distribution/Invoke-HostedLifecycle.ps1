@@ -148,7 +148,7 @@ function Launch-And-Verify([string]$Name,[string]$Folder){
         if($p){$diagnostic.pid=$p.Id;try{$p.Refresh();$diagnostic.hasExited=$p.HasExited;if($p.HasExited){$diagnostic.exitCode=$p.ExitCode}else{$diagnostic.created=$p.StartTime.ToUniversalTime().ToFileTimeUtc()}}catch{$diagnostic['stateReadError']=$_.Exception.Message}}
         $report['failedLaunch']=$diagnostic;throw $failure
     }
-    $script:appTrackingUncertain=$false;$script:lifecycleStage=$Name+'-actual-ui-readiness'
+    $script:lifecycleStage=$Name+'-actual-ui-readiness'
     $ui=Join-Path $out ('reports/'+$Name+'-ui.json');$ps=Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
     $probe=Start-Process -FilePath $ps -ArgumentList @('-NoProfile','-MTA','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $PSScriptRoot 'Get-HostedUiReadiness.ps1')+'"'),'-ProcessId',$pin.pid,'-CreatedFileTime',$pin.created,'-Executable',('"'+$exe+'"'),'-ExpectedVersion',$info.version,'-OutputPath',('"'+$ui+'"')) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $out ('logs/'+$Name+'-uia.stdout.log')) -RedirectStandardError (Join-Path $out ('logs/'+$Name+'-uia.stderr.log')) -PassThru
     $probeState=@{mode=$Name;pid=$probe.Id;startedUtc=[DateTime]::UtcNow.ToString('o');timedOut=$false;exitCode=$null;lastCheckpoint=$null}
