@@ -4,10 +4,11 @@ Record the exact candidate SHA-256 and source revision for each run. Native
 source tests, mocked renderer tests, an actual installed lifecycle and a real
 account transfer establish different scopes. Unexecuted cases remain open.
 
-## Verified local scope — 2026-10-21
+## Earlier acceptance baseline — 2026-10-21
 
-Final local source is [9c2dd9a](https://github.com/MerryGrim/UnrealManager/commit/9c2dd9addb46fed1aac99f5eb71d5bffc2745d85).
-The default EXE has SHA-256
+This section records the unreleased 0.9.3 candidates tested before the 0.9.4
+release packaging. Their runtime source is [9c2dd9a](https://github.com/MerryGrim/UnrealManager/commit/9c2dd9addb46fed1aac99f5eb71d5bffc2745d85).
+That default EXE has SHA-256
 `8667f5b066feb872748b21adb1b928dcf0dd87718ef652e6ff2749ee057dca33`.
 Local packaging did not launch that EXE or Setup.
 

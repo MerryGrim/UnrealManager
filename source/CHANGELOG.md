@@ -1,6 +1,9 @@
 # Change notes
 
-## Unreleased — 1.0 stabilization
+## 0.9.4 — 2026-10-21
+
+Download the installer or portable edition from
+[0.9.4](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.4).
 
 - Offer explicit restoration of verified old application files after an
   interrupted installed update. Preserve current files, old backups and the
@@ -36,8 +39,11 @@
   the environment fallback; elevated hosts can ignore environment overrides.
 
 These changes retain software rendering and use no permanent helper service.
-Validation results for this unreleased work are recorded separately from the
-published 0.9.3 checks below.
+The pre-release acceptance baseline passed 238 native tests, 14 renderer groups
+and the installed/portable lifecycle on Windows Server 2022 and 2025. These are
+separate from clean Windows 10/11, human-visible UAC cancellation, real expired
+Epic sessions and physical GPU measurement. See the current
+[acceptance gates](../verification/RELEASE-GATES.md) for exact scope and evidence.
 
 ## 0.9.3 — 2026-10-20
 

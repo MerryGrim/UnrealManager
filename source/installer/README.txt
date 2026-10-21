@@ -1,4 +1,4 @@
-Unreal Manager 0.9.2 — Nyanma
+Unreal Manager 0.9.4 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
