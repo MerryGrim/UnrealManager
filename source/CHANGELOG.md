@@ -1,5 +1,26 @@
 # Change notes
 
+## 0.9.6 — 2026-10-21
+
+Download the installer or portable edition from
+[0.9.6](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.6).
+
+- Replace the ambiguous local Projects scan action with separate Refresh list and
+  Find projects controls. Refresh checks known projects and standard roots and
+  reports the result even when nothing changed.
+- Search an explicitly selected local folder or drive for valid `.uproject`
+  descriptors using a bounded worker. Display checked folders, discoveries,
+  skipped entries and the current folder, with no invented completion percentage.
+- Stop traversal on request and save valid paths already found in one atomic
+  registry update. Remember discovered projects across restarts without a watcher.
+  Discovery does not modify project files or broaden project-deletion permissions.
+- Keep the previous project list and filter when a search fails, report partial
+  and limited searches, and distinguish saved findings from a failed list refresh.
+
+Validation records distinguish synthetic project fixtures and mocked renderer
+checks from a search of a real user drive. No permanent service, new runtime
+dependency or change to WebView2 software rendering is introduced.
+
 ## 0.9.5 — 2026-10-21
 
 Download the installer or portable edition from

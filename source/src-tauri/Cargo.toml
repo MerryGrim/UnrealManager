@@ -1,6 +1,6 @@
 [package]
 name = "unreal-manager"
-version = "0.9.5"
+version = "0.9.6"
 description = "Lightweight Unreal Engine manager"
 authors = ["Nyanma <https://github.com/MerryGrim>"]
 edition = "2021"

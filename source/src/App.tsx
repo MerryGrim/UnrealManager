@@ -10,15 +10,16 @@ import { AboutDialog } from './AboutDialog';
 import { useLanguage } from './i18n';
 import { EnginesView } from './EnginesView';
 import { UpdatesView } from './UpdatesView';
-import { PageActions, PageActionsTarget } from './PageActions';
+import { PageActionsTarget } from './PageActions';
 import logo from './assets/um-logo.svg';
 import { AccountMenu } from './AccountMenu';
 import { PluginsView } from './PluginsView';
 import { ProjectTile } from './ProjectTile';
+import { ProjectsView } from './ProjectsView';
 import { useVault } from './Vault';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useEpic, FabLibrary, RedeemView } from './EpicLibrary';
-import { Boxes, Download, FolderKanban, HardDrive, Home, Library, PackageOpen, PlugZap, RefreshCw, Rocket, Search, Settings, Wrench } from 'lucide-react';
+import { Boxes, Download, FolderKanban, HardDrive, Home, Library, PackageOpen, PlugZap, RefreshCw, Rocket, Settings, Wrench } from 'lucide-react';
 import { scanEngines, scanProjects, type EngineInstall, type UnrealProject } from './lib/backend';
 type Section = 'home' | 'engines' | 'projects' | 'library' | 'plugins' | 'updates' | 'downloads' | 'settings' | 'redeem';
 const nav: {
@@ -60,7 +61,6 @@ export default function App() {
     catch (e) {
         setError(`Проект установлен, но список не удалось обновить: ${String(e)}`);
     } }, engines, () => setSection('plugins'), engineProgress ? {progress:engineProgress,onOpen:()=>setSection('engines')} : null);
-    const [query, setQuery] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const refresh = async () => {
@@ -79,7 +79,11 @@ export default function App() {
         }
     };
     useEffect(() => { refresh(); }, []);
-    const filteredProjects = useMemo(() => projects.filter(p => p.name.toLowerCase().includes(query.toLowerCase())), [projects, query]);
+    const refreshProjects = async () => {
+        const found = await scanProjects();
+        setProjects(found);
+        return found;
+    };
     const queueProgress = vault.queueActive?.progress;
     const downloadPhase = engineProgress ? `${engineProgress.paused ? tr('На паузе') : formatEnginePhase(engineProgress.phase)}${engineProgressPercent(engineProgress)!==undefined ? ` · ${enginePercentText(engineProgress)}` : ''}`
         : vault.queueActive ? `${queueProgress?.paused ? tr('На паузе') : queueProgress?.phase || tr('Подготовка загрузки')}${queueProgress?.total ? ` · ${Math.min(100,Math.floor(queueProgress.done/queueProgress.total*100))}%` : ''}`
@@ -95,7 +99,7 @@ export default function App() {
       {tr(section !== 'home' && <header className="workspace-heading"><h1>{tr(title(section))}</h1><div className="page-actions" ref={setActionsTarget}></div></header>)}
       <div className="workspace-page">      {tr(error ? <div role="alert" className="empty">{tr(error)}<button onClick={refresh}>{tr("Повторить")}</button></div> : section === 'home' && <HomeView downloaded={vault.items.length} engines={engines} projects={projects} onGo={setSection} onRemoved={path => setProjects(current => current.filter(p => p.path !== path))}/>)}      
       <PageActionsTarget.Provider value={section === 'engines' ? actionsTarget : null}><div className="library-view" hidden={section !== 'engines'}><EnginesView active={section === 'engines'} engines={engines} onRefresh={refresh} onProgress={setEngineProgress}/></div></PageActionsTarget.Provider>      
-      {tr(section === 'projects' && <ProjectsView projects={filteredProjects} query={query} setQuery={setQuery} refresh={refresh} onRemoved={path => setProjects(current => current.filter(p => p.path !== path))}/>)}      
+      <PageActionsTarget.Provider value={section === 'projects' ? actionsTarget : null}><div className="library-view" hidden={section !== 'projects'}><ProjectsView projects={projects} onRefresh={refreshProjects} initialLoading={loading} onRemoved={path => setProjects(current => current.filter(p => p.path !== path))}/></div></PageActionsTarget.Provider>
       <PageActionsTarget.Provider value={section === 'library' ? actionsTarget : null}><div className="library-view" hidden={section !== 'library'}><FabLibrary pluginRequest={pluginLibraryRequest} account={epic.account} onLogin={epic.openLogin} onDownload={vault.select} downloadBusy={vault.busy} downloadProgress={vault.tileProgress} pendingProgress={vault.pendingProgress} onResume={id=>window.dispatchEvent(new CustomEvent('um-resume-vault',{detail:id}))} refreshSignal={libraryRefresh} downloaded={vault.items} onVaultChanged={vault.refresh}/></div></PageActionsTarget.Provider>
       {tr(section === 'plugins' && <PluginsView onDownload={item => vault.select(item, false, true)} transfers={vault.updateTransfers} downloadProgress={vault.tileProgress} pendingProgress={vault.pendingProgress} onResume={id=>window.dispatchEvent(new CustomEvent('um-resume-vault',{detail:id}))} items={vault.items} busy={vault.busy} onInstall={vault.openInstall} onUpdate={vault.openProjectUpdate} onLibrary={() => { setPluginLibraryRequest(n => n + 1); setSection('library'); }} onRefresh={vault.refresh}/>)}
       <PageActionsTarget.Provider value={section === 'updates' ? actionsTarget : null}><div className="library-view" hidden={section !== 'updates'}><UpdatesView transfers={vault.updateTransfers} items={vault.items} account={epic.account} busy={vault.busy} onDownload={vault.openUpdate} onProjectUpdate={vault.openProjectUpdate} onCount={setUpdateCount}/></div></PageActionsTarget.Provider>
@@ -122,13 +126,6 @@ function HomeView({ engines, projects, downloaded, onGo, onRemoved }: {
     return <div className="content home-content"><div className="hero home-hero"><div><span className="eyebrow">{tr("РАБОЧАЯ СРЕДА")}</span><h2>{tr("Всё для Unreal Engine.")}<br />{tr("В одном месте.")}</h2><p>{tr("Ваши движки, проекты, материалы и плагины — под рукой.")}</p><div className="row"><button className="primary" onClick={() => onGo('projects')}><FolderKanban size={17}/>{tr("Мои проекты")}</button><button onClick={() => onGo('library')}><Library size={17}/>{tr("Библиотека Fab")}</button></div></div><img src={logo} alt={tr("")} className="home-hero-logo"/></div><div className="stats home-stats"><Stat n={engines.length} t="Установлено движков"/><Stat n={projects.length} t="Найдено проектов"/><Stat n={downloaded} t="Скачано в хранилище"/></div> <section><div className="section-head"><div><h3>{tr("Последние проекты")}</h3></div><button onClick={() => onGo('projects')}>{tr("Все проекты")}</button></div>{tr(launchError && <p className="error-text" role="alert">{tr(launchError)}</p>)}{tr(projects.length > 0 ? <div className="fab-grid recent-projects">{tr(projects.slice(0, 5).map(p => <ProjectTile key={p.path} project={p} onError={setLaunchError} onRemoved={onRemoved}/>))}</div> : <Empty text="Проекты пока не найдены"/>)}</section>
  </div>;
 }
-function ProjectsView({ projects, query, setQuery, refresh, onRemoved }: {
-    projects: UnrealProject[];
-    query: string;
-    setQuery: (s: string) => void;
-    refresh: () => Promise<void>;
-    onRemoved: (path: string) => void;
-}) { const [launchError, setLaunchError] = useState(''); return <div className="content"><div className="toolbar"><label className="search"><Search size={17}/><input placeholder={tr("Поиск проектов")} value={query} onChange={e => setQuery(e.target.value)}/></label><PageActions><button onClick={refresh}><RefreshCw size={17}/>{tr("Сканировать")}</button></PageActions></div>{tr(launchError.trim() && <p className="error-text" role="alert">{tr(launchError)}</p>)}<div className="fab-grid recent-projects">{tr(projects.map(p => <ProjectTile key={p.path} project={p} onError={setLaunchError} onRemoved={onRemoved}/>))}{tr(projects.length === 0 && <Empty text="Проекты не найдены. Поиск выполняется в стандартных каталогах Unreal Projects."/>)}</div></div>; }
 function Placeholder({ icon, title, text }: {
     icon: any;
     title: string;

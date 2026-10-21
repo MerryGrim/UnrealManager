@@ -6,10 +6,10 @@ base64-encoded 64-byte IEEE P1363 signature. The public verification key is
 compiled from `src-tauri/update-public-key.json`. There is no signing key,
 background update service or development runtime in the distributed app.
 
-In 0.9.5, open **Settings → App updates** to select the stable/beta channel,
+In 0.9.6, open **Settings → App updates** to select the stable/beta channel,
 check, download and apply an update. Beta.7 introduced the updater; beta.7 and
-newer can receive 0.9.5 without a separate manual installation. The stable
-0.9.5 release is available in both update channels. In beta.7, use
+newer can receive 0.9.6 without a separate manual installation. The stable
+0.9.6 release is available in both update channels. In beta.7, use
 **Settings → Unreal Manager updates → Check for updates**.
 Beta.6 requires one manual upgrade to beta.7 or newer.
 
@@ -23,7 +23,7 @@ permission prompt preserves the saved engine task. Protected engine files must
 remain writable by the original user. The optional global Epic list can still
 produce a warning rather than full Epic Launcher discovery.
 
-Version 0.9.5 also supports an explicit engine-registration check that can request
+Version 0.9.6 also supports an explicit engine-registration check that can request
 a temporary headless UAC broker for the fixed shared Epic
 `%ProgramData%\Epic\UnrealEngineLauncher\LauncherInstalled.dat` metadata file.
 This is a separate, user-initiated reconciliation of engine records; it does not
@@ -50,7 +50,7 @@ Build the release EXE and Inno installer into a fresh staging directory, with
 the portable distribution in its `UnrealManager-Portable` subdirectory. Then:
 
 ```powershell
-.\PREPARE-UPDATE.ps1 -ReleaseDirectory '..\Releases\0.9.5\my-release'
+.\PREPARE-UPDATE.ps1 -ReleaseDirectory '..\Releases\0.9.6\my-release'
 ```
 
 Use `-PortableDirectory` for a different clean portable distribution folder,
@@ -62,7 +62,7 @@ failure; choose a new staging directory instead of replacing published files.
 Publish these assets together on the matching `v<version>` GitHub Release in
 `MerryGrim/UnrealManager`:
 
-0.9.5 is a normal non-prerelease SemVer version: use the stable manifest channel
+0.9.6 is a normal non-prerelease SemVer version: use the stable manifest channel
 and the existing signing key. Existing beta-channel preferences remain valid;
 that channel also includes stable releases. Both channels require a strictly
 newer version and the matching verified release assets before an update is offered.

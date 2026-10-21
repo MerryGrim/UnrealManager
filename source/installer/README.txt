@@ -1,4 +1,4 @@
-Unreal Manager 0.9.5 — Nyanma
+Unreal Manager 0.9.6 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
@@ -46,7 +46,14 @@ Unreal Engine, Epic Games and Fab belong to their owners.
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
-0.9.5
+0.9.6
+- Projects now has separate Refresh list and Find projects actions. Choose a local
+  folder or drive for discovery; visible counters and the current folder show progress.
+- Stop ends traversal and saves the valid projects already found. Exact project
+  paths are remembered between launches. Skipped entries and bounded-search limits
+  are reported; project files are never modified by discovery. No watcher is added.
+
+0.9.5 (historical release)
 - Repairing managed engine registration can request Windows administrator approval
   for protected Epic metadata. The main application keeps its ordinary token.
 - Projects created from Fab are remembered by their exact .uproject path and appear
@@ -103,8 +110,8 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In 0.9.5, use Settings > App updates > Check for updates.
-Beta.7 and newer can receive 0.9.5 through the application updater. Stable
+In 0.9.6, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.6 through the application updater. Stable
 releases are available in both the stable and beta update channels.
 In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.

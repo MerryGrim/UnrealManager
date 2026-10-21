@@ -20,3 +20,18 @@ for(const lang of languages){
     }
 }
 console.log(languages.length+' languages × '+libraryKeys.length+' library control messages checked');
+
+const projectLocales=JSON.parse(fs.readFileSync(root+'/src/locales/project-discovery.json','utf8'));
+const projectKeys=Object.keys(projectLocales.en);
+assert.deepEqual(Object.keys(projectLocales).sort(),[...languages].sort(),'exact project discovery locales');
+assert(projectKeys.includes('Найти проекты')&&projectKeys.includes('Остановить поиск'),'project discovery actions translated');
+for(const lang of languages){
+    assert.deepEqual(Object.keys(projectLocales[lang]).sort(),[...projectKeys].sort(),lang+': project discovery message keys');
+    for(const [key,value]of Object.entries(projectLocales[lang])){
+        assert.equal(typeof value,'string',lang+': project discovery '+key);
+        assert(value.trim(),lang+': empty project discovery '+key);
+        assert.deepEqual(placeholders(value),placeholders(key),lang+': project discovery placeholders '+key);
+        assert(!/[А-Яа-яЁё]/.test(value),lang+': untranslated project discovery '+key);
+    }
+}
+console.log(languages.length+' languages × '+projectKeys.length+' project discovery messages checked');

@@ -6,7 +6,7 @@ const selection=Object.freeze([
  'test-vault-all-kinds.cjs','test-beta5.cjs','test-resume-forget.cjs',
  'test-engine-action-layout.cjs','test-beta4.cjs','test-engine-ui.cjs',
  'test-engine-recovery-progress.cjs','test-app-updates.cjs','test-app-startup-ready.cjs',
- 'test-accessibility-matrix.cjs','test-epic-auth-required.cjs',
+ 'test-accessibility-matrix.cjs','test-epic-auth-required.cjs','test-project-discovery.cjs',
 ]);
 const source=path.resolve(__dirname,'../source'),current=path.resolve(__dirname,'current');
 const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');

@@ -5,6 +5,7 @@ mod window_behavior;
 mod webview_policy;
 mod project_association;
 mod project_registry;
+mod project_discovery;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -261,9 +262,15 @@ fn scan_projects_in(roots: &[PathBuf], registered: &[PathBuf]) -> Vec<UnrealProj
     result
 }
 
-#[tauri::command]
-fn scan_projects() -> Vec<UnrealProject> {
+fn scan_projects_local() -> Vec<UnrealProject> {
     scan_projects_in(&project_roots(), &project_registry::paths().unwrap_or_default())
+}
+
+#[tauri::command]
+async fn scan_projects(state: tauri::State<'_, project_discovery::ProjectDiscoveryState>) -> Result<Vec<UnrealProject>, String> {
+    let operation = app_updates::operation()?;
+    let scan = state.reserve(uuid::Uuid::new_v4().to_string())?;
+    tauri::async_runtime::spawn_blocking(move || { let _operation = operation; let _scan = scan; scan_projects_local() }).await.map_err(|_| "Поиск проектов прерван.".to_string())
 }
 
 #[tauri::command]
@@ -291,6 +298,7 @@ pub fn run() {
     // Config paths must be relative in Tauri; the builder accepts our resolved absolute path.
     for window in &mut context.config_mut().app.windows {window.create=false;window.data_directory=None;}
     let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![app_update_apply::app_update_ui_ready,app_updates::app_update_settings_get,app_updates::app_update_settings_set,app_updates::app_update_check,app_updates::app_update_download,app_updates::app_update_apply,window_behavior::close_behavior_get,window_behavior::close_behavior_set,window_behavior::window_close_action,download::download_limit_get, download::download_limit_set,project_association::project_association_get,project_association::project_association_set,storage::vault_storage_get,storage::vault_storage_set,storage::settings_read,storage::settings_write,storage::storage_info,storage::clear_cache,ui_locale::set_ui_language,open_author_profile,engine::install::engine_register_managed,engine::delete::engine_delete_preview, engine::delete::engine_delete, engine::engine_discard, engine::resume::engine_resume_forget, engine::resume::engine_resume_tasks, engine::resume::engine_resume_prepare, engine::resume::engine_resume_legacy_prepare, engine::install::engine_pending, engine::install::engine_recover, engine::install::engine_install, engine::install::engine_cancel, engine::install::engine_pause, engine::engine_catalog, engine::engine_prepare, engine::engine_launch, scan_engines, scan_projects, launch_project, project_actions::reveal_project, project_actions::choose_project_location, project_actions::project_delete_preview, project_actions::delete_project,
+        project_discovery::project_discovery_scan,project_discovery::project_discovery_cancel,
         epic::epic_status, epic::epic_begin_login, epic_login::epic_cancel_login,
         epic::epic_logout, epic_redeem::epic_open_redeem, epic::fab_library, epic::fab_cached_library, epic::fab_cover,
         fab_details::fab_details, fab_details::fab_detail_image, fab_details::fab_open_listing,
@@ -318,6 +326,7 @@ pub fn run() {
         .manage(epic::EpicState::default())
         .manage(vault::VaultState::default())
         .manage(engine::EngineState::default())
+        .manage(project_discovery::ProjectDiscoveryState::default())
         .on_window_event(|window,event| {
             if window.label()=="main" {
                 if let tauri::WindowEvent::CloseRequested{api,..}=event {
@@ -369,7 +378,7 @@ pub fn report_app_update_error(error:&str) {
 
 /// Runs the same scanners used by the UI without starting WebView2.
 pub fn write_scan_report(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let report = serde_json::json!({"engines": scan_engines(), "projects": scan_projects()});
+    let report = serde_json::json!({"engines": scan_engines(), "projects": scan_projects_local()});
     fs::write(path, serde_json::to_vec_pretty(&report)?)?;
     Ok(())
 }

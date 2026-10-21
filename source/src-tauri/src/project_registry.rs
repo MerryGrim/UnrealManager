@@ -16,10 +16,10 @@ fn path_shape(path: &Path) -> bool {
     path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir))
         && path.as_os_str().len() <= 32767 && !path.to_string_lossy().contains('\0')
         && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("uproject"))
-        && path.parent().and_then(Path::parent).is_some()
+        && path.parent().is_some()
 }
 
-fn display_path(path: PathBuf) -> PathBuf {
+pub(crate) fn display_path(path: PathBuf) -> PathBuf {
     #[cfg(windows)] {
         let raw = path.to_string_lossy();
         if let Some(unc) = raw.strip_prefix(r"\\?\UNC\") { return PathBuf::from(format!(r"\\{unc}")); }
@@ -32,7 +32,7 @@ pub(crate) fn path_key(path: &Path) -> String {
     display_path(path.canonicalize().unwrap_or_else(|_| path.to_path_buf())).to_string_lossy().replace('\\', "/").to_lowercase()
 }
 
-fn checked_project(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn checked_project(path: &Path) -> Result<PathBuf, String> {
     if !path_shape(path) { return Err("Выберите файл .uproject".into()); }
     crate::vault::no_links(path)?;
     let file = File::open(path).map_err(error)?;
@@ -64,23 +64,25 @@ fn read(path: &Path) -> Result<Registry, String> {
     Ok(registry)
 }
 
-fn register_at(path: &Path, projects: &[PathBuf]) -> Result<(), String> {
+fn register_count_at(path: &Path, projects: &[PathBuf]) -> Result<usize, String> {
     let _guard = LOCK.lock().map_err(error)?;
     let checked = projects.iter().map(|p| checked_project(p)).collect::<Result<Vec<_>, _>>()?;
     let mut registry = read(path)?;
     let mut seen: BTreeSet<_> = registry.paths.iter().map(|p| path_key(Path::new(p))).collect();
-    let mut changed = false;
+    let mut added = 0;
     for project in checked {
-        if seen.insert(path_key(&project)) { registry.paths.push(project.to_string_lossy().into_owned()); changed = true; }
+        if seen.insert(path_key(&project)) { registry.paths.push(project.to_string_lossy().into_owned()); added += 1; }
     }
-    if !changed { return Ok(()); }
-    if registry.paths.len() > MAX_PROJECTS { return Err(error("project list is full")); }
+    if added == 0 { return Ok(0); }
+    if registry.paths.len() > MAX_PROJECTS { return Err("Список проектов заполнен (4096). Новые пути не сохранены.".into()); }
     let bytes = serde_json::to_vec_pretty(&registry).map_err(error)?;
     if bytes.len() as u64 > MAX_BYTES { return Err(error("project list is too large")); }
-    crate::engine::install::atomic(path, &bytes)
+    crate::engine::install::atomic(path, &bytes)?;
+    Ok(added)
 }
 
-pub(crate) fn register_created(projects: &[PathBuf]) -> Result<(), String> { register_at(&location(), projects) }
+pub(crate) fn register_created(projects: &[PathBuf]) -> Result<(), String> { register_count_at(&location(), projects).map(|_| ()) }
+pub(crate) fn register_discovered(projects: &[PathBuf]) -> Result<usize, String> { register_count_at(&location(), projects) }
 
 fn paths_at(path: &Path) -> Result<Vec<PathBuf>, String> {
     let _guard = LOCK.lock().map_err(error)?;
@@ -107,7 +109,8 @@ pub(crate) mod tests {
             fixture
         }
         pub(crate) fn record(&self) -> PathBuf { self.root.join("Settings/projects.json") }
-        pub(crate) fn register(&self, projects: &[PathBuf]) -> Result<(), String> { register_at(&self.record(), projects) }
+        pub(crate) fn register(&self, projects: &[PathBuf]) -> Result<(), String> { self.register_count(projects).map(|_| ()) }
+        pub(crate) fn register_count(&self, projects: &[PathBuf]) -> Result<usize, String> { register_count_at(&self.record(), projects) }
         pub(crate) fn paths(&self) -> Vec<PathBuf> { paths_at(&self.record()).unwrap() }
         fn project(&self, relative: &str) -> PathBuf {
             let path = self.root.join(relative); fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -191,5 +194,10 @@ pub(crate) mod tests {
         fs::create_dir_all(fixture.record().parent().unwrap()).unwrap(); fs::write(fixture.record(), b"broken registry").unwrap();
         assert!(fixture.register(&[project]).is_err());
         assert_eq!(fs::read(fixture.record()).unwrap(), b"broken registry");
+    }
+    #[test]
+    fn exact_project_file_at_volume_root_is_not_a_directory_registration() {
+        #[cfg(windows)] { assert!(path_shape(Path::new("Q:/Demo.uproject"))); assert!(!path_shape(Path::new("Q:/"))); }
+        #[cfg(not(windows))] { assert!(path_shape(Path::new("/Demo.uproject"))); assert!(!path_shape(Path::new("/"))); }
     }
 }

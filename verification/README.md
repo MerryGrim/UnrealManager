@@ -20,6 +20,13 @@ from the resume list, and transfer controls at 1280/600 px. The auth-required
 regression covers explicit sign-in actions, all nine languages and preservation
 of mocked saved downloads; it does not verify a genuinely expired Epic session.
 
+`test-project-discovery.cjs` mounts the actual Projects view and project tiles
+with a synthetic native provider. It checks visible refresh/search outcomes,
+chosen-root progress, duplicate-action guards, cancellation with partial results,
+limits/errors, preserved projects and search filters, and status text in nine
+languages. It never scans a real folder or drive; native traversal, remembered
+descriptor persistence and filesystem cancellation require their separate tests.
+
 To rerun one selected test, pass its file name to the runner, for example
 `node .\verification\run-regression.cjs test-preferences.cjs`. Multiple selected file
 names are supported. Each run writes logs, screenshots, and a JSON report into a
