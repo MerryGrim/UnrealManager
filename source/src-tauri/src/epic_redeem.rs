@@ -63,6 +63,7 @@ pub async fn epic_open_redeem(app:tauri::AppHandle,state:tauri::State<'_,super::
         }
     });
     let window=WebviewWindowBuilder::new(&app,LABEL,WebviewUrl::External(url))
+        .additional_browser_args(crate::webview_policy::BROWSER_ARGUMENTS)
         .title(crate::ui_locale::caption("redeem"))
         .owner(&main).map_err(|_|"Не удалось связать окно активации с главным окном")?
         .data_directory(super::epic_browser::profile(&app)?)

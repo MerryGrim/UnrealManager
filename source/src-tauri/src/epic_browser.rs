@@ -23,6 +23,7 @@ pub fn clear_session(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
     let window = WebviewWindowBuilder::new(app, "epic-session-reset", WebviewUrl::External("about:blank".parse().unwrap()))
+        .additional_browser_args(crate::webview_policy::BROWSER_ARGUMENTS)
         .data_directory(profile(app)?).visible(false).build().map_err(|_| "Не удалось очистить веб-сеанс Epic")?;
     let result = (|| {
         let cookies = window.cookies().map_err(|_| "Не удалось прочитать веб-сеанс Epic".to_string())?;

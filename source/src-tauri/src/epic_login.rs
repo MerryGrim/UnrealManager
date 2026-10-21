@@ -35,6 +35,7 @@ pub async fn authorize(app: &tauri::AppHandle, remember: bool) -> Result<String,
     let sender = Arc::new(Mutex::new(Some(sender)));
     let navigation_sender = sender.clone();
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(LOGIN_URL.parse().unwrap()))
+        .additional_browser_args(crate::webview_policy::BROWSER_ARGUMENTS)
         .title(crate::ui_locale::caption("login"))
         .inner_size(560.0, 760.0).min_inner_size(480.0, 600.0).center()
         .data_directory(super::epic_browser::profile(app)?)

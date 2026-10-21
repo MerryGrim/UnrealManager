@@ -2,6 +2,7 @@ mod ui_locale;
 mod storage;
 mod download;
 mod window_behavior;
+mod webview_policy;
 mod project_association;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -297,6 +298,7 @@ pub fn run() {
             storage::initialize().map_err(std::io::Error::other)?;
             let config=app.config().app.windows.first().ok_or("Main window configuration missing")?;
             tauri::WebviewWindowBuilder::from_config(app,config)?
+                .additional_browser_args(crate::webview_policy::BROWSER_ARGUMENTS)
                 .data_directory(storage::root().join("WebView")).build()?;
             window_behavior::setup(app.handle())?;
             vault_queue::setup(app.handle());

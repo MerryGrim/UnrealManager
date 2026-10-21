@@ -118,9 +118,9 @@ function Launch-And-Verify([string]$Name,[string]$Folder){
     Assert-UiProbeExit $probeState.exitCode
     if(-not(Test-Path -LiteralPath $ui)){throw 'UIA probe produced no readiness report.'}
     $uiResult=Get-Content -LiteralPath $ui -Raw|ConvertFrom-Json;$report.actualUiReadiness+=@{mode=$Name;ready=$uiResult.ready;method=$uiResult.method}
-    $tree=@(Owned-Tree $pin);$browsers=@($tree|Where-Object{$_.browserRoot});$unknown=@($tree|Where-Object{$_.name -ieq 'msedgewebview2.exe' -and -not $_.commandLineReadable})
+    $tree=@(Owned-Tree $pin);$browsers=@($tree|Where-Object{$_.browserRoot});$unknown=@($tree|Where-Object{$_.name -ieq 'msedgewebview2.exe' -and (-not $_.commandLineReadable -or -not $_.commandLineParsed -or $_.processType -ceq 'unknown')})
     $flags=$browsers.Count -gt 0 -and -not $unknown.Count -and @($browsers|Where-Object{-not $_.disableGpu -or -not $_.disableCompositing}).Count -eq 0
-    $report.rendering+=@{mode=$Name;browserRoots=$browsers.Count;unknownCommandLines=$unknown.Count;bothSoftwareFlags=$flags;scope='Configuration only; no physical GPU claim.'}
+    $report.rendering+=@{mode=$Name;observedUtc=[DateTime]::UtcNow.ToString('o');browserRoots=$browsers.Count;unknownCommandLines=$unknown.Count;bothSoftwareFlags=$flags;rows=@($tree|Where-Object{$_.name -ieq 'msedgewebview2.exe'});scope='Configuration only. Exact Windows-token policy; valued forms are diagnostics and do not pass. No raw command line/URLs or physical GPU claim.'}
     Close-Own $pin;Preserved
     Step ($Name+'-actual-react-ui') ([bool]$uiResult.ready) @{report=$ui;processCreationAloneNotAccepted=$true}
     Step ($Name+'-software-flags') $flags @{}

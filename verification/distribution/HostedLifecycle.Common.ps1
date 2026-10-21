@@ -80,11 +80,65 @@ function Find-Pinned($Pin){
         return $p
     }catch{if($p.HasExited){return};throw ('Cannot confirm pinned process identity: '+$_.Exception.Message)}
 }
+function Split-WindowsCommandLine([string]$Text){
+    if([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 32767 -or $Text.IndexOf([char]0) -ge 0){throw 'Command-line input unavailable or outside Windows bounds.'}
+    if(-not ('UmDistribution.CommandLine' -as [type])){
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+namespace UmDistribution {
+ public static class CommandLine {
+  [DllImport("shell32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)]
+  static extern IntPtr CommandLineToArgvW(string text, out int count);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+  public static string[] Split(string text) {
+   int count; IntPtr memory=CommandLineToArgvW(text,out count);
+   if(memory==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+   try {
+    if(count<1 || count>1024) throw new InvalidOperationException("Unexpected argument count.");
+    string[] args=new string[count];
+    for(int i=0;i<count;i++) args[i]=Marshal.PtrToStringUni(Marshal.ReadIntPtr(memory,i*IntPtr.Size));
+    return args;
+   } finally { LocalFree(memory); }
+  }
+ }
+}
+'@
+    }
+    return [UmDistribution.CommandLine]::Split($Text)
+}
+function Switch-Forms([string[]]$Arguments,[string]$Name){
+    foreach($arg in $Arguments){
+        if($arg -ceq $Name){'bare'}
+        elseif($arg.StartsWith($Name+'=',[StringComparison]::Ordinal)){
+            $value=$arg.Substring($Name.Length+1)
+            if($value -ceq 'true'){'equals-true'}elseif($value -ceq 'false'){'equals-false'}else{'equals-other'}
+        }
+    }
+}
+function WebView-Switches([string]$CommandLine){
+    $result=@{parsed=$false;processType='unknown';browserRoot=$false;disableGpu=$null;disableCompositing=$null;disableGpuForms=@();disableCompositingForms=@();parseStatus='unavailable'}
+    if([string]::IsNullOrWhiteSpace($CommandLine)){return $result}
+    try{
+        $parsedArgs=@(Split-WindowsCommandLine $CommandLine)
+        $types=@($parsedArgs|Where-Object{$_ -ceq '--type' -or $_.StartsWith('--type=',[StringComparison]::Ordinal)})
+        $result.processType=if(-not $types.Count){'browser'}elseif($types.Count -ne 1 -or $types[0] -ceq '--type' -or $types[0] -ceq '--type='){'unknown'}else{$kind=$types[0].Substring(7);if($kind -cin @('renderer','gpu-process','utility')){$kind}else{'other'}}
+        $result.browserRoot=$result.processType -ceq 'browser'
+        $result.disableGpuForms=@(Switch-Forms $parsedArgs '--disable-gpu');$result.disableCompositingForms=@(Switch-Forms $parsedArgs '--disable-gpu-compositing')
+        # Bare exact switches are the required policy. Valued forms are retained
+        # as allowlisted diagnostics, never silently accepted as equivalent.
+        $result.disableGpu=$result.disableGpuForms.Count -gt 0 -and @($result.disableGpuForms|Where-Object{$_ -cne 'bare'}).Count -eq 0
+        $result.disableCompositing=$result.disableCompositingForms.Count -gt 0 -and @($result.disableCompositingForms|Where-Object{$_ -cne 'bare'}).Count -eq 0
+        $result.parsed=$true;$result.parseStatus='CommandLineToArgvW'
+    }catch{$result.parseStatus='parse-failed'}
+    return $result
+}
 function Owned-Tree($Pin){
     $root=Find-Pinned $Pin;if(-not $root){return}
     $all=@(Get-CimInstance Win32_Process);$ids=@{};$ids[[int]$Pin.pid]=[long]$Pin.created;$changed=$true
     while($changed){$changed=$false;foreach($p in $all){if(-not $ids.ContainsKey([int]$p.ProcessId) -and $ids.ContainsKey([int]$p.ParentProcessId) -and $p.CreationDate.ToUniversalTime().ToFileTimeUtc() -ge $ids[[int]$p.ParentProcessId]){$child=Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue;if($child){$created=$child.StartTime.ToUniversalTime().ToFileTimeUtc();if([Math]::Abs($created-$p.CreationDate.ToUniversalTime().ToFileTimeUtc()) -ge 10){throw 'Child identity changed.'};$ids[[int]$p.ProcessId]=$created;$changed=$true}}}}
-    foreach($p in $all){if($ids.ContainsKey([int]$p.ProcessId)){$wv=$p.Name -ieq 'msedgewebview2.exe';$readable=$wv -and -not [string]::IsNullOrWhiteSpace([string]$p.CommandLine);@{pid=$p.ProcessId;created=$ids[[int]$p.ProcessId];name=$p.Name;browserRoot=($readable -and $p.CommandLine -notmatch '(?:^|\s)--type=');commandLineReadable=$readable;disableGpu=$(if($readable){$p.CommandLine -match '(?:^|\s)--disable-gpu(?:\s|$)'}else{$null});disableCompositing=$(if($readable){$p.CommandLine -match '(?:^|\s)--disable-gpu-compositing(?:\s|$)'}else{$null})}}}
+    foreach($p in $all){if($ids.ContainsKey([int]$p.ProcessId)){$wv=$p.Name -ieq 'msedgewebview2.exe';$readable=$wv -and -not [string]::IsNullOrWhiteSpace([string]$p.CommandLine);$switches=if($wv){WebView-Switches $p.CommandLine}else{$null};@{pid=$p.ProcessId;created=$ids[[int]$p.ProcessId];parentPid=$p.ParentProcessId;name=$p.Name;browserRoot=($wv -and $switches.browserRoot);commandLineReadable=$readable;commandLineParsed=($wv -and $switches.parsed);processType=$(if($wv){$switches.processType}else{'notWebView'});parseStatus=$(if($wv){$switches.parseStatus}else{'notWebView'});disableGpu=$(if($wv){$switches.disableGpu}else{$null});disableCompositing=$(if($wv){$switches.disableCompositing}else{$null});disableGpuForms=$(if($wv){$switches.disableGpuForms}else{@()});disableCompositingForms=$(if($wv){$switches.disableCompositingForms}else{@()})}}}
 }
 function Remove-OwnedTree([string]$Path,[string]$Expected,[string]$OwnerId){
     if(-not(Test-Path -LiteralPath $Path)){return @{absent=$true;files=0;bytes=0}}

@@ -31,6 +31,9 @@
 - Show a manually resumed download once in Current. Keep its durable queue
   binding without displaying the old attention row or counting it twice;
   restore that row if the transfer stops or fails.
+- Pass software-rendering arguments directly to all four WebView2 builders,
+  including the hidden Epic session window. Retain the locked SDK defaults and
+  the environment fallback; elevated hosts can ignore environment overrides.
 
 These changes retain software rendering and use no permanent helper service.
 Validation results for this unreleased work are recorded separately from the
