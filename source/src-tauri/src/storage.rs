@@ -124,7 +124,7 @@ pub fn initialize()->Result<(),String> {
     fs::create_dir_all(cache()).map_err(error)?;
     Ok(())
 }
-const KEYS:[&str;4]=["unreal-manager.language.v1","um-library-page-size","um-plugins-page-size","unreal-manager.download-history.v1"];
+const KEYS:[&str;5]=["unreal-manager.language.v1","um-library-page-size","um-plugins-page-size","unreal-manager.download-history.v1","um-library-sort"];
 fn read_preferences()->Result<BTreeMap<String,String>,String> {
     let path=settings().join("preferences.json");
     if !path.exists(){return Ok(BTreeMap::new());}

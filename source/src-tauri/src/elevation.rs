@@ -1,4 +1,4 @@
-//! A short-lived, headless broker for the Epic UE registration record only.
+//! A short-lived, headless broker for allowlisted Epic UE registration metadata.
 //! It never opens storage, an account session, Tauri, or a WebView.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -61,7 +61,10 @@ pub(crate) fn is_elevated() -> bool { platform::elevated().unwrap_or(false) }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
-struct Job { schema: u32, nonce: String, parent_pid: u32, parent_created: u64, parent_exe: PathBuf, target: PathBuf, before: Value, after: Value }
+struct Job { schema: u32, nonce: String, parent_pid: u32, parent_created: u64, parent_exe: PathBuf, target: PathBuf, before: Value, after: Value, #[serde(default,skip_serializing_if="Option::is_none")] launcher: Option<Vec<LauncherEngine>> }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub(crate) struct LauncherEngine { pub root:PathBuf, pub app_name:String, pub build:String, pub manifest:PathBuf }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
 struct Message { schema: u32, nonce: String, seq: u64, action: String }
@@ -104,6 +107,7 @@ fn manifest(value: &Value) -> Result<(PathBuf,String),String> {
 fn validate(job: &Job, directory: &Path) -> Result<(),String> {
     if job.schema!=1 || !uuid(&job.nonce) || job.parent_pid==0 || job.parent_created==0 { return Err(error("invalid job identity")); }
     absolute(&job.parent_exe)?; absolute(&job.target)?; absolute(directory)?;
+    if job.launcher.is_some() { return validate_launcher(job,directory); }
     if !item_name(&job.target) || !same(job.target.parent().ok_or_else(||error("target parent"))?,directory) { return Err(error("target outside Epic manifests")); }
     if job.before.is_null() && job.after.is_null() { return Err(error("empty change")); }
     if !job.before.is_null() { record(&job.before)?; }
@@ -120,6 +124,66 @@ fn validate(job: &Job, directory: &Path) -> Result<(),String> {
         }
     }
     Ok(())
+}
+fn launcher_engine(engine:&LauncherEngine)->Result<(),String>{
+    record(&serde_json::json!({"CatalogNamespace":"ue","AppName":engine.app_name,"InstallLocation":engine.root}))?;
+    string(&serde_json::json!({"build":engine.build}),"build")?;
+    manifest(&serde_json::json!({"CatalogNamespace":"ue","AppName":engine.app_name,"InstallLocation":engine.root,"CompleteManifestPath":engine.manifest}))?;
+    Ok(())
+}
+// This reconstruction, rather than a generic before/after writer, limits the
+// elevated authority to one version field or one exact new UE discovery row.
+pub(crate) fn launcher_after(before:&Value,engines:&[LauncherEngine])->Result<Value,String>{
+    if engines.is_empty() || engines.len()>128 {return Err(error("invalid managed engine count"));}
+    let mut after=if before.is_null(){serde_json::json!({"InstallationList":[]})}else{before.clone()};
+    let list=after.get_mut("InstallationList").and_then(Value::as_array_mut).filter(|v|v.len()<=8192).ok_or_else(||error("invalid Epic installation list"))?;
+    let mut seen=std::collections::BTreeSet::new();
+    for engine in engines {
+        launcher_engine(engine)?;
+        if !seen.insert((engine.app_name.clone(),normalized(&engine.root))){return Err(error("duplicate managed engine"));}
+        let matching:Vec<_>=list.iter().enumerate().filter(|(_,entry)|entry["AppName"]==engine.app_name && entry["InstallLocation"].as_str().is_some_and(|p|normalized(Path::new(p)).trim_end_matches('\\')==normalized(&engine.root).trim_end_matches('\\'))).map(|(i,_)|i).collect();
+        match matching.as_slice(){
+            [index]=>list[*index]["AppVersion"]=engine.build.clone().into(),
+            []=>{
+                // Never remove another path, even a stale one, to gain authority
+                // over an otherwise unrelated Epic installation.
+                if list.iter().any(|entry|entry["AppName"]==engine.app_name){return Err(error("UE application is registered at another path"));}
+                list.push(serde_json::json!({"AppName":engine.app_name,"InstallLocation":engine.root,"AppVersion":engine.build,"NamespaceId":"ue","ArtifactId":engine.app_name}));
+            }
+            _=>return Err(error("ambiguous Epic installation")),
+        }
+    }
+    if list.len()>8192{return Err(error("Epic installation list limit"));}
+    Ok(after)
+}
+fn validate_launcher(job:&Job,target:&Path)->Result<(),String>{
+    if !same(&job.target,target) {return Err(error("target is not the fixed Epic installation list"));}
+    let engines=job.launcher.as_deref().ok_or_else(||error("missing launcher intent"))?;
+    if launcher_after(&job.before,engines)?!=job.after {return Err(error("change includes unrelated Epic installations or fields"));}
+    Ok(())
+}
+fn verify_launcher_proof(engines:&[LauncherEngine])->Result<Vec<File>,String>{
+    let mut guards=Vec::new();
+    for engine in engines {
+        launcher_engine(engine)?;
+        let marker=engine.root.join(".um-engine-update.json");links(&marker)?;
+        match fs::symlink_metadata(&marker){Err(e)if e.kind()==std::io::ErrorKind::NotFound=>(),Err(e)=>return Err(error(e)),Ok(_)=>return Err(error("managed installation is incomplete"))}
+        let mut receipt=input(&engine.root.join(".egstore/um-install.json"))?;
+        let value=read_json(&mut receipt,LIMIT)?;
+        if value["appName"]!=engine.app_name || value["build"]!=engine.build || !same(Path::new(string(&value,"manifest")?),&engine.manifest){return Err(error("managed receipt identity mismatch"));}
+        let metadata=serde_json::json!({"CatalogNamespace":"ue","AppName":engine.app_name,"InstallLocation":engine.root,"CompleteManifestPath":engine.manifest});
+        let mut file=verify_manifest(&metadata)?.ok_or_else(||error("missing managed manifest"))?;
+        file.seek(SeekFrom::Start(0)).map_err(error)?;let mut raw=Vec::new();file.read_to_end(&mut raw).map_err(error)?;
+        let (app,build)=crate::engine::install::registration_manifest_identity(&raw)?;
+        if app!=engine.app_name || build!=engine.build{return Err(error("managed manifest identity mismatch"));}
+        let mut version=input(&engine.root.join("Engine/Build/Build.version"))?;let v=read_json(&mut version,LIMIT)?;
+        let number=|key:&str|v[key].as_u64().ok_or_else(||error("invalid engine build version"));
+        let semantic=format!("{}.{}.{}",number("MajorVersion")?,number("MinorVersion")?,number("PatchVersion")?);
+        let changelist=number("Changelist")?.to_string();
+        if engine.app_name!=format!("UE_{}.{}",number("MajorVersion")?,number("MinorVersion")?) || !engine.build.split_once('-').is_some_and(|(version,rest)|version==semantic && rest.split('+').next()==Some(changelist.as_str())){return Err(error("installed build identity mismatch"));}
+        guards.extend([receipt,file,version]);
+    }
+    Ok(guards)
 }
 fn input(path: &Path) -> Result<File,String> {
     links(path)?;
@@ -150,6 +214,10 @@ fn expected(job: &Job) -> Result<Value,String> {
 }
 fn initial(job: &Job) -> Result<(),String> {
     let observed=expected(job)?;
+    if let Some(engines)=&job.launcher {
+        if observed!=job.before{return Err(error("Epic installation list changed before authorization"));}
+        verify_launcher_proof(engines)?;
+    }
     // An absent record is not authority to recreate arbitrary legacy fields.
     // Delete/restore is authorized only while the actual original exists.
     if job.after.is_null() && observed!=job.before { return Err(error("deletion record no longer exists")); }
@@ -182,7 +250,7 @@ fn replace(job: &Job, restore: bool) -> Result<(),String> {
     let desired=if restore {&job.before} else {&job.after};
     let observed=expected(job)?;
     if &observed==desired { return Ok(()); }
-    let _manifest=if !restore {verify_manifest(desired)?} else {None};
+    let _proof=if let Some(engines)=&job.launcher {verify_launcher_proof(engines)?}else if !restore {verify_manifest(desired)?.into_iter().collect()}else{Vec::new()};
     // File locks are released before ReplaceFile; holding a DELETE-denying
     // handle here would turn a permitted replacement into a sharing failure.
     if desired.is_null() {
@@ -281,20 +349,26 @@ fn cleanup_flat(directory: &Path) {
     let _=fs::remove_dir(directory);
 }
 pub(crate) fn prepare(change: &(PathBuf,Value,Value)) -> Result<RegistrationBroker,String> {
-    prepare_inner(change).map_err(|e|if e==CANCELLED || e.starts_with("UM_ELEVATION_REQUIRED:"){e}else{user_error(&change.0,e)})
+    prepare_inner(change,None).map_err(|e|if e==CANCELLED || e.starts_with("UM_ELEVATION_REQUIRED:"){e}else{user_error(&change.0,e)})
 }
-fn prepare_inner(change: &(PathBuf,Value,Value)) -> Result<RegistrationBroker,String> {
+pub(crate) fn launcher_path()->Result<PathBuf,String>{platform::launcher_path()}
+pub(crate) fn prepare_launcher(change:&(PathBuf,Value,Value),engines:Vec<LauncherEngine>)->Result<RegistrationBroker,String>{
+    prepare_inner(change,Some(engines)).map_err(|e|if e==CANCELLED || e.starts_with("UM_ELEVATION_REQUIRED:"){e}else{user_error(&change.0,e)})
+}
+fn prepare_inner(change: &(PathBuf,Value,Value),launcher:Option<Vec<LauncherEngine>>) -> Result<RegistrationBroker,String> {
     let nonce=uuid::Uuid::new_v4().to_string();
     let parent=platform::Process::open(std::process::id())?;
     let (created,exe)=parent.identity()?;
-    let job=Job{schema:1,nonce:nonce.clone(),parent_pid:parent.id,parent_created:created,parent_exe:exe,target:change.0.clone(),before:change.1.clone(),after:change.2.clone()};
-    validate(&job,&platform::epic_directory()?)?;
+    let job=Job{schema:1,nonce:nonce.clone(),parent_pid:parent.id,parent_created:created,parent_exe:exe,target:change.0.clone(),before:change.1.clone(),after:change.2.clone(),launcher};
+    validate(&job,&if job.launcher.is_some(){platform::launcher_path()?}else{platform::epic_directory()?})?;
+    let encoded=serde_json::to_vec(&job).map_err(error)?;
+    if encoded.len()>LIMIT{return Err(error("registration job size limit"));}
     let directory=std::env::temp_dir().join(format!("um-epic-registration-{nonce}"));
     absolute(&directory)?; fs::create_dir(&directory).map_err(error)?;
     let mut cleanup=Some(Cleanup{path:directory.clone(),keep:false});
     let result=(|| {
         platform::secure_directory(&directory,&parent.sid()?)?;
-        write_new(&directory.join("job.json"),&serde_json::to_vec(&job).map_err(error)?)?;
+        write_new(&directory.join("job.json"),&encoded)?;
         for name in ["ready.json","command.json","response.json"] {write_new(&directory.join(name),b"")?;}
         let guard=input(&directory.join("job.json"))?;
         let mut ready=Mailbox::open(&directory.join("ready.json"))?;
@@ -325,7 +399,7 @@ pub(crate) fn run(path: PathBuf) -> Result<(),String> {
     let mut guard=input(&path)?;
     let job:Job=serde_json::from_value(read_json(&mut guard,LIMIT)?).map_err(|_|error("invalid job"))?;
     if directory.file_name().is_none_or(|n|n!=format!("um-epic-registration-{}",job.nonce).as_str()) {return Err(error("job directory identity"));}
-    validate(&job,&platform::epic_directory()?)?;
+    validate(&job,&if job.launcher.is_some(){platform::launcher_path()?}else{platform::epic_directory()?})?;
     let parent=platform::Process::open(job.parent_pid)?;
     let (created,exe)=parent.identity()?;
     parent_matches(&job,(created,exe.clone()),&fs::canonicalize(std::env::current_exe().map_err(error)?).map_err(error)?)?;
@@ -344,7 +418,7 @@ pub(crate) fn run(path: PathBuf) -> Result<(),String> {
         if let Some(message)=command.read::<Message>()? {
             if next_message(&message,&job,seq)? {
                 seq=message.seq;
-                let result=match message.action.as_str() {"check"=>expected(&job).and_then(|_|platform::probe(&job.target)),"apply"=>replace(&job,false),"restore"=>replace(&job,true),"finish"=>Ok(()),_=>Err(error("unsupported broker action"))};
+                let result=match message.action.as_str() {"check"=>expected(&job).and_then(|_|{if let Some(engines)=&job.launcher{verify_launcher_proof(engines)?;}platform::probe(&job.target)}),"apply"=>replace(&job,false),"restore"=>replace(&job,true),"finish"=>Ok(()),_=>Err(error("unsupported broker action"))};
                 response.write(&Reply{schema:1,nonce:job.nonce.clone(),seq,helper_pid:std::process::id(),ok:result.is_ok(),error:result.err()})?;
                 if message.action=="finish" {break;}
             }
@@ -415,7 +489,22 @@ mod tests {
     struct Fixture{root:PathBuf}
     impl Fixture{
         fn new()->Self{let parent=std::env::var_os("UM_TEMP_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);fs::create_dir_all(&parent).unwrap();let root=parent.join(format!("um-registration-test-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();let this=Self{root};fs::create_dir(this.root.join("engine")).unwrap();fs::create_dir(this.root.join("engine/.egstore")).unwrap();this}
-        fn job(&self)->Job{let raw=b"isolated manifest";let digest=format!("{:x}",Sha1::digest(raw));let target=self.root.join(format!("{}.item",uuid::Uuid::new_v4().simple()));let manifest=self.root.join(format!("engine/.egstore/um-{digest}.manifest"));if !manifest.exists(){write_new(&manifest,raw).unwrap();}let after=fixture_record(&self.root.join("engine"),&target,&digest);Job{schema:1,nonce:uuid::Uuid::new_v4().to_string(),parent_pid:1,parent_created:1,parent_exe:std::env::current_exe().unwrap(),target,before:Value::Null,after}}
+        fn job(&self)->Job{let raw=b"isolated manifest";let digest=format!("{:x}",Sha1::digest(raw));let target=self.root.join(format!("{}.item",uuid::Uuid::new_v4().simple()));let manifest=self.root.join(format!("engine/.egstore/um-{digest}.manifest"));if !manifest.exists(){write_new(&manifest,raw).unwrap();}let after=fixture_record(&self.root.join("engine"),&target,&digest);Job{schema:1,nonce:uuid::Uuid::new_v4().to_string(),parent_pid:1,parent_created:1,parent_exe:std::env::current_exe().unwrap(),target,before:Value::Null,after,launcher:None}}
+        fn launcher(&self)->Job{
+            let mut job=self.job();let root=self.root.join("engine");
+            let mut metadata=vec![0u8;10];
+            for value in ["UE_5.8","5.8.4-42+fixture"]{metadata.extend_from_slice(&((value.len()+1)as u32).to_le_bytes());metadata.extend_from_slice(value.as_bytes());metadata.push(0);}
+            let mut payload=((metadata.len()+4)as u32).to_le_bytes().to_vec();payload.extend(metadata);
+            let mut raw=Vec::new();for value in [1153351692u32,41,payload.len()as u32,payload.len()as u32]{raw.extend_from_slice(&value.to_le_bytes());}raw.extend_from_slice(&Sha1::digest(&payload));raw.push(0);raw.extend_from_slice(&0u32.to_le_bytes());raw.extend(payload);
+            let manifest=root.join(format!(".egstore/um-{:x}.manifest",Sha1::digest(&raw)));write_new(&manifest,&raw).unwrap();
+            fs::create_dir_all(root.join("Engine/Build")).unwrap();
+            write_new(&root.join("Engine/Build/Build.version"),br#"{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":42}"#).unwrap();
+            write_new(&root.join(".egstore/um-install.json"),&serde_json::to_vec(&serde_json::json!({"appName":"UE_5.8","build":"5.8.4-42+fixture","manifest":manifest,"tags":[],"backup":null})).unwrap()).unwrap();
+            let engines=vec![LauncherEngine{root,app_name:"UE_5.8".into(),build:"5.8.4-42+fixture".into(),manifest}];
+            job.target=self.root.join("LauncherInstalled.dat");
+            job.before=serde_json::json!({"InstallationList":[{"AppName":"OtherGame","InstallLocation":"foreign-preserved","FutureGameField":{"keep":true}},{"AppName":"UE_5.8","InstallLocation":engines[0].root,"AppVersion":"5.8.3-41","FutureEngineField":[1,2]}],"FutureTopLevel":{"preserve":[3,4]}});
+            job.after=launcher_after(&job.before,&engines).unwrap();job.launcher=Some(engines);job
+        }
     }
     impl Drop for Fixture{fn drop(&mut self){if links(&self.root).is_ok(){let _=fs::remove_dir_all(&self.root);}}}
     #[test]fn fixed_scope_and_new_record_schema(){let f=Fixture::new();let mut j=f.job();assert!(validate(&j,&f.root).is_ok());j.target=f.root.join("outside").join(j.target.file_name().unwrap());assert!(validate(&j,&f.root).is_err());j=f.job();j.after["LaunchCommand"]="--arbitrary".into();assert!(validate(&j,&f.root).is_err());j=f.job();j.after["extra"]="value".into();assert!(validate(&j,&f.root).is_err());assert!(!item_name(Path::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaé.item")));}
@@ -426,6 +515,37 @@ mod tests {
     #[test]fn deletion_cannot_authorize_forged_absent_legacy_record(){let f=Fixture::new();let mut j=f.job();j.before=j.after.clone();j.after=Value::Null;j.before["LaunchExecutable"]="untrusted.exe".into();validate(&j,&f.root).unwrap();assert!(initial(&j).is_err());write_new(&j.target,&serde_json::to_vec(&j.before).unwrap()).unwrap();initial(&j).unwrap();replace(&j,false).unwrap();assert!(!j.target.exists());replace(&j,true).unwrap();assert_eq!(current(&j.target).unwrap(),j.before);}
     #[test]fn manifest_corruption_fails_before_item_mutation(){let f=Fixture::new();let j=f.job();let (path,_)=manifest(&j.after).unwrap();fs::write(path,b"corrupt").unwrap();assert!(replace(&j,false).is_err());assert!(!j.target.exists());}
     #[test]fn broker_is_send_and_cancellation_is_distinct(){fn assert_send<T:Send>(){}assert_send::<RegistrationBroker>();assert!(!CANCELLED.starts_with("UM_ELEVATION_REQUIRED:"));assert_ne!(CANCELLED,HELPER_ERROR);}
+    #[test]fn launcher_intent_preserves_foreign_entries_and_unknown_fields(){
+        let f=Fixture::new();let mut j=f.launcher();validate(&j,&j.target).unwrap();
+        assert_eq!(j.after["InstallationList"][0],j.before["InstallationList"][0]);assert_eq!(j.after["FutureTopLevel"],j.before["FutureTopLevel"]);assert_eq!(j.after["InstallationList"][1]["FutureEngineField"],serde_json::json!([1,2]));
+        j.after["InstallationList"][0]["FutureGameField"]["keep"]=false.into();assert!(validate(&j,&j.target).is_err());
+        j.after=launcher_after(&j.before,j.launcher.as_ref().unwrap()).unwrap();j.after["FutureTopLevel"]=Value::Null;assert!(validate(&j,&j.target).is_err());
+        j.after=Value::Null;assert!(validate(&j,&j.target).is_err());
+        let mut j=f.job();j.launcher=Some(vec![]);assert!(validate(&j,&f.root.join("LauncherInstalled.dat")).is_err());
+    }
+    #[test]fn launcher_new_row_schema_refuses_other_paths_and_ambiguous_records(){
+        let f=Fixture::new();let j=f.launcher();let engines=j.launcher.as_ref().unwrap();
+        let fresh=launcher_after(&Value::Null,engines).unwrap();assert_eq!(fresh["InstallationList"][0].as_object().unwrap().len(),5);assert_eq!(fresh["InstallationList"][0]["NamespaceId"],"ue");
+        let mut before=j.before.clone();before["InstallationList"][1]["InstallLocation"]=f.root.join("unrelated-even-if-missing").to_string_lossy().into_owned().into();assert!(launcher_after(&before,engines).is_err());
+        before=j.before.clone();let duplicate=before["InstallationList"][1].clone();before["InstallationList"].as_array_mut().unwrap().push(duplicate);assert!(launcher_after(&before,engines).is_err());
+        assert!(launcher_after(&serde_json::json!({"InstallationList":{}}),engines).is_err());
+        assert!(launcher_after(&Value::Null,&[]).is_err());
+    }
+    #[test]fn launcher_real_apply_restore_cas_and_fixed_target(){
+        let f=Fixture::new();let mut j=f.launcher();write_new(&j.target,&serde_json::to_vec(&j.before).unwrap()).unwrap();
+        validate(&j,&j.target).unwrap();assert!(validate(&j,&f.root.join("other.dat")).is_err());initial(&j).unwrap();
+        replace(&j,false).unwrap();assert_eq!(current(&j.target).unwrap(),j.after);replace(&j,true).unwrap();assert_eq!(current(&j.target).unwrap(),j.before);
+        let mut external=j.before.clone();external["EpicExternalEdit"]=true.into();fs::write(&j.target,serde_json::to_vec(&external).unwrap()).unwrap();assert!(replace(&j,false).is_err());assert_eq!(current(&j.target).unwrap(),external);
+        j.before=Value::Null;j.after=launcher_after(&j.before,j.launcher.as_ref().unwrap()).unwrap();fs::write(&j.target,serde_json::to_vec(&j.after).unwrap()).unwrap();assert!(initial(&j).is_err(),"an existing list cannot authorize a forged create/restore deletion");
+    }
+    #[test]fn launcher_proof_rejects_receipt_build_manifest_and_pending_mutations(){
+        let f=Fixture::new();let j=f.launcher();let engine=&j.launcher.as_ref().unwrap()[0];
+        verify_launcher_proof(j.launcher.as_ref().unwrap()).unwrap();
+        let receipt=engine.root.join(".egstore/um-install.json");let original=fs::read(&receipt).unwrap();let mut altered:Value=serde_json::from_slice(&original).unwrap();altered["build"]="5.8.4-evil".into();fs::write(&receipt,altered.to_string()).unwrap();assert!(verify_launcher_proof(j.launcher.as_ref().unwrap()).is_err());fs::write(&receipt,original).unwrap();
+        fs::write(engine.root.join(".um-engine-update.json"),b"pending").unwrap();assert!(verify_launcher_proof(j.launcher.as_ref().unwrap()).is_err());fs::remove_file(engine.root.join(".um-engine-update.json")).unwrap();
+        let version=engine.root.join("Engine/Build/Build.version");let original=fs::read(&version).unwrap();fs::write(&version,br#"{"MajorVersion":5,"MinorVersion":8,"PatchVersion":4,"Changelist":43}"#).unwrap();assert!(verify_launcher_proof(j.launcher.as_ref().unwrap()).is_err());fs::write(version,original).unwrap();
+        fs::write(&engine.manifest,b"corrupt").unwrap();assert!(replace(&j,false).is_err());assert!(!j.target.exists());
+    }
     #[cfg(windows)]
     #[test]fn rejects_network_and_device_paths_before_any_filesystem_probe(){
         for p in [r"\\server\share\job.json",r"\\?\UNC\server\share\job.json",r"\\.\C:\job.json",r"\\?\GLOBALROOT\Device\HarddiskVolume1\job.json",r"C:relative\job.json",r"C:\parent\..\job.json",r"\\?\C:\parent\..\job.json"] {assert!(local_absolute(Path::new(p)).is_err(),"{p}");}
@@ -460,7 +580,9 @@ mod platform {
         pub fn terminate(&self)->Result<(),String>{if unsafe{TerminateProcess(self.raw(),1)}==0{return Err(fail())}self.wait(Duration::from_secs(5))}
     }
     pub(super) fn elevated()->Result<bool,String>{unsafe{let mut h=std::ptr::null_mut();if OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&mut h)==0{return Err(fail())}let token=OwnedHandle::from_raw_handle(h);let mut v:TOKEN_ELEVATION=zeroed();let mut n=0;if GetTokenInformation(token.as_raw_handle(),TokenElevation,(&mut v as *mut TOKEN_ELEVATION).cast(),size_of::<TOKEN_ELEVATION>() as u32,&mut n)==0{return Err(fail())}Ok(v.TokenIsElevated!=0)}}
-    pub(super) fn epic_directory()->Result<PathBuf,String>{unsafe{let mut p=std::ptr::null_mut();if SHGetKnownFolderPath(&FOLDERID_ProgramData,0,std::ptr::null_mut(),&mut p)<0{return Err(fail())}let mut n=0;while *p.add(n)!=0{n+=1;}let root=PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(p,n)));CoTaskMemFree(p.cast());let path=root.join("Epic/EpicGamesLauncher/Data/Manifests");absolute(&path)?;Ok(path)}}
+    fn program_data()->Result<PathBuf,String>{unsafe{let mut p=std::ptr::null_mut();if SHGetKnownFolderPath(&FOLDERID_ProgramData,0,std::ptr::null_mut(),&mut p)<0{return Err(fail())}let mut n=0;while *p.add(n)!=0{n+=1;}let root=PathBuf::from(String::from_utf16_lossy(std::slice::from_raw_parts(p,n)));CoTaskMemFree(p.cast());absolute(&root)?;Ok(root)}}
+    pub(super) fn epic_directory()->Result<PathBuf,String>{let path=program_data()?.join("Epic/EpicGamesLauncher/Data/Manifests");absolute(&path)?;Ok(path)}
+    pub(super) fn launcher_path()->Result<PathBuf,String>{let path=program_data()?.join("Epic/UnrealEngineLauncher/LauncherInstalled.dat");absolute(&path)?;Ok(path)}
     unsafe fn sid_string(sid:PSID)->Result<String,String>{let mut p=std::ptr::null_mut();if ConvertSidToStringSidW(sid,&mut p)==0{return Err(fail())}let mut n=0;while *p.add(n)!=0{n+=1;}let value=String::from_utf16_lossy(std::slice::from_raw_parts(p,n));LocalFree(p.cast());Ok(value)}
     pub(super) fn secure_directory(path:&Path,sid:&str)->Result<(),String>{unsafe{let s=wide(std::ffi::OsStr::new(&format!("D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)")));let mut sd=std::ptr::null_mut();if ConvertStringSecurityDescriptorToSecurityDescriptorW(s.as_ptr(),1,&mut sd,std::ptr::null_mut())==0{return Err(fail())}let ok=SetFileSecurityW(wide(path.as_os_str()).as_ptr(),DACL_SECURITY_INFORMATION|PROTECTED_DACL_SECURITY_INFORMATION,sd);LocalFree(sd);if ok==0{Err(fail())}else{Ok(())}}}
     pub(super) fn verify_directory(path:&Path,sid:&str)->Result<(),String>{unsafe{let mut owner=std::ptr::null_mut();let mut dacl=std::ptr::null_mut();let mut sd=std::ptr::null_mut();let code=GetNamedSecurityInfoW(wide(path.as_os_str()).as_ptr(),SE_FILE_OBJECT,OWNER_SECURITY_INFORMATION|DACL_SECURITY_INFORMATION,&mut owner,std::ptr::null_mut(),&mut dacl,std::ptr::null_mut(),&mut sd);if code!=0{return Err(error(format!("private directory security {code}")))}let result=(||{if sid_string(owner)?!=sid || dacl.is_null() || (*dacl).AceCount!=3{return Err(error("untrusted private directory"))}let mut seen=std::collections::BTreeSet::new();for i in 0..3{let mut a=std::ptr::null_mut();if GetAce(dacl,i,&mut a)==0{return Err(fail())}let ace=&*(a.cast::<ACCESS_ALLOWED_ACE>());if ace.Header.AceType!=0 || ace.Mask!=FILE_ALL_ACCESS{return Err(error("unexpected private directory ACE"))}let s=sid_string((&ace.SidStart as *const u32).cast_mut().cast())?;if ![sid,"S-1-5-32-544","S-1-5-18"].contains(&s.as_str()) || !seen.insert(s){return Err(error("unexpected private directory principal"))}}Ok(())})();LocalFree(sd);result}}
@@ -514,6 +636,6 @@ mod platform {
     pub struct Process{pub id:u32}
     pub fn local_drive(_:&Path)->Result<(),String>{Ok(())}
     impl Process{pub fn open(_:u32)->Result<Self,String>{Err(error("Windows required"))}pub fn identity(&self)->Result<(u64,PathBuf),String>{Err(error("Windows required"))}pub fn sid(&self)->Result<String,String>{Err(error("Windows required"))}pub fn alive(&self)->Result<bool,String>{Ok(false)}pub fn wait(&self,_:Duration)->Result<(),String>{Ok(())}pub fn terminate(&self)->Result<(),String>{Ok(())}}
-    pub fn elevated()->Result<bool,String>{Ok(false)}pub fn epic_directory()->Result<PathBuf,String>{Err(error("Windows required"))}pub fn secure_directory(_:&Path,_:&str)->Result<(),String>{Err(error("Windows required"))}pub fn verify_directory(_:&Path,_:&str)->Result<(),String>{Err(error("Windows required"))}pub fn verify_private_file(_:&Path,_:&str)->Result<(),String>{Err(error("Windows required"))}pub fn one_link(_:&File)->Result<(),String>{Ok(())}pub fn launch(_:&Path,_:&Path)->Result<Process,String>{Err(error("Windows required"))}pub fn probe(_:&Path)->Result<(),String>{Err(error("Windows required"))}pub fn move_new(from:&Path,to:&Path)->Result<(),String>{fs::rename(from,to).map_err(error)}pub fn replace(target:&Path,temp:&Path,backup:&Path,exists:bool)->Result<(),String>{if exists{fs::rename(target,backup).map_err(error)?;}fs::rename(temp,target).map_err(error)}
+    pub fn elevated()->Result<bool,String>{Ok(false)}pub fn epic_directory()->Result<PathBuf,String>{Err(error("Windows required"))}pub fn launcher_path()->Result<PathBuf,String>{Err(error("Windows required"))}pub fn secure_directory(_:&Path,_:&str)->Result<(),String>{Err(error("Windows required"))}pub fn verify_directory(_:&Path,_:&str)->Result<(),String>{Err(error("Windows required"))}pub fn verify_private_file(_:&Path,_:&str)->Result<(),String>{Err(error("Windows required"))}pub fn one_link(_:&File)->Result<(),String>{Ok(())}pub fn launch(_:&Path,_:&Path)->Result<Process,String>{Err(error("Windows required"))}pub fn probe(_:&Path)->Result<(),String>{Err(error("Windows required"))}pub fn move_new(from:&Path,to:&Path)->Result<(),String>{fs::rename(from,to).map_err(error)}pub fn replace(target:&Path,temp:&Path,backup:&Path,exists:bool)->Result<(),String>{if exists{fs::rename(target,backup).map_err(error)?;}fs::rename(temp,target).map_err(error)}
     pub struct FileLock;impl FileLock{pub fn new(_:&File,_:bool)->Result<Self,String>{Ok(Self)}}
 }

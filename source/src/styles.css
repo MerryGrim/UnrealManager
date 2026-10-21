@@ -133,6 +133,15 @@ input::placeholder { color:#8392a5; }
 .downloaded-badge { border-radius:7px; background:#193b30; color:#b4ebd0; font-weight:600; }
 .pagination { margin-top:12px; padding-top:12px; border-top:1px solid #263140; }
 .pagination button { min-width:72px; justify-content:center; }
+.library-pagination { flex-wrap:wrap; justify-content:space-between; row-gap:10px; }
+.library-pagination .pagination-controls { display:flex; align-items:center; gap:8px; margin-left:auto; }
+.library-pagination .page-size { margin:0; color:var(--muted); }
+.library-filters select { max-width:100%; }
+@media(max-width:700px) {
+  .library-pagination > span { flex-basis:100%; }
+  .library-pagination .pagination-controls { margin-left:0; }
+  .library-pagination .page-size { margin-left:auto; }
+}
 .download-progress progress { border-radius:8px; overflow:hidden; }
 ::-webkit-scrollbar { width:10px; height:10px; }
 ::-webkit-scrollbar-track { background:transparent; }

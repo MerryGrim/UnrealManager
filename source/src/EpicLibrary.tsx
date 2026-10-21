@@ -4,6 +4,7 @@ import { tr, getLocale } from './i18n';
 import { PageActions } from './PageActions';
 import { LibraryTile } from './LibraryTile';
 import {categoryKey,libraryTopics} from './fabCategories';
+import {isLibrarySort, sortLibraryItems, type LibrarySort} from './librarySorting';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { LogIn, RefreshCw, PackageOpen, X } from 'lucide-react';
@@ -210,6 +211,10 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
     const [page, setPage] = useState(0);
     const [revision, setRevision] = useState(0);
     const [category, setCategory] = useState<'all' | 'downloaded'>('all');
+    const [sort, setSort] = useState<LibrarySort>(() => {
+        const value = getPreference('um-library-sort');
+        return isLibrarySort(value) ? value : 'title-asc';
+    });
     const [pageSize, setPageSize] = useState(() => { try {
         const value = Number(getPreference('um-library-page-size'));
         return [24, 48, 96, 192].includes(value) ? value : 48;
@@ -271,7 +276,7 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
             setLoading(false); });
         return () => { active = false; };
     }, [account.signedIn, account.displayName, revision, refreshSignal]);
-    useEffect(() => { setPage(0); }, [query, kind, version, category, topic, pageSize]);
+    useEffect(() => { setPage(0); }, [query, kind, version, category, topic, pageSize, sort]);
     const downloadedIds = useMemo(() => {
         const titles = new Map<string, number>();
         for (const item of items)
@@ -281,6 +286,9 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
     const versions = useMemo(() => [...new Set(items.flatMap(i => i.engineVersions))].sort().reverse(), [items]);
     const topics=useMemo(()=>libraryTopics(items).sort((a,b)=>String(tr(a.label)).localeCompare(String(tr(b.label)),getLocale())),[items,getLocale()]);
     const filtered = useMemo(() => items.filter(i => (category === 'all' || downloadedIds.has(i.id)) && (!topic || i.categories.some(c=>categoryKey(c)===topic)) && (kind === 'All' || i.kind === kind) && (version === 'All' || i.engineVersions.includes(version)) && `${i.title} ${i.categories.join(' ')}`.toLowerCase().includes(query.toLowerCase())), [items, query, kind, version, category, topic, downloadedIds]);
+    const locale = getLocale();
+    const sorted = useMemo(() => sortLibraryItems(filtered, sort, locale, downloadedIds,
+        kind => tr(kind === 'Asset' ? 'Ассеты' : kind === 'Plugin' ? 'Плагины' : kind === 'Project' ? 'Проекты' : kind)), [filtered, sort, locale, downloadedIds]);
     const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
     const currentPage = Math.min(page, pages - 1);
     if (!account.signedIn)
@@ -289,13 +297,12 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
     <div className="library-summary"><div><span className="muted">{tr(items.length)}{tr(" материалов")}{tr(cachedAt ? ` · Синхронизация: ${new Date(cachedAt * 1000).toLocaleString(getLocale())}` : '')}</span></div><PageActions><button disabled={loading} onClick={() => setRevision(r => r + 1)}><RefreshCw size={17}/>{tr(loading ? 'Синхронизация…' : 'Обновить библиотеку')}</button></PageActions></div>
     <label className="downloaded-filter"><input type="checkbox" checked={category === 'downloaded'} onChange={e => setCategory(e.target.checked ? 'downloaded' : 'all')}/>{tr("Показать только скачанное ")}<span>{tr("(")}{tr(downloadedIds.size)}{tr(")")}</span></label>
     {tr(loading && <div className="library-loading" role="status"><RefreshCw className="loading-spinner" size={24}/><div><strong>{tr(loaded ? 'Обновляем список в фоне…' : 'Загружаем библиотеку…')}</strong><p>{tr(progress.pages ? `Получено материалов: ${progress.items} · Страниц: ${progress.pages}` : 'Проверяем локальный список и подключение…')}</p></div></div>)}
-    <div className="library-filters"><input aria-label={tr("Поиск в Fab")} placeholder={tr("Название или категория")} value={query} onChange={e => setQuery(e.target.value)}/><select aria-label={tr("Тип материала")} value={kind} onChange={e => setKind(e.target.value)}><option value="All">{tr("Все типы")}</option><option value="Asset">{tr("Ассеты")}</option><option value="Plugin">{tr("Плагины")}</option><option value="Project">{tr("Проекты")}</option></select><select aria-label={tr("Тематика")} value={topic} onChange={e=>setTopic(e.target.value)}><option value="">{tr("Все тематики")}</option>{topics.map(t=><option key={t.key} value={t.key}>{tr(t.label)}</option>)}</select><select aria-label={tr("Версия Unreal Engine")} value={version} onChange={e => setVersion(e.target.value)}><option value="All">{tr("Все версии UE")}</option>{tr(versions.map(v => <option key={v}>{tr(v)}</option>))}</select><label className="page-size">{tr("На странице")}<select aria-label={tr("Материалов на странице")} value={pageSize} onChange={e => { const n = Number(e.target.value); setPageSize(n); try {
-        setPreference('um-library-page-size', String(n));
-    }
-    catch { } }}>{tr([24, 48, 96, 192].map(n => <option key={n} value={n}>{tr(n)}</option>))}</select></label></div>
+    <div className="library-filters"><input aria-label={tr("Поиск в Fab")} placeholder={tr("Название или категория")} value={query} onChange={e => setQuery(e.target.value)}/><select aria-label={tr("Тип материала")} value={kind} onChange={e => setKind(e.target.value)}><option value="All">{tr("Все типы")}</option><option value="Asset">{tr("Ассеты")}</option><option value="Plugin">{tr("Плагины")}</option><option value="Project">{tr("Проекты")}</option></select><select aria-label={tr("Тематика")} value={topic} onChange={e=>setTopic(e.target.value)}><option value="">{tr("Все тематики")}</option>{topics.map(t=><option key={t.key} value={t.key}>{tr(t.label)}</option>)}</select><select aria-label={tr("Версия Unreal Engine")} value={version} onChange={e => setVersion(e.target.value)}><option value="All">{tr("Все версии UE")}</option>{tr(versions.map(v => <option key={v}>{tr(v)}</option>))}</select><select aria-label={tr("Сортировка библиотеки")} value={sort} onChange={e => { if (isLibrarySort(e.target.value)) { setSort(e.target.value); setPreference('um-library-sort', e.target.value); } }}>
+        <option value="title-asc">{tr("Название: А–Я")}</option><option value="title-desc">{tr("Название: Я–А")}</option><option value="kind">{tr("Тип материала")}</option><option value="engine-desc">{tr("Версия UE: сначала новые")}</option><option value="engine-asc">{tr("Версия UE: сначала старые")}</option><option value="downloaded">{tr("Сначала скачанные")}</option><option value="not-downloaded">{tr("Сначала нескачанные")}</option>
+    </select></div>
     <EpicAuthError error={error}/>
     {tr(!loading && loaded && !filtered.length && <div className="empty">{tr(category === 'downloaded' ? 'В Vault пока нет материалов, соответствующих фильтрам.' : 'Материалы не найдены.')}</div>)}
-    <div className="library-items"><div className="fab-grid">{tr(filtered.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map(item => <LibraryTile key={item.id} item={item} onOpen={onDownload} busy={downloadBusy} progress={downloadProgress?.id===item.id?downloadProgress:pendingProgress[item.id]||null} resumeId={pendingProgress[item.id]?.taskId} onResume={onResume} downloaded={downloadedIds.has(item.id)} onVaultChanged={onVaultChanged} packageIds={downloaded.filter(p => p.assetId === item.id || (!p.assetId && p.title === item.title && downloadedIds.has(item.id))).map(p => p.id)} packageId={downloaded.find(p => p.assetId === item.id || (!p.assetId && p.title === item.title && downloadedIds.has(item.id)))?.id}/>))}</div></div>
-    {tr(filtered.length > 0 && <div className="pagination"><span>{tr("Найдено: ")}{tr(filtered.length)}{tr(" · Страница ")}{tr(currentPage + 1)}{tr(" из ")}{tr(pages)}</span><button disabled={!currentPage} onClick={() => setPage(p => p - 1)}>{tr("Назад")}</button><button disabled={currentPage >= pages - 1} onClick={() => setPage(p => p + 1)}>{tr("Далее")}</button></div>)}
+    <div className="library-items"><div className="fab-grid">{tr(sorted.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map(item => <LibraryTile key={item.id} item={item} onOpen={onDownload} busy={downloadBusy} progress={downloadProgress?.id===item.id?downloadProgress:pendingProgress[item.id]||null} resumeId={pendingProgress[item.id]?.taskId} onResume={onResume} downloaded={downloadedIds.has(item.id)} onVaultChanged={onVaultChanged} packageIds={downloaded.filter(p => p.assetId === item.id || (!p.assetId && p.title === item.title && downloadedIds.has(item.id))).map(p => p.id)} packageId={downloaded.find(p => p.assetId === item.id || (!p.assetId && p.title === item.title && downloadedIds.has(item.id)))?.id}/>))}</div></div>
+    {tr(loaded && <nav className="pagination library-pagination" aria-label={tr("Навигация библиотеки")}><span>{tr("Найдено: ")}{tr(filtered.length)}{tr(" · Страница ")}{tr(currentPage + 1)}{tr(" из ")}{tr(pages)}</span><div className="pagination-controls"><button disabled={!currentPage} onClick={() => setPage(p => Math.max(0, p - 1))}>{tr("Назад")}</button><button disabled={currentPage >= pages - 1} onClick={() => setPage(p => Math.min(pages - 1, p + 1))}>{tr("Далее")}</button></div><label className="page-size">{tr("На странице")}<select aria-label={tr("Материалов на странице")} value={pageSize} onChange={e => { const n = Number(e.target.value); if ([24, 48, 96, 192].includes(n)) { setPageSize(n); setPreference('um-library-page-size', String(n)); } }}>{tr([24, 48, 96, 192].map(n => <option key={n} value={n}>{tr(n)}</option>))}</select></label></nav>)}
   </div>;
 }

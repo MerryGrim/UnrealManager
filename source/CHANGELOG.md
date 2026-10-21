@@ -1,5 +1,32 @@
 # Change notes
 
+## 0.9.5 — 2026-10-21
+
+Download the installer or portable edition from
+[0.9.5](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.5).
+
+- Suppress the main window's default context menu on blank areas while keeping
+  editable fields and custom application menus available.
+- Add seven local library sort orders: name in both directions, asset type,
+  newest/oldest UE version and downloaded/not downloaded first. Place the page-size
+  selector beside navigation below the results. Sorting by date or size is not included.
+- Record projects successfully created through the app in any location, without
+  a background directory watcher. Keep the completed project if saving its list
+  entry fails, and report that failure separately. Existing discovery roots and
+  project-deletion policy remain unchanged.
+- Allow the explicit engine-registration check to request a temporary headless
+  UAC broker for Epic's fixed shared `LauncherInstalled.dat` only. Keep the
+  application and Epic session in the original user profile; do not elevate
+  engine-file operations or change folder permissions.
+- Show registration checking and possible Windows-permission waiting clearly.
+  The explicit reconciliation remains distinct from optional shared-list warnings
+  during an engine installation and does not establish full Epic Launcher discovery.
+
+Previous 0.9.4 acceptance does not establish the new protected shared-metadata
+broker or every newly created project location. Release validation records the
+tested scope; no clean Windows desktop, new human-visible UAC or zero-GPU claim
+is implied by these feature descriptions.
+
 ## 0.9.4 — 2026-10-21
 
 Download the installer or portable edition from

@@ -5,3 +5,18 @@ const updateLocales=JSON.parse(fs.readFileSync(root+'/src/locales/app-updates.js
 const updateKeys=Object.keys(updateLocales.en);
 for(const lang of languages){assert.deepEqual(Object.keys(updateLocales[lang]).sort(),[...updateKeys].sort(),lang+': update message keys');for(const [key,value]of Object.entries(updateLocales[lang])){assert.equal(typeof value,'string');assert(value.trim());assert.deepEqual(placeholders(value),placeholders(key),lang+': update placeholders '+key);assert(!/[А-Яа-яЁё]/.test(value),lang+': untranslated update '+key);}}
 console.log(languages.length+' languages × '+updateKeys.length+' update messages checked');
+
+const libraryLocales=JSON.parse(fs.readFileSync(root+'/src/locales/library-controls.json','utf8'));
+const libraryKeys=['Сортировка библиотеки','Название: А–Я','Название: Я–А','Тип материала','Версия UE: сначала новые','Версия UE: сначала старые','Сначала скачанные','Сначала нескачанные','Навигация библиотеки','Проверяем регистрацию…','Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.'];
+assert.deepEqual(Object.keys(libraryLocales).sort(),[...languages].sort(),'exact non-Russian library locales');
+for(const lang of languages){
+    assert.deepEqual(Object.keys(libraryLocales[lang]).sort(),[...libraryKeys].sort(),lang+': library message keys');
+    for(const [key,value]of Object.entries(libraryLocales[lang])){
+        assert.equal(typeof value,'string',lang+': library '+key);
+        assert(value.trim(),lang+': empty library '+key);
+        assert.deepEqual(placeholders(value),placeholders(key),lang+': library placeholders '+key);
+        assert(!/[А-Яа-яЁё]/.test(value),lang+': untranslated library '+key);
+        assert.notEqual(value,key,lang+': Russian library fallback '+key);
+    }
+}
+console.log(languages.length+' languages × '+libraryKeys.length+' library control messages checked');

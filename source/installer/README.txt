@@ -1,4 +1,4 @@
-Unreal Manager 0.9.4 — Nyanma
+Unreal Manager 0.9.5 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
@@ -46,7 +46,18 @@ Unreal Engine, Epic Games and Fab belong to their owners.
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
-0.9.2
+0.9.5
+- Repairing managed engine registration can request Windows administrator approval
+  for protected Epic metadata. The main application keeps its ordinary token.
+- Projects created from Fab are remembered by their exact .uproject path and appear
+  after creation in the local Projects view, on any selected drive or folder.
+- Library sorting: name, type, newest supported UE, and downloaded state.
+  Name and UE sorts support both directions; page size sits beside bottom navigation.
+  Acquisition/update dates and download size are not supplied by this library view.
+- Native browser context menus are suppressed on empty main-window surfaces;
+  text editing and application card menus remain available.
+
+0.9.2 (historical release)
 - Progress inside each file during engine update application, including read bytes,
   read speed and the current check or replacement step.
 - Bounded concurrent old/new file checking on suitable SSDs. Replacements stay
@@ -76,7 +87,7 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
   portable update migration, fresh-account SSO and real key activation are
   separate checks.
 
-0.2.0-beta.8 (previous public release)
+0.2.0-beta.8 (historical release)
 - Settings grouped into Interface, Downloads, Storage, Projects and App updates.
 - Open Settings > App updates to check, download and apply application updates.
 - Category labels are translated into all nine interface languages.
@@ -92,8 +103,8 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In 0.9.2, use Settings > App updates > Check for updates.
-Beta.7 and newer can receive 0.9.2 through the application updater. Stable
+In 0.9.5, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.5 through the application updater. Stable
 releases are available in both the stable and beta update channels.
 In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.

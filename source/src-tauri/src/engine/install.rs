@@ -1369,6 +1369,51 @@ mod transaction_tests {
         fs::remove_dir_all(base).unwrap();
     }
     #[test]
+    fn registration_repair_cancel_and_late_preflight_failure_never_write_metadata(){
+        let f=RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");let payload=f.0.join("engine-file");
+        let old=serde_json::json!({"version":"old","foreign":"keep"});let new=serde_json::json!({"version":"new","foreign":"keep"});
+        for path in [&first,&global]{write_new(path,&serde_json::to_vec(&old).unwrap()).unwrap();}write_new(&payload,b"engine bytes unchanged").unwrap();
+        let changes=vec![(first.clone(),old.clone(),new.clone()),(global.clone(),old.clone(),new.clone())];
+        let mut prepared=0;let writes=std::cell::Cell::new(0);
+        let cancelled="Запрос администратора отменён. Программа остаётся открытой.";
+        let result=repair_registration_transaction(&changes,|_|{prepared+=1;if prepared==2{Err(cancelled.to_string())}else{Ok(())}},|_,_|Ok(()),|change,_,restore|{writes.set(writes.get()+1);update_item(&Some(change.clone()),restore)});
+        assert_eq!(result.unwrap_err(),cancelled);assert_eq!(writes.get(),0);
+        let mut checked=0;
+        assert!(repair_registration_transaction(&changes,|_|Ok(()),|_,_|{checked+=1;if checked==2{Err("helper unavailable".into())}else{Ok(())}},|change,_,restore|{writes.set(writes.get()+1);update_item(&Some(change.clone()),restore)}).is_err());
+        assert_eq!(writes.get(),0);
+        for path in [&first,&global]{assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap(),old);}
+        assert_eq!(fs::read(payload).unwrap(),b"engine bytes unchanged");
+    }
+    #[test]
+    fn registration_repair_global_failure_restores_own_items_preserves_external_edit(){
+        let f=RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");let payload=f.0.join("engine-file");
+        let old=serde_json::json!({"version":"old","foreign":"keep"});let new=serde_json::json!({"version":"new","foreign":"keep"});let external=serde_json::json!({"external":"preserve"});
+        for path in [&first,&global]{write_new(path,&serde_json::to_vec(&old).unwrap()).unwrap();}write_new(&payload,b"engine bytes unchanged").unwrap();
+        let changes=vec![(first.clone(),old.clone(),new.clone()),(global.clone(),old.clone(),new)];
+        let result=repair_registration_transaction(&changes,|_|Ok(()),|_,_|Ok(()),|change,_,restore|{
+            if !restore&&change.0==global{fs::write(&global,serde_json::to_vec(&external).unwrap()).unwrap();}
+            update_item(&Some(change.clone()),restore)
+        });
+        assert!(result.unwrap_err().contains("Не завершён откат записей Epic"));
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(first).unwrap()).unwrap(),old);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(global).unwrap()).unwrap(),external);
+        assert_eq!(fs::read(payload).unwrap(),b"engine bytes unchanged");
+    }
+    #[test]
+    fn registration_repair_late_error_rolls_back_only_authorized_metadata(){
+        let f=RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");
+        let old=serde_json::json!({"version":"old","futureField":[1,2]});let new=serde_json::json!({"version":"new","futureField":[1,2]});
+        for path in [&first,&global]{write_new(path,&serde_json::to_vec(&old).unwrap()).unwrap();}
+        let changes=vec![(first.clone(),old.clone(),new.clone()),(global.clone(),old.clone(),new.clone())];
+        let result=repair_registration_transaction(&changes,|_|Ok(()),|_,_|Ok(()),|change,_,restore|{
+            if !restore&&change.0==global{return Err("fixture access denied (os error 5)".into());}update_item(&Some(change.clone()),restore)
+        });
+        assert_eq!(result.unwrap_err(),"fixture access denied (os error 5)");
+        for path in [&first,&global]{assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap(),old);}
+        repair_registration_transaction(&changes,|_|Ok(()),|_,_|Ok(()),|change,_,restore|update_item(&Some(change.clone()),restore)).unwrap();
+        for path in [&first,&global]{assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(path).unwrap()).unwrap(),new);}
+    }
+    #[test]
     fn registration_creates_launcher_record_preserves_games_and_rolls_back(){
         let (base,_,plan,_)=fixture();let path=base.join("LauncherInstalled.dat");let root=Path::new(&plan.info.path);
         let item=launcher_update_at(&path,"UE_5.8","5.8.3-3",root).unwrap();assert!(item.1.is_null());update_item(&Some(item.clone()),false).unwrap();assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap()["InstallationList"][0]["AppName"],"UE_5.8");update_item(&Some(item),true).unwrap();assert!(!path.exists());
@@ -2041,11 +2086,21 @@ pub async fn engine_register_managed(state:tauri::State<'_,EngineState>,vault:ta
  tauri::async_runtime::spawn_blocking(repair_managed_registration).await.map_err(|e|e.to_string())?
 }
 pub(crate) fn repair_managed_registration()->Result<usize,String>{
- let mut count=0;
+ let mut count=0;let mut locks=Vec::new();let mut changes=Vec::new();let mut engines=Vec::new();
+ // A single global snapshot/broker covers the whole explicit repair action.
+ // No metadata is changed until every required UAC request has succeeded.
+ let launcher_path=crate::elevation::launcher_path()?;
+ no_links(&launcher_path)?;
+ let launcher_before=match fs::symlink_metadata(&launcher_path){
+  Err(e)if e.kind()==std::io::ErrorKind::NotFound=>serde_json::Value::Null,
+  Err(e)=>return Err(io(e)),
+  Ok(meta)=>{if !meta.is_file()||meta.len()>2*1024*1024{return Err("Повреждён список установок Epic".into());}serde_json::from_slice(&fs::read(&launcher_path).map_err(io)?).map_err(|_|"Повреждён список установок Epic")?}
+ };
+ let mut launcher_after=launcher_before.clone();
  for engine in crate::scan_engines(){
   let root=target(&engine.path)?;let receipt=root.join(".egstore/um-install.json");
   if !receipt.exists()||root.join(".um-engine-update.json").exists(){continue;}
-  let _lock=lock_installation(&root)?;idle(&root)?;no_links(&receipt)?;
+  let lock=lock_installation(&root)?;idle(&root)?;no_links(&receipt)?;
   let value:serde_json::Value=serde_json::from_slice(&fs::read(&receipt).map_err(io)?).map_err(|e|e.to_string())?;
   let app_name=value["appName"].as_str().ok_or("Нет идентификатора установки")?;
   if app_name!=format!("UE_{}",engine.version){return Err("Идентификатор установки не совпадает с версией движка".into());}
@@ -2063,18 +2118,45 @@ pub(crate) fn repair_managed_registration()->Result<usize,String>{
   let item_update=if let Some((path,before))=existing {
     let mut after=before.clone();after["AppVersionString"]=build.into();after["CompleteManifestPath"]=manifest_path.to_string_lossy().into_owned().into();after["InstallSize"]=installed_size.into();after["bIsIncompleteInstall"]=false.into();Some((path,before,after))
   }else if let Some(catalog_id)=value["catalogItemId"].as_str(){let guid=uuid::Uuid::new_v4().simple().to_string().to_uppercase();Some((epic_item_directory().join(format!("{guid}.item")),serde_json::Value::Null,new_epic_item(app_name,catalog_id,build,&root,&manifest_path,installed_size,&guid)))}else{None};
-  let launcher_update=launcher_update_at(&launcher_path(),app_name,build,&root)?;
-  let changed=item_update.as_ref().is_some_and(|i|i.1!=i.2)||launcher_update.1!=launcher_update.2;
-  if changed {
-   let backup=crate::storage::root().join("Backups/engine-registration").join(format!("{}.json",uuid::Uuid::new_v4()));
-   atomic(&backup,&serde_json::to_vec_pretty(&serde_json::json!({"item":item_update,"launcher":launcher_update})).map_err(|e|e.to_string())?)?;
-   update_item(&item_update,false)?;
-   if let Err(error)=update_item(&Some(launcher_update),false){let _=update_item(&item_update,true);return Err(error);}
-   count+=1;
-  }
+  let intent=crate::elevation::LauncherEngine{root,app_name:app_name.into(),build:build.into(),manifest:manifest_path};
+  let next=crate::elevation::launcher_after(&launcher_after,std::slice::from_ref(&intent))?;
+  if item_update.as_ref().is_some_and(|i|i.1!=i.2)||next!=launcher_after{count+=1;}
+  launcher_after=next;engines.push(intent);locks.push(lock);
+  if let Some(change)=item_update.filter(|i|i.1!=i.2){changes.push(change);}
  }
+ if launcher_after!=launcher_before{changes.push((launcher_path.clone(),launcher_before,launcher_after));}
+ if changes.is_empty(){return Ok(0);}
+ // Retain the original snapshots even if authorization is cancelled. They
+ // contain only registration metadata, never an account or a download plan.
+ let backup=crate::storage::root().join("Backups/engine-registration").join(format!("{}.json",uuid::Uuid::new_v4()));
+ atomic(&backup,&serde_json::to_vec_pretty(&serde_json::json!({"changes":changes})).map_err(|e|e.to_string())?)?;
+ repair_registration_transaction(&changes,|change|{
+  match item_access(&Some(change.clone()),false,"epicRecord"){
+   Ok(())=>Ok(None),
+   Err(error)if error.starts_with("UM_ELEVATION_REQUIRED:")=>{
+    let broker=if change.0==launcher_path{crate::elevation::prepare_launcher(change,engines.clone())?}else{crate::elevation::prepare(change)?};Ok(Some(broker))
+   }
+   Err(error)=>Err(error),
+  }
+ },|change,broker|registration_update_if_needed(&Some(change.clone()),false,||if let Some(broker)=broker.as_mut(){broker.check()}else{item_access(&Some(change.clone()),false,"epicRecord")} ),
+ |change,broker,restore|registration_update(&Some(change.clone()),restore,broker))?;
  Ok(count)
 }
+// Kept as a transaction seam so cancellation and failure tests use real files
+// without launching UAC or selecting any machine-wide Epic registration.
+fn repair_registration_transaction<T>(changes:&[MetadataChange],mut prepare:impl FnMut(&MetadataChange)->Result<T,String>,mut check:impl FnMut(&MetadataChange,&mut T)->Result<(),String>,mut update:impl FnMut(&MetadataChange,&mut T,bool)->Result<(),String>)->Result<(),String>{
+ let mut guards=changes.iter().map(&mut prepare).collect::<Result<Vec<_>,_>>()?;
+ for (change,guard) in changes.iter().zip(guards.iter_mut()){check(change,guard)?;}
+ for index in 0..changes.len(){
+  if let Err(cause)=update(&changes[index],&mut guards[index],false){
+   let mut failures=Vec::new();
+   for previous in (0..=index).rev(){if let Err(error)=update(&changes[previous],&mut guards[previous],true){failures.push(error);}}
+   return Err(if failures.is_empty(){cause}else{format!("{cause}. Не завершён откат записей Epic: {}",failures.join("; "))});
+  }
+ }
+ Ok(())
+}
+pub(crate) fn registration_manifest_identity(raw:&[u8])->Result<(String,String),String>{super::manifest::identity(raw)}
 
 #[cfg(test)]
 fn assemble_files(plan:&Plan,stage:&Path,ops:&[Operation],cancel:&AtomicBool,progress:impl FnMut(u64,u64,u64))->Result<(),String>{assemble_files_controlled(plan,stage,ops,cancel,None,progress)}

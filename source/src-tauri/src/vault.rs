@@ -589,22 +589,76 @@ fn install_for_engine_progress(info:&Package,project:&str,project_name:Option<&s
     if result.is_ok(){notify(local_progress("Файлы установлены и проверены",1,1,entries.len(),entries.len()));}
     result
 }
+fn install_and_register_project(info:&Package,project:&str,project_name:Option<&str>,engine_version:Option<&str>,notify:&mut dyn FnMut(Progress),register:impl FnOnce(&[PathBuf])->Result<(),String>)->Result<usize,String>{
+    let projects=if info.kind=="Project" {
+        let (root,entries,_)=install_files(info,project,project_name)?;
+        entries.values().filter(|p|p.extension().is_some_and(|e|e.eq_ignore_ascii_case("uproject"))).map(|p|root.join(p)).collect::<Vec<_>>()
+    }else{Vec::new()};
+    let count=install_for_engine_progress(info,project,project_name,engine_version,notify)?;
+    if !projects.is_empty(){register(&projects).map_err(|error|format!("Проект установлен, но список не удалось обновить: {error}"))?;}
+    Ok(count)
+}
 #[tauri::command]
 pub async fn vault_install(state: tauri::State<'_, VaultState>,webview:tauri::Webview, id: String, project: String, project_name: Option<String>, engine_version: Option<String>,on_progress:Option<tauri::ipc::JavaScriptChannelId>) -> Result<usize, String> {
     let on_progress:Option<tauri::ipc::Channel<Progress>>=on_progress.map(|id|id.channel_on(webview));
     let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) { return Err("Дождитесь текущей операции Vault".into()); }
     let _busy=Busy(&state.active);
-    let result=tauri::async_runtime::spawn_blocking(move || {
-        let info=package(&id)?;
-        install_for_engine_progress(&info,&project,project_name.as_deref(),engine_version.as_deref(),&mut |progress|{if let Some(channel)=&on_progress{let _=channel.send(progress);}})
+    let (result,project_created)=tauri::async_runtime::spawn_blocking(move || {
+        let mut project_created=false;
+        let result=(||{
+            let info=package(&id)?;
+            install_and_register_project(&info,&project,project_name.as_deref(),engine_version.as_deref(),&mut |progress|{if let Some(channel)=&on_progress{let _=channel.send(progress);}},|paths|{project_created=true;crate::project_registry::register_created(paths)})
+        })();
+        (result,project_created)
     }).await.map_err(|_| "Установка прервана")?;
-    if result.is_ok(){discard_plan(&state);}result
+    if result.is_ok()||project_created{discard_plan(&state);}result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn registry_package(root:&Path)->Package{
+        let source=root.join("vault");fs::create_dir(&source).unwrap();
+        let descriptor=br#"{"FileVersion":3,"EngineAssociation":"5.3"}"#;
+        fs::write(source.join("Original.uproject"),descriptor).unwrap();
+        Package{artifact_id:String::new(),selected_engine:String::new(),build_version:String::new(),source:String::new(),asset_id:"fixture".into(),id:"fixture".into(),title:"Fixture Project".into(),kind:"Project".into(),engines:vec![],bytes:descriptor.len() as u64,download_bytes:0,files:1,path:source.to_string_lossy().into(),hashes:BTreeMap::from([("Original.uproject".into(),digest(descriptor))])}
+    }
+    #[test]
+    fn verified_created_project_registers_actual_renamed_descriptor_after_copy(){
+        let fixture=crate::project_registry::tests::Fixture::new();let info=registry_package(&fixture.root);
+        let target=fixture.root.join("arbitrary destination 空白/new-project");let descriptor=target.join("MyGame.uproject");
+        let mut calls=0;
+        let n=install_and_register_project(&info,&target.to_string_lossy(),Some("MyGame"),Some("5.8"),&mut |_|{},|paths|{
+            calls+=1;assert_eq!(paths,&[descriptor.clone()]);
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(&descriptor).unwrap()).unwrap()["EngineAssociation"],"5.8");
+            fixture.register(paths)
+        }).unwrap();
+        assert_eq!(n,1);assert_eq!(calls,1);
+        let saved=fixture.paths();assert_eq!(saved.len(),1);assert_eq!(crate::project_registry::path_key(&saved[0]),crate::project_registry::path_key(&descriptor));
+        let listed=crate::scan_projects_in(&[],&saved);assert_eq!(listed.len(),1);assert_eq!(listed[0].name,"MyGame");
+        assert_eq!(fs::read(Path::new(&info.path).join("Original.uproject")).unwrap(),br#"{"FileVersion":3,"EngineAssociation":"5.3"}"#);
+    }
+    #[test]
+    fn failed_creation_never_registers_or_overwrites_an_existing_project(){
+        let fixture=crate::project_registry::tests::Fixture::new();let info=registry_package(&fixture.root);
+        let target=fixture.root.join("new-project");let descriptor=target.join("MyGame.uproject");let mut calls=0;
+        fs::write(Path::new(&info.path).join("Original.uproject"),b"damaged cache").unwrap();
+        assert!(install_and_register_project(&info,&target.to_string_lossy(),Some("MyGame"),None,&mut |_|{},|_|{calls+=1;Ok(())}).is_err());
+        assert_eq!(calls,0);assert!(!target.exists());assert!(!fixture.record().exists());
+        fs::create_dir(&target).unwrap();fs::write(&descriptor,b"original user project").unwrap();
+        assert!(install_and_register_project(&info,&target.to_string_lossy(),Some("MyGame"),None,&mut |_|{},|_|{calls+=1;Ok(())}).is_err());
+        assert_eq!(calls,0);assert_eq!(fs::read(&descriptor).unwrap(),b"original user project");assert!(!fixture.record().exists());
+    }
+    #[test]
+    fn registry_write_failure_reports_created_project_without_rolling_back_its_files(){
+        let fixture=crate::project_registry::tests::Fixture::new();let info=registry_package(&fixture.root);
+        let target=fixture.root.join("new-project");
+        let result=install_and_register_project(&info,&target.to_string_lossy(),Some("MyGame"),None,&mut |_|{},|_|Err("fixture registry write denied".into()));
+        assert!(result.unwrap_err().starts_with("Проект установлен, но список не удалось обновить:"));
+        assert_eq!(fs::read(target.join("MyGame.uproject")).unwrap(),br#"{"FileVersion":3,"EngineAssociation":"5.3"}"#);
+        assert!(!fixture.record().exists());
+    }
     #[test]
     fn filesystem_error_keeps_the_os_cause_and_local_operation_path(){let path=Path::new("X:/Fixture/Vault/file.bin");let error=io_at("Чтение файла",path,std::io::Error::from_raw_os_error(112));assert!(error.contains("os error 112"));assert!(error.contains(&path.to_string_lossy().to_string()));assert!(error.starts_with("Ошибка файловой системы (Чтение файла):"));assert!(io_error(std::io::Error::from_raw_os_error(112)).contains("os error 112"));}
     #[test]

@@ -4,6 +4,7 @@ mod download;
 mod window_behavior;
 mod webview_policy;
 mod project_association;
+mod project_registry;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -230,12 +231,11 @@ fn read_project(path: &Path) -> Option<UnrealProject> {
     })
 }
 
-#[tauri::command]
-fn scan_projects() -> Vec<UnrealProject> {
+fn scan_projects_in(roots: &[PathBuf], registered: &[PathBuf]) -> Vec<UnrealProject> {
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();
 
-    for root in project_roots() {
+    for root in roots {
         if !root.exists() { continue; }
         for entry in WalkDir::new(root)
             .max_depth(4)
@@ -245,15 +245,25 @@ fn scan_projects() -> Vec<UnrealProject> {
         {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|s| s.to_str()).map(|x| x.eq_ignore_ascii_case("uproject")).unwrap_or(false) {
-                let key = path.to_string_lossy().to_lowercase();
+                let key = project_registry::path_key(path);
                 if seen.insert(key) {
                     if let Some(project) = read_project(path) { result.push(project); }
                 }
             }
         }
     }
+    for path in registered {
+        if seen.insert(project_registry::path_key(path)) {
+            if let Some(project) = read_project(path) { result.push(project); }
+        }
+    }
     result.sort_by(|a,b| b.modified_unix.cmp(&a.modified_unix));
     result
+}
+
+#[tauri::command]
+fn scan_projects() -> Vec<UnrealProject> {
+    scan_projects_in(&project_roots(), &project_registry::paths().unwrap_or_default())
 }
 
 #[tauri::command]
