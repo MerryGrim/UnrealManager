@@ -73,7 +73,7 @@ export function DownloadsView({ engineDownload, active, progress, installing, re
             : !engineDownload && !currentQueue && <div className="downloads-idle"><Download size={27}/><div><b>{tr("Нет активных загрузок")}</b>{!queue.items.length && <p>{tr("Выберите материал в библиотеке, чтобы начать скачивание.")}</p>}</div></div>)}
    <EpicAuthError error={error}/>
   </section>
-  <VaultQueue queue={queue} busy={queueBusy} resumeBusy={busy} error={queueError} onPaused={onQueuePaused} onReorder={onQueueReorder} onRemove={onQueueRemove} onRetry={onQueueRetry} onResume={onResume}/>
+  <VaultQueue queue={queue} manualActive={active} busy={queueBusy} resumeBusy={busy} error={queueError} onPaused={onQueuePaused} onReorder={onQueueReorder} onRemove={onQueueRemove} onRetry={onQueueRetry} onResume={onResume}/>
   <VaultResumeTasks tasks={pending.filter(t=>t.id!==active?.plan.id&&t.id!==queueActive?.packageId)} busy={busy} covers={covers} onResume={onResume} onForget={onForget}/>
   {!engineDownload&&<EngineResumeTasks busy={busy} onResume={id=>window.dispatchEvent(new CustomEvent('um-resume-engine',{detail:id}))} refreshKey={engineDownload}/> }
   <section className="downloads-section"><div className="section-head"><h3>{tr("Загруженные ")}<span className="download-count">{tr(records.length)}</span></h3><button disabled={!records.length} onClick={() => onClear()}>{tr("Очистить список")}</button></div><p className="downloads-hint">{tr("Очистка списка не удаляет скачанные файлы.")}</p>

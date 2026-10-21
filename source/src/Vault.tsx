@@ -13,7 +13,7 @@ import { engineVersion, materialVersions } from './lib/materialVersions';
 import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import {listen} from '@tauri-apps/api/event';
-import {emptyVaultQueue, type VaultQueueSnapshot} from './VaultQueue';
+import {emptyVaultQueue, isManualQueueTransfer, type VaultQueueSnapshot} from './VaultQueue';
 import { Download, FolderOpen, PackageOpen, RefreshCw, X } from 'lucide-react';
 import { FabCover, type FabItem } from './EpicLibrary';
 import type { EngineInstall, UnrealProject } from './lib/backend';
@@ -424,7 +424,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     };
     const progressStep = !!selected && activeDownload?.item.id === selected.id;
     const queueActive = queue.items.find(item => item.id === queue.activeId);
-    const queuedCount = queue.items.filter(item => item.id !== queue.activeId).length;
+    const queuedCount = queue.items.filter(item => item.id !== queue.activeId && !isManualQueueTransfer(item, activeDownload)).length;
     const engineInstall = installItem?.kind === 'Plugin' && pluginDestination === 'engine';
     const pluginOptions = installItem && <><label className="wizard-field">{tr("Скачанная версия")}<select aria-label={tr("Скачанная версия плагина")} value={installItem.id} disabled={busy} onChange={e => { const item = items.find(p => p.id === e.target.value); if (item) {
         setInstallItem(item);

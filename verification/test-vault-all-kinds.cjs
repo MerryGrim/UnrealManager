@@ -47,7 +47,7 @@ await updatePage.evaluate(()=>{window.updateLog.onmessage('Подготовка:
 await updatePage.keyboard.press('Escape');assert(await updatePage.getByRole('dialog').isVisible(),'A running project update cannot close through Escape');
 await updatePage.evaluate(()=>{window.updateLog.onmessage('Восстанавливаем исходные файлы');window.updateWork.onmessage({phase:'Восстанавливаем исходные файлы',done:1048576,total:4194304,filesDone:0,filesTotal:2});});await updateStatus.getByText('Восстанавливаем исходные файлы',{exact:true}).waitFor();assert.equal(await updateStatus.locator('progress').getAttribute('value'),'1048576');assert((await updateStatus.innerText()).includes('Файлы: 0 / 2'));await updatePage.evaluate(()=>window.updateWork.onmessage({phase:'Восстанавливаем исходные файлы',done:3145728,total:4194304,filesDone:1,filesTotal:2}));await updatePage.waitForFunction(()=>document.querySelector('[role=status] progress')?.value===3145728);assert((await updateStatus.innerText()).includes('Файлы: 1 / 2'),'Rollback counters advance before the native terminal error');
 await updatePage.evaluate(()=>window.failUpdate());await updatePage.getByRole('alert').getByText('Файлы изменились. Изменения отменены.',{exact:true}).waitFor();assert.equal(await updatePage.getByRole('status').count(),0,'A failed copy never leaves a completed meter or success state');await updatePage.close();
-await checkModalKeyboard(browser,bundle,errors);await checkDownloadQueue(browser,bundle,errors);assert.deepEqual(errors,[]);console.log('PASS pause/resume keeps 50%, speed zero on pause, saved exact version and project intent resumed without network preparation, project refreshed, stop keeps task, forget requires confirmation; aligned 44px buttons below meter at 1280/600');
+await checkModalKeyboard(browser,bundle,errors);await checkDownloadQueue(browser,bundle,errors);await checkManualResumedQueue(browser,bundle,errors);assert.deepEqual(errors,[]);console.log('PASS pause/resume keeps 50%, speed zero on pause, saved exact version and project intent resumed without network preparation, project refreshed, stop keeps task, forget requires confirmation; aligned 44px buttons below meter at 1280/600; manually resumed queue binding is represented only in Current');
 }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
 
@@ -276,5 +276,76 @@ async function checkDownloadQueue(browser,bundle,errors){
  checks.push('Queued work renders once under Current; waiting counts exclude it, idle Current is explicit, and an active-only queue keeps its scheduling control');
  const report={schema:1,passed:true,checks,scope:'Mock native snapshots/events with the actual React UI; no account, native queue persistence or real transfer exercised.'};
  fs.writeFileSync(outputDirectory+'/vault-download-queue-report.json',JSON.stringify(report,null,2));
+ await page.close();
+}
+
+async function checkManualResumedQueue(browser,bundle,errors){
+ const checks=[],packageId='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+ const page=await browser.newPage({locale:'ru-RU',viewport:{width:1280,height:850}});
+ page.on('pageerror',error=>errors.push(error.message));page.setDefaultTimeout(12000);
+ await page.setContent('<html><head><meta charset="UTF-8"><style>'+fs.readFileSync(root+'/src/styles.css','utf8')+'</style></head><body><div id="root"></div></body></html>');
+ await page.evaluate(packageId=>{
+  const item={id:'manual-bound',assetId:'asset',artifactId:'exact-artifact',selectedEngine:'5.8',title:'Test Material',requestedVaultPath:'x:\\Fixture\\VAULT\\',status:'interrupted',packageId,error:'Продолжите сохранённую загрузку в списке задач.',progress:null};
+  window.queue={revision:40,paused:false,activeId:null,items:[item],error:null,completed:null};
+  window.tasks=[{id:packageId,assetId:'asset',title:'Test Material',kind:'Asset',selectedEngine:'5.8',path:'X:/Fixture/Vault/'+packageId,phase:'На паузе',done:50,total:100,filesDone:1,filesTotal:2,intent:{mode:'vault',project:'',projectName:'',engineVersion:'5.8'}}];
+ },packageId);
+ await page.addScriptTag({content:bundle.outputFiles[0].text});
+ const queue=page.locator('.vault-download-queue'),current=page.locator('.downloads-current');
+ const bound=queue.locator('[data-queue-id="manual-bound"]');
+ const before=await page.evaluate(()=>JSON.parse(JSON.stringify(window.queue)));
+ await bound.getByRole('button',{name:'Продолжить загрузку',exact:true}).click();
+ await current.locator('.vault-transfer-card').getByRole('button',{name:'Пауза',exact:true}).waitFor();
+ assert.equal(await current.locator('.section-head .download-count').innerText(),'1');
+ assert.equal(await queue.locator('.section-head .download-count').innerText(),'0');
+ assert.equal(await bound.count(),0);assert.equal(await queue.getByText('Продолжите сохранённую загрузку в списке задач.',{exact:true}).count(),0);
+ assert.equal(await page.evaluate(()=>window.vault.queuedCount),0,'The footer count shares the exact same manual binding');
+ assert.deepEqual(await page.evaluate(()=>window.queue),before,'Starting a manual resume does not rewrite its native queue record');
+ await queue.getByText('Ожидает завершения текущей операции',{exact:true}).waitFor();
+ assert(await queue.getByRole('button',{name:'Приостановить очередь',exact:true}).isEnabled(),'The native dispatch pause control remains available');
+ checks.push('An Interrupted record matching package, asset and normalized Vault path displays once in Current, not in the queue/error/footer; raw native metadata stays unchanged');
+ await page.screenshot({path:outputDirectory+'/vault-manual-resume-current.png'});
+ await page.evaluate(()=>{window.queue.error='Не удалось сохранить очередь. Существующие задачи сохранены.';window.queue.revision++;window.publishQueue();});
+ await queue.getByText('Не удалось сохранить очередь. Существующие задачи сохранены.',{exact:true}).waitFor();
+ checks.push('A global queue persistence error remains visible while the matching attention row is hidden');
+ await page.evaluate(()=>{
+  window.queue.items.push(...['One','Two'].map((name,index)=>({id:'pending-'+index,assetId:'other-'+index,artifactId:'other-artifact-'+index,selectedEngine:'5.8',title:'Pending '+name,requestedVaultPath:'X:/Fixture/Vault',status:'pending',packageId:null,error:null,progress:null})),{...window.queue.items[0],id:'foreign-attention',assetId:'other-asset',title:'Unrelated attention'});
+  window.queue.error=null;window.queue.revision++;window.publishQueue();
+ });
+ await queue.locator('[data-queue-id="foreign-attention"]').waitFor();
+ assert.equal(await queue.locator('.section-head .download-count').innerText(),'3');
+ assert.equal(await page.evaluate(()=>window.vault.queuedCount),3);
+ const revision=await page.evaluate(()=>window.queue.revision);
+ await queue.getByRole('button',{name:'Ниже: Pending One',exact:true}).click();
+ await page.waitForFunction(()=>window.calls.some(call=>call.name==='vault_queue_reorder'));
+ assert.deepEqual(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_queue_reorder').at(-1).args),{ids:['pending-1','pending-0'],expectedRevision:revision});
+ assert.equal(await page.evaluate(()=>window.queue.items.find(item=>item.id==='manual-bound').status),'interrupted');
+ checks.push('Unrelated attention and pending rows remain visible; pending-only CAS reorder retains all native pending IDs and the hidden original record');
+ for(const [field,value] of [['requestedVaultPath','X:/Fixture/AnotherVault'],['assetId','another-asset'],['packageId','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb']]){
+  const original=await page.evaluate(field=>window.queue.items.find(item=>item.id==='manual-bound')[field],field);
+  await page.evaluate(({field,value})=>{window.queue.items.find(item=>item.id==='manual-bound')[field]=value;window.queue.revision++;window.publishQueue();},{field,value});
+  await bound.waitFor();assert.equal(await queue.locator('.section-head .download-count').innerText(),'4');
+  await page.evaluate(({field,value})=>{window.queue.items.find(item=>item.id==='manual-bound')[field]=value;window.queue.revision++;window.publishQueue();},{field,value:original});
+  await bound.waitFor({state:'hidden'});
+ }
+ checks.push('A different Vault scope, asset or package is never hidden merely because another manual transfer is active');
+ await page.evaluate(()=>window.stop());
+ await bound.getByRole('button',{name:'Продолжить загрузку',exact:true}).waitFor();
+ assert.equal(await current.locator('.section-head .download-count').innerText(),'0');assert.equal(await queue.locator('.section-head .download-count').innerText(),'4');
+ assert.equal(await page.evaluate(()=>window.vault.queuedCount),4);assert.equal(await page.evaluate(()=>window.tasks.length),1);
+ checks.push('On download failure the active context clears, the original attention row/count/error returns, and the saved task is preserved');
+ await bound.getByRole('button',{name:'Продолжить загрузку',exact:true}).click();
+ await current.getByRole('button',{name:'Остановить',exact:true}).click();
+ await bound.getByRole('button',{name:'Продолжить загрузку',exact:true}).waitFor();
+ assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.name==='vault_cancel').length),1);assert.equal(await page.evaluate(()=>window.tasks.length),1);
+ assert.equal(await page.evaluate(()=>window.queue.items.find(item=>item.id==='manual-bound').packageId),packageId);
+ checks.push('Explicit Stop also restores the attention row and preserves its package/task binding without removing or retrying queue metadata');
+ await bound.getByRole('button',{name:'Продолжить загрузку',exact:true}).click();
+ await current.getByRole('button',{name:'Остановить',exact:true}).waitFor();
+ await page.evaluate(()=>{window.queue.items=window.queue.items.filter(item=>item.id!=='manual-bound');window.queue.revision++;window.publishQueue();window.finish();});
+ await current.getByText('Нет активных загрузок',{exact:true}).waitFor();
+ assert.equal(await bound.count(),0);assert.equal(await queue.locator('.section-head .download-count').innerText(),'3');
+ assert(!await page.evaluate(()=>window.calls.some(call=>['vault_queue_remove','vault_queue_retry','vault_resume_forget'].includes(call.name))));
+ checks.push('A normal native completion event removes the binding without UI queue-remove/retry/forget commands; other rows remain');
+ fs.writeFileSync(outputDirectory+'/vault-manual-resume-queue-report.json',JSON.stringify({schema:1,passed:true,checks,scope:'Actual useVault/DownloadsView/VaultQueue with mocked native callbacks, no real transfer or profile access.'},null,2));
  await page.close();
 }

@@ -28,6 +28,9 @@
 - Show an explicit Epic sign-in action when an account or Fab API returns
   HTTP 401. Keep saved partial downloads and queue order; resume only after
   the user chooses Continue or Retry. CDN errors retain their own meaning.
+- Show a manually resumed download once in Current. Keep its durable queue
+  binding without displaying the old attention row or counting it twice;
+  restore that row if the transfer stops or fails.
 
 These changes retain software rendering and use no permanent helper service.
 Validation results for this unreleased work are recorded separately from the

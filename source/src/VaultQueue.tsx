@@ -29,6 +29,16 @@ export type VaultQueueSnapshot = {
 };
 export const emptyVaultQueue: VaultQueueSnapshot = {revision: 0, paused: true, activeId: null, items: [], error: null};
 
+export type ManualVaultTransfer = {item: {id: string}; plan: VaultPackage};
+const queuePathKey = (path: string) => path.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+export function isManualQueueTransfer(item: VaultQueueItem | undefined, manual: ManualVaultTransfer | null | undefined): boolean {
+    if (!item || !manual || (item.status !== 'interrupted' && item.status !== 'needsAction')) return false;
+    const {plan} = manual;
+    return !!plan.id && !!plan.path && !!item.requestedVaultPath && item.packageId === plan.id
+        && item.assetId === (plan.assetId || manual.item.id)
+        && queuePathKey(plan.path) === `${queuePathKey(item.requestedVaultPath)}\\${plan.id.toLowerCase()}`;
+}
+
 export function QueueActiveTransfer({active}: {active: VaultQueueItem}) {
     return <article className="transfer-card vault-queue-active" data-queue-id={active.id} data-status={active.status}>
         <div className="transfer-main"><div className="transfer-art"><PackageOpen size={28}/></div><div className="transfer-info"><h3>{active.title}</h3><p>UE {active.selectedEngine} · {tr(active.progress?.paused ? 'На паузе' : active.progress?.phase || 'Подготовка загрузки')}</p>
@@ -38,8 +48,9 @@ export function QueueActiveTransfer({active}: {active: VaultQueueItem}) {
     </article>;
 }
 
-export function VaultQueue({queue, busy, resumeBusy, error, onPaused, onReorder, onRemove, onRetry, onResume}: {
+export function VaultQueue({queue, manualActive, busy, resumeBusy, error, onPaused, onReorder, onRemove, onRetry, onResume}: {
     queue: VaultQueueSnapshot;
+    manualActive?: ManualVaultTransfer | null;
     busy: boolean;
     resumeBusy: boolean;
     error: string;
@@ -53,8 +64,9 @@ export function VaultQueue({queue, busy, resumeBusy, error, onPaused, onReorder,
     const pointerDrag = useRef<{id: string; revision: number; pointerId: number} | null>(null);
     const active = queue.items.find(item => item.id === queue.activeId);
     const pending = queue.items.filter(item => item.status === 'pending' && item.id !== queue.activeId);
-    const attention = queue.items.filter(item => item.id !== queue.activeId && item.status !== 'pending');
-    const headNeedsAttention = !active && (queue.items[0]?.status === 'interrupted' || queue.items[0]?.status === 'needsAction');
+    const attention = queue.items.filter(item => item.id !== queue.activeId && item.status !== 'pending' && !isManualQueueTransfer(item, manualActive));
+    const headIsManual = isManualQueueTransfer(queue.items[0], manualActive);
+    const headNeedsAttention = !active && !headIsManual && (queue.items[0]?.status === 'interrupted' || queue.items[0]?.status === 'needsAction');
     const move = (id: string, delta: number) => {
         const ids = pending.map(item => item.id), from = ids.indexOf(id), to = from + delta;
         if (busy || from < 0 || to < 0 || to >= ids.length) return;
@@ -73,7 +85,7 @@ export function VaultQueue({queue, busy, resumeBusy, error, onPaused, onReorder,
         <div className="section-head"><h3>{tr('Очередь загрузок')} <span className="download-count">{pending.length + attention.length}</span></h3>
             <button disabled={busy || !queue.items.length} onClick={() => onPaused(!queue.paused)}>{queue.paused ? <Play size={16}/> : <Pause size={16}/>} {tr(queue.paused ? 'Запустить очередь' : 'Приостановить очередь')}</button>
         </div>
-        <p className="downloads-hint">{tr(queue.paused ? 'Очередь приостановлена' : headNeedsAttention ? 'Очередь требует внимания: продолжите, повторите или уберите первое задание.' : !active && pending.length ? 'Ожидает завершения текущей операции' : 'Очередь выполняется только пока открыт Unreal Manager.')}</p>
+        <p className="downloads-hint">{tr(queue.paused ? 'Очередь приостановлена' : headNeedsAttention ? 'Очередь требует внимания: продолжите, повторите или уберите первое задание.' : !active && (pending.length || headIsManual) ? 'Ожидает завершения текущей операции' : 'Очередь выполняется только пока открыт Unreal Manager.')}</p>
         <EpicAuthError error={error || queue.error || ''}/>
         <div className="vault-queue-list">{[...pending, ...attention].map(item => {
             const position = pending.findIndex(row => row.id === item.id), movable = position >= 0;
