@@ -32,10 +32,34 @@ function Known-RuntimeFiles {
 function App-Registration {
     foreach($hive in @([Microsoft.Win32.RegistryHive]::LocalMachine,[Microsoft.Win32.RegistryHive]::CurrentUser)){foreach($view in @([Microsoft.Win32.RegistryView]::Registry32,[Microsoft.Win32.RegistryView]::Registry64)){
         $base=[Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,$view)
-        try{$key=$base.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{61185C58-31CF-4783-BA27-429C3454B9A5}_is1');if($key){try{@{hive=[string]$hive;view=[string]$view;installLocation=[string]$key.GetValue('InstallLocation')}}finally{$key.Dispose()}}}finally{$base.Dispose()}
+        try{$key=$base.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{61185C58-31CF-4783-BA27-429C3454B9A5}_is1');if($key){try{@{hive=[string]$hive;view=[string]$view;installLocation=[string]$key.GetValue('InstallLocation');uninstallString=[string]$key.GetValue('UninstallString')}}finally{$key.Dispose()}}}finally{$base.Dispose()}
     }}
 }
 function Same-Path([string]$Left,[string]$Right){if([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)){throw 'Cannot compare an empty process or fixture path.'};[IO.Path]::GetFullPath($Left).TrimEnd('\','/').Equals([IO.Path]::GetFullPath($Right).TrimEnd('\','/'),[StringComparison]::OrdinalIgnoreCase)}
+function Registered-Uninstaller([string]$Application,$Records){
+    if(-not @($Records).Count){throw 'Owned app uninstall registration missing.'}
+    $selected=$null
+    foreach($record in $Records){
+        if(-not(Same-Path $record.installLocation $Application)){throw 'Uninstall registry location is not this owned case.'}
+        $arguments=@(Split-WindowsCommandLine $record.uninstallString)
+        if($arguments.Count -ne 1 -or -not [IO.Path]::IsPathFullyQualified($arguments[0]) -or [IO.Path]::GetFileName($arguments[0]) -notmatch '^unins[0-9]{3}\.exe$' -or -not(Same-Path ([IO.Path]::GetDirectoryName($arguments[0])) $Application)){throw 'Registered uninstaller is not a direct fixed-name child of this owned case.'}
+        $path=[IO.Path]::GetFullPath($arguments[0]);Assert-Plain $path
+        if($selected -and -not(Same-Path $selected $path)){throw 'Uninstall registry entries disagree.'}
+        $selected=$path
+    }
+    return @{exe=$selected;dat=[IO.Path]::ChangeExtension($selected,'.dat')}
+}
+function Inno-LogComplete([string]$Path,[string]$Kind){
+    if(-not(Test-Path -LiteralPath $Path)){return $false}
+    Assert-Plain $Path
+    $file=Get-Item -LiteralPath $Path
+    if($file.Length -gt 2MB){throw 'Unexpected installer log size.'}
+    $tail=@(Get-Content -LiteralPath $Path -Tail 12)
+    $success=if($Kind -ceq 'uninstall'){'Uninstallation process succeeded.'}elseif($Kind -ceq 'setup'){'Installation process succeeded.'}else{throw 'Unknown installer operation.'}
+    $closed=@($tail|Where-Object{$_ -match '\sLog closed\.$'}).Count -gt 0
+    $succeeded=@($tail|Where-Object{$_.EndsWith('   '+$success,[StringComparison]::Ordinal)}).Count -gt 0
+    return $closed -and $succeeded -and ($Kind -cne 'uninstall' -or @($tail|Where-Object{$_ -match '\sRemoved all\? Yes$'}).Count -gt 0)
+}
 function Process-Identity($Process){
     # Start-Process's lazy .NET Path/MainModule can be empty at startup. The
     # original process handle/creation plus a fresh CIM row must agree instead.

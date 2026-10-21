@@ -16,9 +16,32 @@ if((Test-Path -LiteralPath $profileParent) -or @(App-Registration).Count){throw 
 $id=[guid]::NewGuid().ToString();[void][IO.Directory]::CreateDirectory($out)
 foreach($folder in @('reports','logs','temp','fixtures')){[void][IO.Directory]::CreateDirectory((Join-Path $out $folder))}
 $env:TEMP=Join-Path $out 'temp';$env:TMP=$env:TEMP
+$installerTemp=$env:TEMP;[IO.File]::WriteAllText((Join-Path $installerTemp '.distribution-owner'),$id);$caseStarted=[DateTime]::UtcNow.ToFileTimeUtc()
 $report=[ordered]@{schema=1;passed=$false;startedUtc=[DateTime]::UtcNow.ToString('o');host=$hostScope;sourceCommit=$env:GITHUB_SHA;candidateSha256=$info.appSha256;version=$info.version;tests=@();runtimeBefore=@(Runtime-Registration);runtimeFilesBefore=@(Known-RuntimeFiles);missingRuntimeBootstrap='notRun';actualUiReadiness=@();rendering=@();cleanup=@();remainingOwned=@();error=$null;limits=@('Hosted Windows Server images contain developer dependencies; not clean Windows 10/11.','The default hosted account may be elevated with UAC disabled; no standard-user/UAC claim.','No genuine expired/fresh Epic login or key activation is automated.','No physical GPU measurement; only observed software-rendering flags.','No updater signing key/manifest/transition is involved in this lifecycle.','No runtime removal, fake registry hiding, firewall changes or offline network simulation. Runtime file absence is limited to canonical Evergreen install locations.')}
-$pins=New-Object System.Collections.Generic.List[object];$installed=Join-Path $out 'fixtures/Installed';$portable=Join-Path $out 'fixtures/Portable';$sentinels=@{};$uninstallerHashes=@{};$profileOwned=$false
+$pins=New-Object System.Collections.Generic.List[object];$installed=Join-Path $out 'fixtures/Installed';$portable=Join-Path $out 'fixtures/Portable';$sentinels=@{};$script:uninstallerPin=$null;$profileOwned=$false
 $installerPins=New-Object System.Collections.Generic.List[object];$script:installerTrackingUncertain=$false;$script:appTrackingUncertain=$false;$script:lifecycleStage='before-first-setup'
+function Observe-TempInstaller{
+    # Inno can hand off to a worker after its bootstrap exits. Its image must
+    # belong to this fresh GUID-marked temp tree; a process name is never scope.
+    Assert-Plain $installerTemp
+    if([IO.File]::ReadAllText((Join-Path $installerTemp '.distribution-owner')) -cne $id){throw 'Installer temp owner changed.'}
+    $prefix=[IO.Path]::GetFullPath($installerTemp).TrimEnd('\','/')+[IO.Path]::DirectorySeparatorChar
+    foreach($row in @(Get-CimInstance Win32_Process -OperationTimeoutSec 2)){
+        $image=[string]$row.ExecutablePath
+        if([string]::IsNullOrWhiteSpace($image) -or -not $image.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){continue}
+        $process=$null
+        try{
+            if(-not $row.CreationDate -or $row.CreationDate.ToUniversalTime().ToFileTimeUtc() -lt $caseStarted){throw 'Unexpected process predates its owned temp scope.'}
+            $process=Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue;if(-not $process){continue}
+            $identity=Process-Identity $process
+            if(-not $identity){if($process.HasExited){continue};throw 'Owned temp worker live identity unavailable.'}
+            if([Math]::Abs($identity.created-$row.CreationDate.ToUniversalTime().ToFileTimeUtc()) -ge 10 -or -not(Same-Path $identity.path $image)){throw 'Owned temp worker identity changed.'}
+            $known=@($installerPins|Where-Object{$_.pid -eq $identity.pid -and $_.created -eq $identity.created})
+            if($known.Count){if(-not $known[0].ContainsKey('sha256')){$known[0].sha256=Test-Hash $identity.path;$known[0].scope='fresh-owned-temp'};continue}
+            $identity.sha256=Test-Hash $identity.path;$identity.scope='fresh-owned-temp';$installerPins.Add($identity)
+        }catch{if($process){$process.Refresh();if($process.HasExited){continue}};$script:installerTrackingUncertain=$true;throw}
+    }
+}
 function Observe-Installer($Pin){
     foreach($row in @(Owned-Tree $Pin)){
         if(@($installerPins|Where-Object{$_.pid -eq $row.pid -and $_.created -eq $row.created}).Count){continue}
@@ -26,22 +49,34 @@ function Observe-Installer($Pin){
         if($child){try{$identity=Process-Identity $child;if(-not $identity){if($child.HasExited){continue};throw 'Installer descendant live image cannot be confirmed.'};if($identity.created -ne $row.created){throw 'Installer descendant identity changed.'};$installerPins.Add($identity)}catch{$script:installerTrackingUncertain=$true;throw}}
     }
 }
-function Wait-Installer($Process,[string]$Executable,[int]$TimeoutMilliseconds){
+function Wait-Installer($Process,[string]$Executable,[int]$TimeoutMilliseconds,[string]$CompletionLog,[string]$Kind,[string]$OldData){
     # A timeout must retain profile/fixture data while the real installer can
     # still use it. Track the bootstrap process and observed descendants; never
     # force-kill Setup or an uninstaller to make cleanup appear successful.
     $script:installerTrackingUncertain=$true
     $pin=Pin-Process $Process $Executable;$installerPins.Add($pin)
-    $script:installerTrackingUncertain=$false;$deadline=[DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
-    $bootstrapExited=$false
+    $deadline=[DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $bootstrapExited=$false;$stableSince=$null
     do{
+        Observe-TempInstaller
         foreach($known in @($installerPins.ToArray())){if(Find-Pinned $known){Observe-Installer $known}}
         if(-not $bootstrapExited){$bootstrapExited=$Process.WaitForExit(500)}
         if($bootstrapExited){
             $left=@($installerPins|Where-Object{Find-Pinned $_})
-            if(-not $left.Count){$Process.Refresh();return}
-            # Inno's bootstrap can exit just before its observed _unins.tmp.
-            # Drain those exact identities within the ORIGINAL deadline.
+            $complete=Inno-LogComplete $CompletionLog $Kind
+            $oldPairGone=$Kind -cne 'uninstall' -or (-not(Test-Path -LiteralPath $Executable) -and -not(Test-Path -LiteralPath $OldData))
+            if(-not $left.Count -and $complete -and $oldPairGone){
+                if($null -eq $stableSince){$stableSince=[DateTime]::UtcNow}
+                if(([DateTime]::UtcNow-$stableSince).TotalMilliseconds -ge 500){
+                    $Process.Refresh()
+                    if(-not $report.Contains('installerWaits')){$report['installerWaits']=@()}
+                    $report.installerWaits+=@{operation=$Kind;log=$CompletionLog;logComplete=$complete;oldPairAbsent=$oldPairGone;stableQuiescentMilliseconds=500;observed=@($installerPins.ToArray());finishedUtc=[DateTime]::UtcNow.ToString('o')}
+                    $script:installerTrackingUncertain=$false
+                    return
+                }
+            }else{$stableSince=$null}
+            # Completion belongs to this operation's log and exact old pair,
+            # as well as observed identities. Keep the ORIGINAL deadline.
             Start-Sleep -Milliseconds 100
         }
     }while([DateTime]::UtcNow -lt $deadline)
@@ -49,6 +84,7 @@ function Wait-Installer($Process,[string]$Executable,[int]$TimeoutMilliseconds){
 }
 function Assert-InstallerQuiescent{
     if($script:installerTrackingUncertain){throw 'Installer identity could not be confirmed; no data cleanup.'}
+    Observe-TempInstaller
     $left=@($installerPins|Where-Object{Find-Pinned $_})
     if($left.Count){$report.remainingOwned+=@($left|ForEach-Object{@{pid=$_.pid;created=$_.created;kind='installer';path=$_.path}});throw 'Owned installer identities remain; no data cleanup.'}
 }
@@ -67,28 +103,36 @@ function Invoke-Setup([string]$Name){
     $script:lifecycleStage=$Name+'-setup'
     Assert-Plain $installed;$log=Join-Path $out ('logs/'+$Name+'.log')
     $p=Start-Process -FilePath $setup -ArgumentList @('/SP-','/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/LANG=en',('/DIR="'+$installed+'"'),('/LOG="'+$log+'"')) -WindowStyle Hidden -PassThru
-    Wait-Installer $p $setup 600000
+    Wait-Installer $p $setup 600000 $log 'setup' ''
     Assert-InstallerQuiescent
     Step $Name ($p.ExitCode -eq 0 -and (Test-Hash (Join-Path $installed 'unreal-manager.exe')) -ceq $info.appSha256 -and -not(Test-Path -LiteralPath (Join-Path $installed 'portable.marker'))) @{exitCode=$p.ExitCode;runtimeAfter=@(Runtime-Registration)}
-    foreach($fileName in @('unins000.exe','unins000.dat')){$uninstallerHashes[$fileName]=Test-Hash (Join-Path $installed $fileName)}
+    $pair=Registered-Uninstaller $installed @(App-Registration)
+    $script:uninstallerPin=@{exe=$pair.exe;dat=$pair.dat;exeSha256=(Test-Hash $pair.exe);datSha256=(Test-Hash $pair.dat)}
     Preserved
 }
 function Invoke-Uninstall([string]$Name){
     $script:lifecycleStage=$Name+'-uninstall'
-    $records=@(App-Registration);if(-not $records.Count){throw 'Owned app uninstall registration missing.'}
-    foreach($record in $records){if(-not $record.installLocation -or -not(Same-Path $record.installLocation $installed)){throw 'Uninstall registry location is not this owned case.'}}
-    foreach($fileName in @('unins000.exe','unins000.dat')){if((Test-Hash (Join-Path $installed $fileName)) -cne $uninstallerHashes[$fileName]){throw 'Owned uninstaller EXE/DAT changed.'}}
-    $p=Start-Process -FilePath (Join-Path $installed 'unins000.exe') -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+(Join-Path $out ('logs/'+$Name+'.log'))+'"')) -WindowStyle Hidden -PassThru
-    Wait-Installer $p (Join-Path $installed 'unins000.exe') 180000
+    $pair=Registered-Uninstaller $installed @(App-Registration)
+    if(-not $script:uninstallerPin -or -not(Same-Path $pair.exe $script:uninstallerPin.exe) -or -not(Same-Path $pair.dat $script:uninstallerPin.dat) -or (Test-Hash $pair.exe) -cne $script:uninstallerPin.exeSha256 -or (Test-Hash $pair.dat) -cne $script:uninstallerPin.datSha256){throw 'Owned uninstaller EXE/DAT or registry pointer changed.'}
+    $log=Join-Path $out ('logs/'+$Name+'.log')
+    $p=Start-Process -FilePath $pair.exe -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+$log+'"')) -WindowStyle Hidden -PassThru
+    Wait-Installer $p $pair.exe 180000 $log 'uninstall' $pair.dat
     Assert-InstallerQuiescent
     Preserved;Step $Name ($p.ExitCode -eq 0 -and -not(Test-Path -LiteralPath (Join-Path $installed 'unreal-manager.exe')) -and @(App-Registration).Count -eq 0) @{exitCode=$p.ExitCode;dataAndSyntheticSentinelsPreserved=$true}
 }
 function Close-Own($Pin){
+    $script:appTrackingUncertain=$true
+    $close=@{pid=$Pin.pid;created=$Pin.created;requested=$false;exitCode=$null;descendantsAbsent=$false}
+    if(-not $report.Contains('normalCloses')){$report['normalCloses']=@()};$report.normalCloses+=@($close)
     $tree=@(Owned-Tree $Pin);$p=Find-Pinned $Pin
-    if($p){if(-not $p.CloseMainWindow() -or -not $p.WaitForExit(15000)){throw 'Owned app did not close normally; no force-kill attempted.'}}
+    if(-not $p){throw 'Owned app exited before the normal-close request; this is not a normal-close pass.'}
+    $close.requested=$p.CloseMainWindow()
+    if(-not $close.requested -or -not $p.WaitForExit(15000)){throw 'Owned app did not close normally; no force-kill attempted.'}
+    $p.Refresh();$close.exitCode=$p.ExitCode;if($close.exitCode -ne 0){throw ('Owned app normal-close exit code was '+$close.exitCode+'.')}
     $deadline=[DateTime]::UtcNow.AddSeconds(10)
     do{$left=@();foreach($row in $tree){$child=Get-Process -Id $row.pid -ErrorAction SilentlyContinue;if($child -and $child.StartTime.ToUniversalTime().ToFileTimeUtc() -eq $row.created){$left+=$row}};if($left.Count){Start-Sleep -Milliseconds 200}}while($left.Count -and [DateTime]::UtcNow -lt $deadline)
     if($left.Count){$report.remainingOwned=$left;throw 'Observed owned descendant remains; fixture data retained.'}
+    $close.descendantsAbsent=$true;$script:appTrackingUncertain=$false
 }
 function Launch-And-Verify([string]$Name,[string]$Folder){
     $script:lifecycleStage=$Name+'-launch-and-pin'
@@ -144,7 +188,7 @@ finally{
         if($script:appTrackingUncertain){throw 'Launched app identity is uncertain; no uninstall or fixture data cleanup.'}
         if($report.remainingOwned.Count){throw 'Owned descendant identities remain; no data cleanup.'}
         Assert-InstallerQuiescent
-        if((Test-Path -LiteralPath (Join-Path $installed 'unins000.exe')) -and $uninstallerHashes.Count -eq 2){Invoke-Uninstall 'cleanup-uninstall'}
+        if(@(App-Registration).Count -and $script:uninstallerPin){Invoke-Uninstall 'cleanup-uninstall'}
         Assert-InstallerQuiescent
         if(@(App-Registration).Count){throw 'App uninstall registration remains; profile retained.'}
         if($profileOwned){$report.cleanup+=@{target='own blank installed profile';result=(Remove-OwnedTree $profileParent (Join-Path $env:LOCALAPPDATA 'UnrealManager') $id)}}
