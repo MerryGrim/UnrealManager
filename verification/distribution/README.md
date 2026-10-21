@@ -49,6 +49,11 @@ Install uses a unique app directory, native Inno logging, standard-user silent e
 
 ## Missing WebView2 and bootstrapper cases
 
+WebView2 is a runtime requirement for the application's interface, including
+the portable edition. These cases check a first installation before that
+component is present, together with useful failure messages when it cannot be
+obtained. They do not claim that the interface works without WebView2.
+
 Create a guest image that genuinely lacks WebView2. The kit will **not uninstall WebView2** or forge its registry to simulate absence. `Initialize -ExpectedWebView missing` refuses a guest whose runtime registration is present. Detection matches Setup's four HKCU/HKLM 32/64-bit registry checks, rather than claiming the registry proves full runtime health.
 
 For **online** installed mode, initialize with `-Network online`, run `Install`, inspect main UI, snapshot, close, uninstall. Setup embeds the Microsoft-signed **online Evergreen bootstrapper**, not a complete offline WebView2 runtime. Bootstrapper network/proxy/UAC behavior remains actual VM acceptance; the kit does not infer it from package validation.
