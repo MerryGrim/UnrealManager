@@ -35,9 +35,51 @@ function App-Registration {
         try{$key=$base.OpenSubKey('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{61185C58-31CF-4783-BA27-429C3454B9A5}_is1');if($key){try{@{hive=[string]$hive;view=[string]$view;installLocation=[string]$key.GetValue('InstallLocation')}}finally{$key.Dispose()}}}finally{$base.Dispose()}
     }}
 }
-function Same-Path([string]$Left,[string]$Right){[IO.Path]::GetFullPath($Left).TrimEnd('\','/').Equals([IO.Path]::GetFullPath($Right).TrimEnd('\','/'),[StringComparison]::OrdinalIgnoreCase)}
-function Pin-Process($Process,[string]$ExpectedPath){$Process.Refresh();if(-not(Same-Path $Process.Path $ExpectedPath)){throw 'Test process image mismatch.'};@{pid=$Process.Id;created=$Process.StartTime.ToUniversalTime().ToFileTimeUtc();path=$Process.Path}}
-function Find-Pinned($Pin){$p=Get-Process -Id $Pin.pid -ErrorAction SilentlyContinue;if($p){try{if($p.StartTime.ToUniversalTime().ToFileTimeUtc() -eq $Pin.created -and (Same-Path $p.Path $Pin.path)){return $p}}catch{throw 'Cannot confirm pinned process identity.'}}}
+function Same-Path([string]$Left,[string]$Right){if([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)){throw 'Cannot compare an empty process or fixture path.'};[IO.Path]::GetFullPath($Left).TrimEnd('\','/').Equals([IO.Path]::GetFullPath($Right).TrimEnd('\','/'),[StringComparison]::OrdinalIgnoreCase)}
+function Process-Identity($Process){
+    # Start-Process's lazy .NET Path/MainModule can be empty at startup. The
+    # original process handle/creation plus a fresh CIM row must agree instead.
+    $Process.Refresh();if($Process.HasExited){return}
+    $created=$Process.StartTime.ToUniversalTime().ToFileTimeUtc()
+    $rows=@(Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$Process.Id) -OperationTimeoutSec 2)
+    if($rows.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$rows[0].ExecutablePath) -or -not $rows[0].CreationDate){if($Process.HasExited){return};return}
+    if([Math]::Abs($rows[0].CreationDate.ToUniversalTime().ToFileTimeUtc()-$created) -ge 10){throw 'Fresh process creation identity differs from its original handle.'}
+    if($Process.HasExited){return}
+    return @{pid=$Process.Id;created=$created;path=[string]$rows[0].ExecutablePath}
+}
+function Pin-Process($Process,[string]$ExpectedPath,[switch]$FreshImage){
+    if([string]::IsNullOrWhiteSpace($ExpectedPath)){throw 'Expected test process image is missing.'}
+    if(-not $FreshImage){
+        # Keep the already-proven image fast path for short-lived diskpart,
+        # libtest and installer probes. A missing/mismatched lazy path still
+        # falls through to strict CIM identity; it is never assumed correct.
+        try{
+            $Process.Refresh()
+            if(-not $Process.HasExited){$created=$Process.StartTime.ToUniversalTime().ToFileTimeUtc();$image=[string]$Process.Path;if(-not [string]::IsNullOrWhiteSpace($image) -and (Same-Path $image $ExpectedPath)){return @{pid=$Process.Id;created=$created;path=$image}}}
+        }catch{ }
+    }
+    # Two-second retry window plus at most one in-flight, separately timed CIM
+    # call. This is not a promise that an OS provider always returns in 2s.
+    $deadline=[DateTime]::UtcNow.AddSeconds(2)
+    do{
+        $identity=Process-Identity $Process
+        if($identity){if(-not(Same-Path $identity.path $ExpectedPath)){throw ('Test process image mismatch: expected="'+$ExpectedPath+'", observed="'+$identity.path+'".')};return $identity}
+        if($Process.HasExited){throw ('Test process exited before identity/readiness confirmation: pid='+$Process.Id+', exit='+$Process.ExitCode+'.')}
+        Start-Sleep -Milliseconds 50
+    }while([DateTime]::UtcNow -lt $deadline)
+    throw ('Cannot confirm live test process image: pid='+$Process.Id+'. Fixture data must be retained.')
+}
+function Find-Pinned($Pin){
+    $p=Get-Process -Id $Pin.pid -ErrorAction SilentlyContinue;if(-not $p){return}
+    try{
+        if($p.HasExited -or $p.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $Pin.created){return}
+        $identity=Process-Identity $p
+        if(-not $identity){if($p.HasExited){return};throw 'Live image identity unavailable.'}
+        if($identity.created -ne $Pin.created){return}
+        if(-not(Same-Path $identity.path $Pin.path)){throw 'Pinned live image path changed.'}
+        return $p
+    }catch{if($p.HasExited){return};throw ('Cannot confirm pinned process identity: '+$_.Exception.Message)}
+}
 function Owned-Tree($Pin){
     $root=Find-Pinned $Pin;if(-not $root){return}
     $all=@(Get-CimInstance Win32_Process);$ids=@{};$ids[[int]$Pin.pid]=[long]$Pin.created;$changed=$true
