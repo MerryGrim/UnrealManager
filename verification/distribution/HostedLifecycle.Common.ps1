@@ -104,6 +104,56 @@ function Find-Pinned($Pin){
         return $p
     }catch{if($p.HasExited){return};throw ('Cannot confirm pinned process identity: '+$_.Exception.Message)}
 }
+function Open-OwnedExitHandle($Pin){
+    if(-not ('UmDistribution.VerifiedProcessHandle' -as [type])){
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace UmDistribution {
+ public sealed class VerifiedProcessHandle : IDisposable {
+  IntPtr handle;
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder image, ref int length);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr process, uint timeout);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  public VerifiedProcessHandle(int pid, long expectedCreated, string expectedImage) {
+   handle=OpenProcess(0x00101000,false,pid); // SYNCHRONIZE | QUERY_LIMITED_INFORMATION
+   if(handle==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+   try {
+    long created, exited, kernel, user;
+    if(!GetProcessTimes(handle,out created,out exited,out kernel,out user)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    if(created!=expectedCreated) throw new InvalidOperationException("Owned process creation identity changed.");
+    int length=32768; var image=new StringBuilder(length);
+    if(!QueryFullProcessImageName(handle,0,image,ref length)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    if(!String.Equals(Path.GetFullPath(image.ToString()).TrimEnd('\\'),Path.GetFullPath(expectedImage).TrimEnd('\\'),StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Owned process image identity changed.");
+    if(Wait(0)) throw new InvalidOperationException("Owned process already exited before close-handle capture.");
+   } catch { Dispose(); throw; }
+  }
+  public bool Wait(int milliseconds) {
+   if(handle==IntPtr.Zero || milliseconds<0 || milliseconds>30000) throw new InvalidOperationException("Invalid owned process wait.");
+   uint result=WaitForSingleObject(handle,(uint)milliseconds);
+   if(result==0) return true;
+   if(result==258) return false;
+   throw new Win32Exception(Marshal.GetLastWin32Error());
+  }
+  public int ExitCode() {
+   if(!Wait(0)) throw new InvalidOperationException("Owned process exit code requested before termination.");
+   uint code;
+   if(!GetExitCodeProcess(handle,out code)) throw new Win32Exception(Marshal.GetLastWin32Error());
+   return unchecked((int)code);
+  }
+  public void Dispose() { if(handle!=IntPtr.Zero) { CloseHandle(handle);handle=IntPtr.Zero; } }
+ }
+}
+'@
+    }
+    return [UmDistribution.VerifiedProcessHandle]::new([int]$Pin.pid,[long]$Pin.created,[string]$Pin.path)
+}
 function Split-WindowsCommandLine([string]$Text){
     if([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 32767 -or $Text.IndexOf([char]0) -ge 0){throw 'Command-line input unavailable or outside Windows bounds.'}
     if(-not ('UmDistribution.CommandLine' -as [type])){

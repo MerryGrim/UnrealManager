@@ -6,9 +6,18 @@ $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 $started=[DateTime]::UtcNow;$deadline=$started.AddSeconds(25)
 [Console]::Out.WriteLine('UIA stage: host-classification-start '+$started.ToString('o'))
 . (Join-Path $PSScriptRoot 'HostedLifecycle.Common.ps1')
+# Publish script-entry before the comparatively slow CIM/UIAutomation prelude.
+# Only this fresh workspace-owned output is written before full host checking.
+if($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or -not $env:GITHUB_WORKSPACE){throw 'UIA probe is restricted to its hosted job.'}
+$allowed=[IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'verification/current'))+[IO.Path]::DirectorySeparatorChar
+if(-not [IO.Path]::GetFullPath($OutputPath).StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase)){throw 'UIA output is outside its workspace evidence scope.'}
+Assert-Plain $OutputPath
+foreach($candidate in @($OutputPath,($OutputPath+'.stages.jsonl'),($OutputPath+'.started.json'),($OutputPath+'.started.tmp'))){if(Test-Path -LiteralPath $candidate){throw 'UI report/startup evidence already exists.'}}
+$self=[Diagnostics.Process]::GetCurrentProcess()
+New-Json ($OutputPath+'.started.tmp') @{schema=1;pid=$PID;created=$self.StartTime.ToUniversalTime().ToFileTimeUtc();enteredUtc=$started.ToString('o');innerBudgetMilliseconds=25000}
+[IO.File]::Move(($OutputPath+'.started.tmp'),($OutputPath+'.started.json'))
 $hostScope=Assert-HostedWindowsServer
-Assert-Plain $Executable;Assert-Plain $OutputPath
-if((Test-Path -LiteralPath $OutputPath) -or (Test-Path -LiteralPath ($OutputPath+'.stages.jsonl'))){throw 'UI report/stages already exist.'}
+Assert-Plain $Executable
 $required=@('Engines','Library','Projects');$pin=@{pid=$ProcessId;created=$CreatedFileTime;path=$Executable}
 $report=@{schema=1;ready=$false;method='Actual visible React navigation and version via UIA name or bounded TextPattern range';source='Native EXE/WebView only; no mocked IPC, DOM injection or PE-version readiness fallback';host=$hostScope;matchedButtons=@();versionObserved=$false;versionSource=$null;versionRectangle=$null;aboutActions=@();textPatternErrors=0;error=$null}
 function Stage([string]$Name){

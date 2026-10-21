@@ -34,7 +34,7 @@ The runtime harness starts only with no existing application process/profile/uni
 
 1. Actual per-user Setup to a unique directory; exact candidate hash and absence of portable marker.
 2. Actual native EXE plus WebView. A separate bounded Windows UIAutomation probe must see the real React navigation buttons and app version. Process creation alone is not UI readiness; missing UIA/readiness fails this gate rather than becoming a mocked pass.
-3. Normal close and observed descendant quiescence; sentinel preservation.
+3. Normal close with a verified native exit code and observed descendant quiescence; sentinel preservation.
 4. Actual native uninstall, profile preservation, reinstall, actual UI again, close and final uninstall. Both uninstaller EXE and DAT hashes and every fixed-AppId registration location are checked before uninstall.
 5. Exact portable ZIP extraction, actual UI/readiness/close and marker/Data preservation.
 
@@ -56,6 +56,5 @@ Only after the pinned native test and diskpart identities have exited may the wr
 - The official image lists identify [Windows Server 2022](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md) and [Server 2025](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md), with preinstalled development software. These are not clean Windows 10/11 consumer images and cannot establish dependency closure without development tools.
 - [Microsoft WebView2 distribution](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution) distinguishes the online bootstrapper from the standalone offline runtime. Existing-runtime installation or a repaired registry branch is not absent-runtime/offline acceptance.
 - [Inno Setup's official download page](https://jrsoftware.org/isdl.php) links the pinned compiler and identifies its Pyrsys publisher signature.
-- [Windows 11 Enterprise evaluation](https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise) provides a 90-day ISO evaluation, with registration and a multi-GB download/installation. The former [developer VM URL](https://developer.microsoft.com/en-us/windows/downloads/virtual-machines/) currently redirects to general developer-environment documentation. No current small official ready-made desktop VM was established by this audit.
 
-Non-admin QEMU/TCG could in principle supply CPU-only virtualization, but the preparation host has no QEMU/OS image/firmware/TPM bundle. A real Windows 11 guest entails substantial image download, disk/RAM and setup; OS requirements must not be bypassed and then presented as normal supported hardware. No OS image or QEMU tool was downloaded or run. Clean desktop, genuinely offline missing-runtime, standard-user/UAC, real DPI and fresh/expired Epic acceptance remain separate gates until their own actual evidence exists.
+Clean desktop, genuinely offline missing-runtime, standard-user/UAC, real DPI and fresh/expired Epic acceptance remain separate gates until their own actual evidence exists. Use disposable, supported Windows guest images for these checks. Do not remove shared components from a working desktop or bypass OS requirements to simulate that evidence.
