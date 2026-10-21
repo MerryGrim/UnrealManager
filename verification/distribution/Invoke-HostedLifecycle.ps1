@@ -33,9 +33,17 @@ function Wait-Installer($Process,[string]$Executable,[int]$TimeoutMilliseconds){
     $script:installerTrackingUncertain=$true
     $pin=Pin-Process $Process $Executable;$installerPins.Add($pin)
     $script:installerTrackingUncertain=$false;$deadline=[DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $bootstrapExited=$false
     do{
         foreach($known in @($installerPins.ToArray())){if(Find-Pinned $known){Observe-Installer $known}}
-        if($Process.WaitForExit(500)){$Process.Refresh();return}
+        if(-not $bootstrapExited){$bootstrapExited=$Process.WaitForExit(500)}
+        if($bootstrapExited){
+            $left=@($installerPins|Where-Object{Find-Pinned $_})
+            if(-not $left.Count){$Process.Refresh();return}
+            # Inno's bootstrap can exit just before its observed _unins.tmp.
+            # Drain those exact identities within the ORIGINAL deadline.
+            Start-Sleep -Milliseconds 100
+        }
     }while([DateTime]::UtcNow -lt $deadline)
     throw 'Owned installer timeout; no force-kill attempted. Fixture data will be retained until quiescent.'
 }
@@ -45,6 +53,7 @@ function Assert-InstallerQuiescent{
     if($left.Count){$report.remainingOwned+=@($left|ForEach-Object{@{pid=$_.pid;created=$_.created;kind='installer';path=$_.path}});throw 'Owned installer identities remain; no data cleanup.'}
 }
 function Step([string]$Name,[bool]$Passed,$Details){$report.tests+=@{name=$Name;passed=$Passed;details=$Details};if(-not $Passed){throw ('Lifecycle assertion failed: '+$Name)}}
+function Assert-UiProbeExit($ExitCode){if($null -eq $ExitCode -or $ExitCode -ne 0){throw 'UIA probe did not exit successfully; readiness report is not accepted.'}}
 function Seed-Data([string]$Root){
     Assert-Plain $Root;foreach($part in @('Settings','Account','Tasks')){[void][IO.Directory]::CreateDirectory((Join-Path $Root $part))}
     [IO.File]::WriteAllText((Join-Path $Root '.distribution-owner'),$id)
@@ -97,8 +106,16 @@ function Launch-And-Verify([string]$Name,[string]$Folder){
     }
     $script:appTrackingUncertain=$false;$script:lifecycleStage=$Name+'-actual-ui-readiness'
     $ui=Join-Path $out ('reports/'+$Name+'-ui.json');$ps=Join-Path $env:WINDIR 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    $probe=Start-Process -FilePath $ps -ArgumentList @('-NoProfile','-STA','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $PSScriptRoot 'Get-HostedUiReadiness.ps1')+'"'),'-ProcessId',$pin.pid,'-CreatedFileTime',$pin.created,'-Executable',('"'+$exe+'"'),'-ExpectedVersion',$info.version,'-OutputPath',('"'+$ui+'"')) -WindowStyle Hidden -PassThru
-    if(-not $probe.WaitForExit(35000)){ $probe.Kill();[void]$probe.WaitForExit(5000);throw 'Own UIA test probe timed out; app was not force-killed.' }
+    $probe=Start-Process -FilePath $ps -ArgumentList @('-NoProfile','-MTA','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $PSScriptRoot 'Get-HostedUiReadiness.ps1')+'"'),'-ProcessId',$pin.pid,'-CreatedFileTime',$pin.created,'-Executable',('"'+$exe+'"'),'-ExpectedVersion',$info.version,'-OutputPath',('"'+$ui+'"')) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $out ('logs/'+$Name+'-uia.stdout.log')) -RedirectStandardError (Join-Path $out ('logs/'+$Name+'-uia.stderr.log')) -PassThru
+    $probeState=@{mode=$Name;pid=$probe.Id;startedUtc=[DateTime]::UtcNow.ToString('o');timedOut=$false;exitCode=$null;lastCheckpoint=$null}
+    $report['uiaProbe']=$probeState
+    $exited=$probe.WaitForExit(35000)
+    if(-not $exited){$probeState.timedOut=$true;$probe.Kill();[void]$probe.WaitForExit(5000)}
+    $probe.Refresh();if($probe.HasExited){$probeState.exitCode=$probe.ExitCode}
+    $stageFile=$ui+'.stages.jsonl'
+    if(Test-Path -LiteralPath $stageFile){$probeState.lastCheckpoint=Get-Content -LiteralPath $stageFile -Tail 1|ConvertFrom-Json}
+    if(-not $exited){throw 'Own UIA test probe timed out; app was not force-killed. Last stage and probe output retained.'}
+    Assert-UiProbeExit $probeState.exitCode
     if(-not(Test-Path -LiteralPath $ui)){throw 'UIA probe produced no readiness report.'}
     $uiResult=Get-Content -LiteralPath $ui -Raw|ConvertFrom-Json;$report.actualUiReadiness+=@{mode=$Name;ready=$uiResult.ready;method=$uiResult.method}
     $tree=@(Owned-Tree $pin);$browsers=@($tree|Where-Object{$_.browserRoot});$unknown=@($tree|Where-Object{$_.name -ieq 'msedgewebview2.exe' -and -not $_.commandLineReadable})

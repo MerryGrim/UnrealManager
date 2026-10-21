@@ -1,33 +1,83 @@
 #requires -Version 5.1
-# Read actual UIA from a pinned test-owned window; no input, DOM injection or CDP.
+# Actual UIA only; fixed About actions never invoke login or another window.
 [CmdletBinding()]
 param([Parameter(Mandatory)][int]$ProcessId,[Parameter(Mandatory)][long]$CreatedFileTime,[Parameter(Mandatory)][string]$Executable,[Parameter(Mandatory)][string]$ExpectedVersion,[Parameter(Mandatory)][string]$OutputPath)
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+$started=[DateTime]::UtcNow;$deadline=$started.AddSeconds(25)
+[Console]::Out.WriteLine('UIA stage: host-classification-start '+$started.ToString('o'))
 . (Join-Path $PSScriptRoot 'HostedLifecycle.Common.ps1')
 $hostScope=Assert-HostedWindowsServer
 Assert-Plain $Executable;Assert-Plain $OutputPath
-if(Test-Path -LiteralPath $OutputPath){throw 'UI report exists.'}
-Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
-$required=@('Engines','Library','Projects')
-$report=@{schema=1;ready=$false;method='Windows UIAutomation: real React navigation button names and visible app version';source='Actual native EXE/WebView, no mocked IPC or injected script';host=$hostScope;matchedButtons=@();versionObserved=$false;error=$null}
-$deadline=[DateTime]::UtcNow.AddSeconds(25)
+if((Test-Path -LiteralPath $OutputPath) -or (Test-Path -LiteralPath ($OutputPath+'.stages.jsonl'))){throw 'UI report/stages already exist.'}
+$required=@('Engines','Library','Projects');$pin=@{pid=$ProcessId;created=$CreatedFileTime;path=$Executable}
+$report=@{schema=1;ready=$false;method='Actual visible React navigation and version via UIA name or bounded TextPattern range';source='Native EXE/WebView only; no mocked IPC, DOM injection or PE-version readiness fallback';host=$hostScope;matchedButtons=@();versionObserved=$false;versionSource=$null;versionRectangle=$null;aboutActions=@();textPatternErrors=0;error=$null}
+function Stage([string]$Name){
+    $line=@{stage=$Name;utc=[DateTime]::UtcNow.ToString('o');elapsedMs=[int]([DateTime]::UtcNow-$started).TotalMilliseconds}|ConvertTo-Json -Compress
+    [IO.File]::AppendAllText(($OutputPath+'.stages.jsonl'),$line+[Environment]::NewLine,[Text.UTF8Encoding]::new($false));[Console]::Out.WriteLine($line)
+}
+function Intersects-Window($Rectangle,$Window){
+    foreach($n in @($Rectangle.X,$Rectangle.Y,$Rectangle.Width,$Rectangle.Height,$Window.X,$Window.Y,$Window.Width,$Window.Height)){if([double]::IsNaN($n) -or [double]::IsInfinity($n)){return $false}}
+    return $Rectangle.Width -gt 0 -and $Rectangle.Height -gt 0 -and $Window.Width -gt 0 -and $Window.Height -gt 0 -and $Rectangle.X -lt ($Window.X+$Window.Width) -and ($Rectangle.X+$Rectangle.Width) -gt $Window.X -and $Rectangle.Y -lt ($Window.Y+$Window.Height) -and ($Rectangle.Y+$Rectangle.Height) -gt $Window.Y
+}
+function Version-Matches([string]$Text){return $Text -match ('(?:^|\D)'+[regex]::Escape($ExpectedVersion)+'(?:$|\D)')}
+function Test-ActualUiReady([string[]]$Buttons,[bool]$VisibleVersion){return $VisibleVersion -and @($required|Where-Object{$_ -cin $Buttons}).Count -eq 3}
 try{
+ Stage 'automation-assemblies-start';Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes;Stage 'automation-assemblies-loaded'
+ $report['apartment']=[string][Threading.Thread]::CurrentThread.GetApartmentState()
+ if($report.apartment -cne 'MTA'){throw 'The isolated UIA probe must run in MTA.'}
  do{
-    $p=Get-Process -Id $ProcessId -ErrorAction Stop
-    if($p.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $CreatedFileTime -or -not(Same-Path $p.Path $Executable)){throw 'UI process identity changed.'}
-    $p.Refresh()
+    if([DateTime]::UtcNow -ge $deadline){break}
+    $p=Find-Pinned $pin;if(-not $p){throw 'Pinned UI process exited before readiness.'};$p.Refresh()
     if($p.MainWindowHandle -ne [IntPtr]::Zero){
-        $root=[Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)
-        $elements=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
-        $names=@();$buttons=@()
-        foreach($element in $elements){try{$name=$element.Current.Name;if($name){$names+=$name;if($element.Current.ControlType -eq [Windows.Automation.ControlType]::Button){$buttons+=$name}}}catch{}}
-        $report.matchedButtons=@($required|Where-Object{$_ -cin $buttons})
-        $report.versionObserved=@($names|Where-Object{$_ -match ('(?:^|\D)'+[regex]::Escape($ExpectedVersion)+'(?:$|\D)')}).Count -gt 0
-        if($report.matchedButtons.Count -eq $required.Count -and $report.versionObserved){$report.ready=$true;break}
+        Stage 'window-from-handle';$root=[Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle);$bounds=$root.Current.BoundingRectangle
+        $cache=[Windows.Automation.CacheRequest]::new()
+        foreach($property in @([Windows.Automation.AutomationElement]::NameProperty,[Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.AutomationElement]::IsOffscreenProperty,[Windows.Automation.AutomationElement]::BoundingRectangleProperty)){$cache.Add($property)}
+        $conditions=[Windows.Automation.Condition[]]@(
+            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Button),
+            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Text),
+            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::Document),
+            [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty,[Windows.Automation.ControlType]::MenuItem))
+        $active=$cache.Activate()
+        try{Stage 'cached-control-query';$elements=$root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.OrCondition]::new($conditions))}finally{$active.Dispose()}
+        $buttons=@();$documents=@();$aboutControl=$null
+        $nextAbout=if($report.aboutActions.Count -eq 0){'Account menu'}elseif($report.aboutActions.Count -eq 1){'About'}else{''}
+        foreach($element in $elements){try{
+            $c=$element.Cached
+            if($c.IsOffscreen -or -not(Intersects-Window $c.BoundingRectangle $bounds)){continue}
+            if($c.ControlType -eq [Windows.Automation.ControlType]::Button){$buttons+=$c.Name}
+            if(Version-Matches $c.Name){$report.versionObserved=$true;$report.versionSource=$(if($report.aboutActions.Count -eq 2){'About visible UIA name'}else{'Visible UIA name'});$report.versionRectangle=@($c.BoundingRectangle.X,$c.BoundingRectangle.Y,$c.BoundingRectangle.Width,$c.BoundingRectangle.Height)}
+            if($c.ControlType -eq [Windows.Automation.ControlType]::Document){$documents+=$element}
+            if($nextAbout -and $c.Name -ceq $nextAbout -and $c.ControlType -in @([Windows.Automation.ControlType]::Button,[Windows.Automation.ControlType]::MenuItem)){$aboutControl=$element}
+        }catch{}}
+        $matched=@($required|Where-Object{$_ -cin $buttons});if($matched.Count -eq 3){$report.matchedButtons=$matched}
+        foreach($document in $documents){
+            if($report.versionObserved){break}
+            Stage 'document-text-pattern'
+            try{
+                $pattern=$null
+                if($document.TryGetCurrentPattern([Windows.Automation.TextPattern]::Pattern,[ref]$pattern)){
+                    $range=$pattern.DocumentRange
+                    if(Version-Matches ($range.GetText(16384))){
+                        $match=$range.FindText($ExpectedVersion,$false,$false)
+                        if($match){foreach($r in $match.GetBoundingRectangles()){if(Intersects-Window $r $bounds){$report.versionObserved=$true;$report.versionSource=$(if($report.aboutActions.Count -eq 2){'About visible TextPattern range'}else{'Visible TextPattern range'});$report.versionRectangle=@($r.X,$r.Y,$r.Width,$r.Height);break}}}
+                    }
+                }
+            }catch{$report.textPatternErrors++;Stage 'document-text-unavailable'}
+        }
+        if(Test-ActualUiReady $report.matchedButtons $report.versionObserved){$report.ready=$true;break}
+        if($report.matchedButtons.Count -eq 3 -and -not $report.versionObserved -and $aboutControl){
+            # Only the two fixed, non-authentication controls in this pinned
+            # blank fixture window; revalidate instance immediately before input.
+            $live=Find-Pinned $pin;if(-not $live -or $live.MainWindowHandle -ne $p.MainWindowHandle){throw 'Pinned window changed before About action.'}
+            if($aboutControl.Current.IsOffscreen -or -not $aboutControl.Current.IsEnabled -or -not(Intersects-Window $aboutControl.Current.BoundingRectangle $bounds)){throw 'Fixed About control is not visible/enabled.'}
+            Stage ('invoke-fixed-'+$nextAbout)
+            $invoke=$aboutControl.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern);$invoke.Invoke();$report.aboutActions+=@($nextAbout)
+        }
     }
     Start-Sleep -Milliseconds 250
  }while([DateTime]::UtcNow -lt $deadline)
- if(-not $report.ready){$report.error='Actual React UI was not established by UIAutomation in this hosted desktop session.'}
-}catch{$report.error=$_.Exception.Message}
+ if(-not $report.ready){$report.error='Actual visible React navigation and version were not both established by UIAutomation.'}
+}catch{$report.error=$_.Exception.Message;$report['failureContext']=@{line=$_.InvocationInfo.ScriptLineNumber;stack=$_.ScriptStackTrace}}
+Stage 'probe-result';$report['elapsedMs']=[int]([DateTime]::UtcNow-$started).TotalMilliseconds
 New-Json $OutputPath $report
 if(-not $report.ready){exit 1}
