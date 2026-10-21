@@ -2,13 +2,14 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, process::{Child, Command}, time::{Duration, Instant}};
+use std::{collections::BTreeSet, fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, process::{Child, Command}, sync::atomic::{AtomicBool,Ordering}, time::{Duration, Instant}};
 
 pub(crate) const FILES: [&str; 5] = ["unreal-manager.exe", "README.txt", "LICENSE", "THIRD_PARTY_NOTICES.md", "THIRD-PARTY-LICENSES.txt"];
 const MAX_COMPRESSED: u64 = 64 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 96 * 1024 * 1024;
 const MAX_FILE: usize = 64 * 1024 * 1024;
 const JOURNAL: &str = ".um-app-update.json";
+static UI_ACKNOWLEDGED:AtomicBool=AtomicBool::new(false);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -225,6 +226,9 @@ fn helper_alive(j: &Journal) -> Result<bool, String> {
 }
 
 fn load_job(path: &Path, job_dir: &Path) -> Result<Job, String> {
+    load_job_for_recovery(path,job_dir,false)
+}
+fn load_job_for_recovery(path:&Path,job_dir:&Path,missing_exe:bool)->Result<Job,String>{
     if !same(&canonical(path)?, &job_dir.join("job.json")) { return Err("Update job must be job.json beside its helper".into()); }
     let mut job: Job = serde_json::from_slice(&read_limited(path, 32768)?).map_err(io)?;
     if job.schema != 1 || !valid_id(&job.id) || !matches!(job.mode.as_str(), "portable" | "installed") || job.parent_pid <= 4 || job.parent_created == 0 {
@@ -238,7 +242,7 @@ fn load_job(path: &Path, job_dir: &Path) -> Result<Job, String> {
     job.payload = canonical(&job.payload)?;
     if job.payload.parent().is_none_or(|p| !same(p, job_dir)) || job.payload.file_name().is_none() { return Err("Update payload is outside its job directory".into()); }
     if job.original_exe.file_name().and_then(|v| v.to_str()) != Some("unreal-manager.exe") { return Err("Invalid application executable name".into()); }
-    job.original_exe = canonical(&job.original_exe)?;
+    job.original_exe = if missing_exe {canonical(job.original_exe.parent().ok_or("Missing application folder")?)?.join("unreal-manager.exe")}else{canonical(&job.original_exe)?};
     Ok(job)
 }
 fn verified(job: &Job) -> Result<crate::app_updates::Manifest, String> {
@@ -299,7 +303,7 @@ fn load_journal(root: &Path) -> Result<Option<Journal>, String> {
     validate_journal(&journal, root)?; Ok(Some(journal))
 }
 fn journal_metadata(j: &Journal) -> Result<crate::app_updates::Manifest, String> {
-    let job = load_job(&j.job_dir.join("job.json"), &j.job_dir)?;
+    let job = load_job_for_recovery(&j.job_dir.join("job.json"), &j.job_dir,true)?;
     if job.id != j.id || job.mode != j.mode || !same(&job.original_exe, &j.original_exe) { return Err("Recovery job and journal disagree".into()); }
     // A restarted application has the target version, so validate signatures
     // directly here rather than applying the helper's strictly-newer check.
@@ -374,6 +378,71 @@ fn rollback(j: &Journal) -> Result<(), String> {
 fn crash_recovery_allowed(j: &Journal) -> Result<(), String> {
     if j.mode=="installed" && matches!(j.state.as_str(),"applying"|"needsRecovery") && j.operations.iter().any(|op|op.new_hash.is_none()) { return Err("Interrupted installer requires manual recovery. Application files and backups were preserved; automatic rollback was not attempted.".into()); }
     Ok(())
+}
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct RepairFile { name:String,old_hash:Option<String>,current_hash:Option<String> }
+#[derive(Clone,Serialize,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+struct RepairPreview {schema:u32,id:String,journal_sha256:String,archive:PathBuf,files:Vec<RepairFile>}
+fn repair_preview(j:&Journal)->Result<RepairPreview,String>{
+    let root=j.original_exe.parent().ok_or("Missing application folder")?;validate_journal(j,root)?;
+    if j.mode!="installed" || matches!(j.state.as_str(),"committed"|"rolledBack"){return Err("This journal does not require installed-update repair".into());}
+    let mut files=Vec::new();
+    for op in &j.operations {
+        let backup=stage(root,&j.id).join("backup").join(&op.name);
+        for path in [&backup,&root.join(&op.name)]{if path.exists()&&fs::metadata(path).map_err(io)?.len()>MAX_FILE as u64{return Err("Repair file exceeds its size limit; nothing was replaced".into());}}
+        if hash_optional(&backup)?!=op.old_hash{return Err(format!("Verified old backup is missing or changed: {}",op.name));}
+        files.push(RepairFile{name:op.name.clone(),old_hash:op.old_hash.clone(),current_hash:hash_optional(&root.join(&op.name))?});
+    }
+    if files.iter().find(|f|f.name=="unreal-manager.exe").and_then(|f|f.old_hash.as_ref())!=Some(&j.helper_sha256){return Err("Old application backup is not the recorded trusted helper".into());}
+    Ok(RepairPreview{schema:1,id:j.id.clone(),journal_sha256:hash(&root.join(JOURNAL))?,archive:stage(root,&j.id).join(format!("repair-{}",uuid::Uuid::new_v4())),files})
+}
+fn repair_preview_matches(j:&Journal,p:&RepairPreview)->Result<(),String>{
+    let root=j.original_exe.parent().ok_or("Missing application folder")?;
+    if p.schema!=1||p.id!=j.id||p.files.len()!=FILES.len()||p.archive.parent()!=Some(stage(root,&j.id).as_path())||p.archive.file_name().and_then(|n|n.to_str()).and_then(|s|s.strip_prefix("repair-")).is_none_or(|id|!valid_id(id))||hash(&root.join(JOURNAL))?!=p.journal_sha256{return Err("Repair approval or journal changed; nothing was replaced".into());}
+    for(op,file)in j.operations.iter().zip(&p.files){if op.name!=file.name||op.old_hash!=file.old_hash||hash_optional(&root.join(&op.name))?!=file.current_hash||hash_optional(&stage(root,&j.id).join("backup").join(&op.name))?!=op.old_hash{return Err(format!("Repair input changed after approval: {}",op.name));}}
+    Ok(())
+}
+// Explicit approval authorizes replacement of exactly FILES, after every
+// current byte has a verified retained copy. Unknown data is never discarded.
+fn restore_verified_old(j:&Journal,p:&RepairPreview)->Result<PathBuf,String>{
+    repair_preview_matches(j,p)?;
+    let root=j.original_exe.parent().ok_or("Missing application folder")?;
+    let _backups:Vec<File>=j.operations.iter().filter(|op|op.old_hash.is_some()).map(|op|lock_input(&stage(root,&j.id).join("backup").join(&op.name))).collect::<Result<_,_>>()?;
+    links(&p.archive)?;fs::create_dir(&p.archive).map_err(io)?;
+    json(&p.archive.join("approved-repair.json"),p)?;
+    let current_dir=p.archive.join("current");fs::create_dir(&current_dir).map_err(io)?;
+    // Keep every retained current copy immutable through all replacements.
+    // The old backups alone cannot preserve edits made after the failed update.
+    let mut _archived=Vec::new();
+    for file in &p.files {if let Some(expected)=&file.current_hash {
+        let source=root.join(&file.name);let _guard=lock_input(&source)?;
+        if hash(&source)?!=*expected{return Err("Current file changed before repair archive; no application files were replaced".into());}
+        let destination=current_dir.join(&file.name);copy_new(&source,&destination)?;
+        _archived.push(lock_input(&destination)?);
+        if hash(&destination)?!=*expected||hash(&source)?!=*expected{return Err("Repair archive verification failed; application files were not replaced".into());}
+    }}
+    // Finish and revalidate the entire archive before the first replacement.
+    repair_preview_matches(j,p)?;
+    for file in &p.files{if hash_optional(&current_dir.join(&file.name))?!=file.current_hash{return Err("Repair archive changed; application files were not replaced".into());}}
+    write_new(&p.archive.join("archive-complete"),b"All current owned files were archived and verified before restoration.\n")?;
+    for file in &p.files {
+        let target=root.join(&file.name);
+        if hash_optional(&target)?!=file.current_hash{return Err(format!("Repair stopped on external edit: {}. Archive retained: {}",file.name,p.archive.display()));}
+        if file.current_hash==file.old_hash{continue;}
+        if file.old_hash.is_some(){
+            let source=stage(root,&j.id).join("backup").join(&file.name);let temporary=p.archive.join(format!("restore-{}",uuid::Uuid::new_v4()));copy_new(&source,&temporary)?;
+            replace_file(&temporary,&target,&file.old_hash,&file.current_hash)?;
+        }else if file.current_hash.is_some(){links(&target)?;fs::remove_file(&target).map_err(io)?;}
+    }
+    for file in &p.files{if hash_optional(&root.join(&file.name))?!=file.old_hash{return Err("Restored application did not match its verified old backups; all evidence retained".into());}}
+    if hash(&root.join(JOURNAL))?!=p.journal_sha256{return Err("Repair journal changed; restored files and evidence were retained".into());}
+    json(&p.archive.join("restored.json"),&serde_json::json!({"schema":1,"id":j.id,"restoredOldVersion":j.from_version,"files":p.files,"backupsPreserved":true}))?;
+    // Retire, never delete, the exact journal only after restoration proved it
+    // is safe to launch the old app. Its backups and all current files remain.
+    fs::rename(root.join(JOURNAL),p.archive.join("original-journal.json")).map_err(io)?;
+    Ok(p.archive.clone())
 }
 fn retain_restored_evidence(j: &Journal) -> Result<(), String> {
     let root=j.original_exe.parent().ok_or("Missing application folder")?;
@@ -482,10 +551,10 @@ fn wait_healthy(j: &Journal, child: &mut dyn Running, timeout: Duration) -> Resu
             if healthy.id == j.id && healthy.version == j.version && healthy.app_sha256 == j.app_sha256 { return Ok(()); }
             return Err("Invalid application ready acknowledgement".into());
         }
-        if child.exited()? { return Err("Updated application exited before its native ready acknowledgement".into()); }
+        if child.exited()? { return Err("Updated application exited before its UI ready acknowledgement".into()); }
         std::thread::sleep(Duration::from_millis(25));
     }
-    Err("Updated application did not acknowledge native readiness".into())
+    Err("Updated application did not acknowledge UI readiness".into())
 }
 fn portable_apply(j: &Journal) -> Result<(), String> {
     let root = j.original_exe.parent().ok_or("Missing application folder")?;
@@ -648,6 +717,116 @@ pub fn confirm_ready(id: &str) -> Result<(), String> {
     validate_restart(&journal, id)?;
     json(&journal.job_dir.join("healthy.json"), &Healthy { id: id.into(), version: journal.version, app_sha256: journal.app_sha256 })
 }
+fn acknowledge_ui_once(flag:&AtomicBool,confirm:impl FnOnce()->Result<(),String>)->Result<bool,String>{
+    if flag.swap(true,Ordering::SeqCst){return Ok(false);}
+    if let Err(error)=confirm(){flag.store(false,Ordering::SeqCst);return Err(error);}
+    Ok(true)
+}
+#[tauri::command]
+pub async fn app_update_ui_ready()->Result<bool,String>{
+    let Some(id)=restart_id() else{return Ok(false)};
+    tauri::async_runtime::spawn_blocking(move||acknowledge_ui_once(&UI_ACKNOWLEDGED,||confirm_ready(&id))).await.map_err(io)?
+}
+struct RepairArguments{journal:PathBuf,no_restart:bool,parent:Option<(u32,u64)>,installer:Option<PathBuf>}
+fn repair_arguments(args:Vec<std::ffi::OsString>)->Result<RepairArguments,String>{
+    let mut args=args.into_iter();let journal=args.next().map(PathBuf::from).ok_or("Missing installed update journal")?;
+    let mut result=RepairArguments{journal,no_restart:false,parent:None,installer:None};
+    while let Some(flag)=args.next(){match flag.to_str(){
+        Some("--no-restart")if !result.no_restart=>result.no_restart=true,
+        Some("--installer")if result.installer.is_none()=>result.installer=Some(args.next().map(PathBuf::from).ok_or("Missing installer path")?),
+        Some("--wait-parent")if result.parent.is_none()=>{let pid=args.next().and_then(|v|v.to_str().and_then(|s|s.parse::<u32>().ok())).filter(|id|*id>4).ok_or("Invalid repair parent")?;let created=args.next().and_then(|v|v.to_str().and_then(|s|s.parse::<u64>().ok())).filter(|v|*v>0).ok_or("Invalid repair parent creation time")?;result.parent=Some((pid,created));},
+        _=>return Err("Invalid repair arguments".into()),
+    }}
+    if result.installer.is_some()&&!result.no_restart{return Err("Installer recovery must not restart the app".into());}Ok(result)
+}
+fn repair_context(path:&Path)->Result<(Journal,Job),String>{
+    if path.file_name().and_then(|s|s.to_str())!=Some(JOURNAL){return Err("Select the installed application's .um-app-update.json journal".into());}
+    let root=canonical(path.parent().ok_or("Missing repair folder")?)?;
+    let j=load_journal(&root)?.ok_or("No interrupted update journal was found")?;
+    if j.mode!="installed"{return Err("Explicit installer repair supports the installed edition only".into());}
+    let manifest=journal_metadata(&j)?;let job=load_job_for_recovery(&j.job_dir.join("job.json"),&j.job_dir,true)?;
+    let payload=crate::app_updates::payload_for(&manifest,"installed")?;
+    if job.payload.file_name().and_then(|n|n.to_str())!=Some(payload.name.as_str())||fs::metadata(&job.payload).map_err(io)?.len()!=payload.size||hash(&job.payload)?!=payload.sha256{return Err("Signed installer payload changed; repair stopped".into());}
+    if hash(&j.job_dir.join("unreal-manager.exe"))?!=j.helper_sha256{return Err("Original updater copy changed; repair stopped".into());}
+    Ok((j,job))
+}
+fn installer_claim_matches(actual:&Path,expected:&Path,actual_hash:&str,expected_hash:&str,live:bool,ancestor:bool)->bool{
+    live&&ancestor&&same(actual,expected)&&actual_hash==expected_hash
+}
+#[cfg(windows)]
+fn descendant_of(pid:u32,ancestor:u32)->Result<bool,String>{
+    use windows_sys::Win32::{Foundation::*,System::Diagnostics::ToolHelp::*};
+    unsafe{let h=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);if h==INVALID_HANDLE_VALUE{return Err(io(std::io::Error::last_os_error()));}
+        struct Snapshot(HANDLE);impl Drop for Snapshot{fn drop(&mut self){unsafe{CloseHandle(self.0);}}}let _guard=Snapshot(h);
+        let mut item:PROCESSENTRY32W=std::mem::zeroed();item.dwSize=std::mem::size_of::<PROCESSENTRY32W>()as u32;let mut parents=std::collections::BTreeMap::new();
+        let mut more=Process32FirstW(h,&mut item);while more!=0{parents.insert(item.th32ProcessID,item.th32ParentProcessID);more=Process32NextW(h,&mut item);}
+        let mut at=pid;let mut seen=BTreeSet::new();for _ in 0..64{if !seen.insert(at){break;}let Some(parent)=parents.get(&at).copied()else{break};if parent==ancestor{return Ok(true);}at=parent;}Ok(false)
+    }
+}
+fn active_installer(j:&Journal,job:&Job,installer:&Path)->Result<bool,String>{
+    #[cfg(windows)]{let manifest=journal_metadata(j)?;let expected=crate::app_updates::payload_for(&manifest,"installed")?;
+        Ok(installer_claim_matches(&canonical(installer)?,&job.payload,&hash(installer)?,&expected.sha256,j.state=="applying"&&helper_alive(j)?,descendant_of(std::process::id(),j.helper_pid)?))
+    }
+    #[cfg(not(windows))]{let _=(j,job,installer);Ok(false)}
+}
+fn approve_repair(j:&Journal,p:&RepairPreview)->Result<bool,String>{
+    #[cfg(windows)]unsafe{
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        let unknown=p.files.iter().filter(|f|f.current_hash!=f.old_hash).count();
+        let text=format!("Interrupted Unreal Manager update / Прервано обновление Unreal Manager\n\nRestore verified version {}? / Восстановить проверенную версию {}?\n\nExactly five application files are affected; {unknown} differ. Current files and all old backups will be retained here:\n{}\n\nData, Epic sign-in, downloads, projects and other files are not changed. No administrator restart is requested.\n\nБудут сохранены текущие файлы и резервные копии. Данные, вход в Epic, загрузки и проекты не изменяются.\n\nContinue / Продолжить?",j.from_version,j.from_version,p.archive.display());
+        let wide:Vec<u16>=text.encode_utf16().chain(Some(0)).collect();let title:Vec<u16>="Unreal Manager — repair / восстановление".encode_utf16().chain(Some(0)).collect();
+        Ok(MessageBoxW(std::ptr::null_mut(),wide.as_ptr(),title.as_ptr(),MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2)==IDYES)
+    }
+    #[cfg(not(windows))]{let _=(j,p);Err("Application repair requires Windows".into())}
+}
+pub fn repair(args:Vec<std::ffi::OsString>)->Result<bool,String>{
+    let arguments=repair_arguments(args)?;
+    let(j,job)=repair_context(&arguments.journal)?;
+    if let Some(installer)=arguments.installer.as_ref(){if active_installer(&j,&job,installer)?{return Ok(true);}}
+    if helper_alive(&j)?{return Err("Another application updater is active; repair did not change files".into());}
+    if crate::elevation::is_elevated(){return Err("Run application repair as the original Windows user, without administrator elevation".into());}
+    #[cfg(windows)]{
+        if let Some((pid,created))=arguments.parent{
+            let parent=windows::Process::open(pid)?.ok_or("Repair parent exited before attachment")?;let(actual,image)=parent.identity()?;
+            if actual!=created||!same(&image,&j.original_exe){return Err("Repair parent identity changed".into());}
+            let exe=canonical(&std::env::current_exe().map_err(io)?)?;let runner=exe.parent().ok_or("Repair runner folder")?;
+            if runner.parent()!=Some(stage(j.original_exe.parent().unwrap(),&j.id).as_path())||runner.file_name().and_then(|n|n.to_str()).and_then(|s|s.strip_prefix("repair-runner-")).is_none_or(|id|!valid_id(id)){return Err("Unexpected repair runner folder".into());}
+            repair_preview(&j)?;
+            json(&runner.join("repair-ready.json"),&serde_json::json!({"id":j.id,"helperPid":std::process::id()}))?;
+            if !parent.wait(Duration::from_secs(120))?{return Err("Close the original application before repair".into());}
+        }
+        let root=j.original_exe.parent().unwrap();let lock=windows::lock(root)?.ok_or("Another application update or repair is active")?;
+        let(j,job)=repair_context(&arguments.journal)?;
+        let _inputs=[lock_input(&j.job_dir.join("job.json"))?,lock_input(&job.manifest)?,lock_input(&job.signature)?,lock_input(&job.payload)?,lock_input(&j.job_dir.join("unreal-manager.exe"))?];
+        repair_context(&arguments.journal)?;
+        let preview=repair_preview(&j)?;
+        if !approve_repair(&j,&preview)?{return Ok(false);}
+        let archive=restore_verified_old(&j,&preview).map_err(|e|format!("{e}. Repair evidence retained: {}",preview.archive.display()))?;
+        let mut commands=Native{lock:Some(lock),old_started:false,installer_quiescent:true};
+        if !arguments.no_restart{commands.start(&j.original_exe,None).map_err(|e|format!("Old files restored. Start the application manually. Archive: {}. {e}",archive.display()))?;}
+        Ok(true)
+    }
+    #[cfg(not(windows))]{let _=(j,job);Err("Application repair requires Windows".into())}
+}
+fn start_repair_runner(j:&Journal)->Result<bool,String>{
+    // The opt-in native subprocess fixture is a Rust test executable, not the
+    // production CLI. Prove signed repair availability without opening a
+    // native confirmation dialog or pretending that executable parses CLI.
+    #[cfg(test)]{let root=j.original_exe.parent().ok_or("Missing application folder")?;repair_context(&root.join(JOURNAL))?;repair_preview(j)?;Err("Interrupted installer requires explicit repair; verified old backups are available".into())}
+    #[cfg(all(windows,not(test)))]{
+        let root=j.original_exe.parent().ok_or("Missing application folder")?;
+        let _lock=windows::lock(root)?.ok_or("Another application update or repair is active")?;
+        repair_context(&root.join(JOURNAL))?;repair_preview(j)?;
+        let folder=stage(root,&j.id).join(format!("repair-runner-{}",uuid::Uuid::new_v4()));links(&folder)?;fs::create_dir(&folder).map_err(io)?;
+        let original=canonical(&std::env::current_exe().map_err(io)?)?;let _image=lock_input(&original)?;let expected=hash(&original)?;
+        let runner=folder.join("unreal-manager.exe");copy_new(&original,&runner)?;if hash(&runner)?!=expected{return Err("Repair runner copy changed".into());}
+        let created=process_identity(std::process::id())?.0;
+        let mut child=Command::new(&runner).arg("--repair-app-update").arg(root.join(JOURNAL)).arg("--wait-parent").arg(std::process::id().to_string()).arg(created.to_string()).spawn().map_err(io)?;
+        let result=(||{let start=Instant::now();while start.elapsed()<Duration::from_secs(10){if child.try_wait().map_err(io)?.is_some(){return Err("Repair runner exited before attachment".into());}let path=folder.join("repair-ready.json");if path.exists(){let ready:serde_json::Value=serde_json::from_slice(&read_limited(&path,4096)?).map_err(io)?;if ready["id"].as_str()!=Some(j.id.as_str())||ready["helperPid"].as_u64()!=Some(child.id()as u64){return Err("Invalid repair runner acknowledgement".into());}let(_,image)=process_identity(child.id())?;if !same(&image,&canonical(&runner)?)||hash(&runner)?!=expected{return Err("Repair runner identity changed".into());}return Ok(true);}std::thread::sleep(Duration::from_millis(25));}Err("Repair runner did not attach; files were not changed".into())})();
+        if result.is_err(){child.stop()?;}result
+    }
+    #[cfg(all(not(windows),not(test)))]{let _=j;Err("Application repair requires Windows".into())}
+}
 /// Called before constructing Tauri. True means a one-shot helper owns startup.
 pub fn recover_or_busy() -> Result<bool, String> {
     let executable = canonical(&std::env::current_exe().map_err(io)?)?;
@@ -665,7 +844,7 @@ pub fn recover_or_busy() -> Result<bool, String> {
             if hash(&executable)? != *expected || env!("CARGO_PKG_VERSION") != expected_version { return Err("Completed update recovery does not match this application; backup retained".into()); }
             if let Err(error)=clean(&j) { if j.state!="rolledBack" || retain_restored_evidence(&j).is_err() { return Err(error); } } return Ok(false);
         }
-        crash_recovery_allowed(&j)?;
+        if crash_recovery_allowed(&j).is_err(){return start_repair_runner(&j);}
         can_rollback(&j)?;
         let helper = canonical(&j.job_dir.join("unreal-manager.exe"))?;
         if hash(&helper)? != j.helper_sha256 { return Err("Recovery helper changed; update backup preserved".into()); }
@@ -731,7 +910,49 @@ mod tests {
     #[test]fn portable_commit_preserves_account_marker_and_unknown_files(){let mut f=Fixture::new("portable");let mut commands=FakeCommands::for_fixture(&f,true);execute(&mut f.journal,Path::new("unused"),&mut commands,Duration::from_millis(5)).unwrap();for name in FILES{assert_eq!(fs::read(f.root.join(name)).unwrap(),format!("new-{name}").as_bytes());}f.preserved();assert!(!f.root.join(JOURNAL).exists());assert_eq!(commands.starts,1);}
     #[test]fn health_timeout_stops_only_owned_child_rolls_back_and_restarts_old(){let mut f=Fixture::new("portable");let mut commands=FakeCommands::for_fixture(&f,false);assert!(execute(&mut f.journal,Path::new("unused"),&mut commands,Duration::from_millis(1)).is_err());f.old();assert!(commands.stopped.get());assert_eq!(commands.starts,2);}
     #[test]fn installed_failure_restores_same_path_files_without_registry_or_native_installer(){let mut f=Fixture::new("installed");let mut commands=FakeCommands::for_fixture(&f,false);commands.install_failure=true;assert!(execute(&mut f.journal,Path::new("mock-installer.exe"),&mut commands,Duration::from_millis(1)).is_err());f.old();assert_eq!(commands.starts,1);}
-    #[test]fn installed_success_uses_same_path_and_native_ready_ack(){let mut f=Fixture::new("installed");let mut commands=FakeCommands::for_fixture(&f,true);execute(&mut f.journal,Path::new("mock-installer.exe"),&mut commands,Duration::from_millis(1)).unwrap();f.preserved();assert_eq!(commands.starts,1);}
+    #[test]fn installed_success_uses_same_path_and_compatible_health_payload(){let mut f=Fixture::new("installed");let mut commands=FakeCommands::for_fixture(&f,true);execute(&mut f.journal,Path::new("mock-installer.exe"),&mut commands,Duration::from_millis(1)).unwrap();f.preserved();assert_eq!(commands.starts,1);}
+    fn interrupted(f:&mut Fixture){f.journal.state="applying".into();for op in &mut f.journal.operations{op.new_hash=None;}save(&f.journal).unwrap();}
+    #[test]fn explicit_installed_repair_archives_unknown_outputs_before_restoring_verified_old(){
+        let mut f=Fixture::new("installed");interrupted(&mut f);
+        fs::write(f.root.join("unreal-manager.exe"),b"partial unknown executable").unwrap();fs::write(f.root.join("README.txt"),b"external edited readme").unwrap();fs::remove_file(f.root.join("LICENSE")).unwrap();
+        assert!(crash_recovery_allowed(&f.journal).is_err());let preview=repair_preview(&f.journal).unwrap();let archive=restore_verified_old(&f.journal,&preview).unwrap();
+        f.old();assert!(!f.root.join(JOURNAL).exists());assert!(archive.join("original-journal.json").is_file());assert!(archive.join("archive-complete").is_file());
+        assert_eq!(fs::read(archive.join("current/unreal-manager.exe")).unwrap(),b"partial unknown executable");assert_eq!(fs::read(archive.join("current/README.txt")).unwrap(),b"external edited readme");assert!(!archive.join("current/LICENSE").exists());
+        for name in FILES{assert_eq!(fs::read(stage(&f.root,&f.journal.id).join("backup").join(name)).unwrap(),format!("old-{name}").as_bytes());}
+    }
+    #[test]fn explicit_repair_can_restore_a_missing_executable_and_preserves_user_data(){let mut f=Fixture::new("installed");interrupted(&mut f);fs::remove_file(&f.journal.original_exe).unwrap();let preview=repair_preview(&f.journal).unwrap();restore_verified_old(&f.journal,&preview).unwrap();f.old();}
+    #[test]fn repair_refuses_corrupt_backup_and_postapproval_external_edit_without_replacing_files(){
+        let mut f=Fixture::new("installed");interrupted(&mut f);let preview=repair_preview(&f.journal).unwrap();fs::write(f.root.join("README.txt"),b"new external edit").unwrap();
+        assert!(restore_verified_old(&f.journal,&preview).is_err());assert!(!preview.archive.exists());assert_eq!(fs::read(f.root.join("README.txt")).unwrap(),b"new external edit");assert!(f.root.join(JOURNAL).exists());
+        fs::write(stage(&f.root,&f.journal.id).join("backup/LICENSE"),b"corrupt backup").unwrap();assert!(repair_preview(&f.journal).is_err());assert_eq!(fs::read(f.root.join("unreal-manager.exe")).unwrap(),b"old-unreal-manager.exe");f.preserved();
+    }
+    #[test]fn repair_rejects_changed_journal_or_archive_outside_owned_stage(){let mut f=Fixture::new("installed");interrupted(&mut f);let mut preview=repair_preview(&f.journal).unwrap();preview.archive=f.root.join("Data/repair");assert!(restore_verified_old(&f.journal,&preview).is_err());let preview=repair_preview(&f.journal).unwrap();f.journal.state="needsRecovery".into();save(&f.journal).unwrap();assert!(restore_verified_old(&f.journal,&preview).is_err());f.old();}
+    #[cfg(windows)]#[test]fn interrupted_repair_keeps_archive_and_backups_then_accepts_a_new_explicit_approval(){
+        let mut f=Fixture::new("installed");interrupted(&mut f);fs::write(f.root.join("unreal-manager.exe"),b"partial exe").unwrap();fs::write(f.root.join("README.txt"),b"partial readme").unwrap();let preview=repair_preview(&f.journal).unwrap();
+        let guard=lock_input(&f.root.join("README.txt")).unwrap();assert!(restore_verified_old(&f.journal,&preview).is_err());drop(guard);
+        assert_eq!(fs::read(f.root.join("unreal-manager.exe")).unwrap(),b"old-unreal-manager.exe");assert_eq!(fs::read(f.root.join("README.txt")).unwrap(),b"partial readme");assert_eq!(fs::read(preview.archive.join("current/unreal-manager.exe")).unwrap(),b"partial exe");assert!(f.root.join(JOURNAL).exists());f.preserved();
+        let retry=repair_preview(&f.journal).unwrap();assert_ne!(retry.archive,preview.archive);restore_verified_old(&f.journal,&retry).unwrap();f.old();assert!(preview.archive.join("archive-complete").is_file());
+    }
+    #[cfg(windows)]#[test]fn approved_current_archive_cannot_be_changed_while_repair_replaces_targets(){
+        let mut f=Fixture::new("installed");interrupted(&mut f);
+        fs::write(f.root.join("README.txt"),b"retained external edit").unwrap();
+        fs::write(f.root.join("LICENSE"),b"partial installer output").unwrap();
+        let preview=repair_preview(&f.journal).unwrap();
+        // Block a later target replacement to observe the completed archive
+        // during restoration rather than after all read guards have dropped.
+        let blocked=lock_input(&f.root.join("LICENSE")).unwrap();let archive=preview.archive.clone();
+        let observer=std::thread::spawn(move||{
+            let start=Instant::now();while !archive.join("archive-complete").exists(){assert!(start.elapsed()<Duration::from_secs(2),"archive was not completed");std::thread::sleep(Duration::from_millis(5));}
+            let retained=archive.join("current/README.txt");
+            assert!(OpenOptions::new().write(true).open(&retained).is_err());
+            assert!(fs::remove_file(&retained).is_err());drop(blocked);
+        });
+        let restored=restore_verified_old(&f.journal,&preview);observer.join().unwrap();restored.unwrap();f.old();
+        assert_eq!(fs::read(preview.archive.join("current/README.txt")).unwrap(),b"retained external edit");
+    }
+    #[test]fn live_signed_installer_bypass_requires_exact_payload_and_owned_live_ancestry(){let expected=Path::new("X:/Fixture/Setup.exe");assert!(installer_claim_matches(expected,expected,"signed","signed",true,true));assert!(!installer_claim_matches(Path::new("X:/Other/Setup.exe"),expected,"signed","signed",true,true));assert!(!installer_claim_matches(expected,expected,"edited","signed",true,true));assert!(!installer_claim_matches(expected,expected,"signed","signed",false,true));assert!(!installer_claim_matches(expected,expected,"signed","signed",true,false));}
+    #[test]fn repair_arguments_require_explicit_installer_no_restart_and_bounded_parent_identity(){let args=|values:&[&str]|values.iter().map(std::ffi::OsString::from).collect();assert!(repair_arguments(args(&[JOURNAL,"--installer","Setup.exe"])).is_err());assert!(repair_arguments(args(&[JOURNAL,"--wait-parent","0","1"])).is_err());assert!(repair_arguments(args(&[JOURNAL,"--wait-parent","10","0"])).is_err());assert!(repair_arguments(args(&[JOURNAL,"--no-restart","--no-restart"])).is_err());let parsed=repair_arguments(args(&[JOURNAL,"--no-restart","--installer","Setup.exe"])).unwrap();assert!(parsed.no_restart);}
+    #[test]fn ui_health_ack_is_once_after_success_and_failure_does_not_claim_ready(){let flag=AtomicBool::new(false);assert!(acknowledge_ui_once(&flag,||Err("startup not ready".into())).is_err());assert!(!flag.load(Ordering::SeqCst));assert_eq!(acknowledge_ui_once(&flag,||Ok(())).unwrap(),true);assert_eq!(acknowledge_ui_once(&flag,||panic!("duplicate acknowledgement")).unwrap(),false);let payload=serde_json::to_value(Healthy{id:"fixture".into(),version:"1.0.0".into(),app_sha256:"hash".into()}).unwrap();assert_eq!(payload,serde_json::json!({"id":"fixture","version":"1.0.0","appSha256":"hash"}));}
     #[test]fn rollback_preserves_external_edit_and_retains_backup(){let f=Fixture::new("portable");portable_apply(&f.journal).unwrap();fs::write(f.root.join("README.txt"),b"external-edit").unwrap();assert!(rollback(&f.journal).is_err());assert_eq!(fs::read(f.root.join("README.txt")).unwrap(),b"external-edit");assert!(stage(&f.root,&f.journal.id).join("backup/unreal-manager.exe").is_file());f.preserved();}
     #[test]fn partial_commit_rolls_back_after_process_crash(){let f=Fixture::new("portable");fs::rename(stage(&f.root,&f.journal.id).join("new/unreal-manager.exe"),f.root.join("unreal-manager.exe")).unwrap();rollback(&f.journal).unwrap();f.old();}
     #[test]fn changed_portable_marker_blocks_recovery(){let f=Fixture::new("portable");fs::write(f.root.join("portable.marker"),b"changed-marker").unwrap();assert!(rollback(&f.journal).is_err());assert!(f.root.join(JOURNAL).exists());}

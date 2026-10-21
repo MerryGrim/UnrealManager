@@ -4,9 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const evidence = path.join(__dirname, 'current', `app-updates-${stamp}`);
-const temporary = path.join(evidence, 'browser-temp');
-fs.mkdirSync(temporary, { recursive: true });
+const evidence = path.join(process.env.UM_VERIFICATION_OUTPUT_DIRECTORY || path.join(__dirname, 'current'), `app-updates-${stamp}`);
+// Chromium still creates a few paths through MAX_PATH-limited Windows APIs.
+// Keep browser internals short even when the evidence runner nests reports.
+fs.mkdirSync(path.join(__dirname, 'current'), { recursive: true });
+const temporary = fs.mkdtempSync(path.join(__dirname, 'current', 'upt-'));
 process.env.UM_VERIFICATION_OUTPUT_DIRECTORY = evidence;
 process.env.TEMP = temporary;
 process.env.TMP = temporary;
@@ -43,6 +45,8 @@ export async function invoke(command,args={}) {
 // A single full-App case covers the navigation boundary; updater state and
 // apply/download failure cases below retain their focused component harness.
 const appCore = core.replace(" throw Error('Unexpected updater UI command: '+command);", `
+ if(command==='app_update_ui_ready')return false;
+ if(command==='vault_queue_get')return {revision:0,paused:true,activeId:null,items:[],error:null};
  if(command==='epic_status')return {signedIn:false,displayName:''};
  if(['scan_engines','scan_projects','engine_catalog','engine_pending','engine_resume_tasks','vault_list','vault_resume_tasks'].includes(command))return [];
  if(command==='vault_epic_status')return {directory:'X:/Fixture/Epic/VaultCache',items:[],warnings:[]};
@@ -315,4 +319,8 @@ async function main() {
     await browser.close();
   }
 }
-main().catch(error => { console.error(error); process.exitCode = 1; });
+main().finally(() => {
+  const parent = path.resolve(__dirname, 'current');
+  if (path.dirname(temporary) !== parent || !path.basename(temporary).startsWith('upt-')) throw Error('Unexpected owned temporary path');
+  fs.rmSync(temporary, { recursive: true, force: true });
+}).catch(error => { console.error(error); process.exitCode = 1; });

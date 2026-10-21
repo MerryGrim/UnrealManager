@@ -81,13 +81,23 @@ impl Drop for Temporary {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
 // A saved block is shared by all files referencing the same GUID. Partial HTTP
 // bodies use Range; a server returning 200 causes a clean restart of that block.
 pub(super) async fn chunk(client:&reqwest::Client,url:&reqwest::Url,guid:&str,base:&Path,state:&VaultState,network:&mut u64)->Result<Vec<u8>,String>{
+ chunk_with_limit(client,url,guid,base,state,network,CHUNK_LIMIT).await
+}
+async fn chunk_with_limit(client:&reqwest::Client,url:&reqwest::Url,guid:&str,base:&Path,state:&VaultState,network:&mut u64,limit:usize)->Result<Vec<u8>,String>{
  no_links(base)?;fs::create_dir_all(base).map_err(io_error)?;
  let key=digest(guid.as_bytes());let complete=base.join(format!("{key}.chunk"));let partial=base.join(format!("{key}.part"));no_links(&complete)?;no_links(&partial)?;
- if complete.exists(){if fs::metadata(&complete).map_err(io_error)?.len()>CHUNK_LIMIT as u64{return Err("Слишком большой блок загрузки".into());}let bytes=fs::read(&complete).map_err(io_error)?;if let Ok(data)=decode_chunk(&bytes){return Ok(data);}fs::remove_file(&complete).map_err(io_error)?;}
+ let mut restarted=false;
+ if complete.exists(){
+  if fs::metadata(&complete).map_err(io_error)?.len()<=limit as u64{let bytes=fs::read(&complete).map_err(io_error)?;if let Ok(data)=decode_chunk(&bytes){return Ok(data);}}
+  fs::remove_file(&complete).map_err(|e|io_at("Удаление повреждённого блока",&complete,e))?;restarted=true;
+ }
+ // At most one clean restart of this GUID per invocation. Transport failures
+ // retain their useful prefix; only an exhausted range or a complete invalid
+ // response proves that this partial cannot be continued.
  loop {
   checkpoint(state).await?;
-  let mut offset=fs::metadata(&partial).map(|m|m.len()).unwrap_or(0);
-  if offset>CHUNK_LIMIT as u64{return Err("Слишком большой блок загрузки".into());}
+  let mut offset=match fs::metadata(&partial){Ok(m)=>m.len(),Err(e)if e.kind()==std::io::ErrorKind::NotFound=>0,Err(e)=>return Err(io_at("Чтение блока",&partial,e))};
+  if offset>limit as u64{no_links(&partial)?;fs::remove_file(&partial).map_err(|e|io_at("Удаление повреждённого блока",&partial,e))?;if restarted{return Err("Слишком большой блок загрузки".into());}restarted=true;offset=0;}
   if offset>0 {let bytes=fs::read(&partial).map_err(io_error)?;if let Ok(data)=decode_chunk(&bytes){fs::rename(&partial,&complete).map_err(io_error)?;return Ok(data);}}
   let mut request=client.get(url.clone());if offset>0{request=request.header(reqwest::header::RANGE,format!("bytes={offset}-"));}
   // Time only active network waits, not intentional pauses or speed limiting.
@@ -95,26 +105,36 @@ pub(super) async fn chunk(client:&reqwest::Client,url:&reqwest::Url,guid:&str,ba
   let response=loop{
    tokio::select!{value=&mut future=>break Some(value.map_err(|_|"Download timed out")?.map_err(|_|"Не удалось загрузить блок. Повторите загрузку")?),_=tokio::time::sleep(Duration::from_millis(100))=>{if state.cancel.load(Ordering::SeqCst){return Err(STOPPED.into());}if state.paused.load(Ordering::SeqCst){break None;}}}
   };let Some(mut response)=response else{continue};
+  if response.status()==reqwest::StatusCode::RANGE_NOT_SATISFIABLE && offset>0 {
+   no_links(&partial)?;fs::remove_file(&partial).map_err(|e|io_at("Удаление повреждённого блока",&partial,e))?;
+   if restarted{return Err("Сервер вернул неверный диапазон блока".into());}restarted=true;continue;
+  }
   if response.status()==reqwest::StatusCode::PARTIAL_CONTENT {
    let expected=format!("bytes {offset}-");if !response.headers().get(reqwest::header::CONTENT_RANGE).and_then(|h|h.to_str().ok()).is_some_and(|v|v.starts_with(&expected)){return Err("Сервер вернул неверный диапазон блока".into());}
   }else if response.status()==reqwest::StatusCode::OK{offset=0;}else{return Err(format!("Сервер загрузки вернул HTTP {}. Подготовьте загрузку заново",response.status().as_u16()));}
   let mut output=OpenOptions::new().create(true).write(true).truncate(offset==0).append(offset>0).open(&partial).map_err(io_error)?;
-  let mut length=offset;let mut paused=false;
+  let mut length=offset;let mut paused=false;let mut oversized=false;
   loop{
    if state.cancel.load(Ordering::SeqCst){output.sync_all().map_err(io_error)?;return Err(STOPPED.into());}
    if state.paused.load(Ordering::SeqCst){paused=true;break;}
    let next=tokio::time::timeout(Duration::from_secs(30),response.chunk());tokio::pin!(next);
    let value=loop{tokio::select!{v=&mut next=>break Some(v.map_err(|_|"Download timed out")?.map_err(|_|"Загрузка прервана сетью. Повторите попытку")?),_=tokio::time::sleep(Duration::from_millis(100))=>{if state.cancel.load(Ordering::SeqCst){output.sync_all().map_err(io_error)?;return Err(STOPPED.into());}if state.paused.load(Ordering::SeqCst){break None;}}}};
    let Some(value)=value else{paused=true;break};let Some(bytes)=value else{break};
-   length+=bytes.len() as u64;if length>CHUNK_LIMIT as u64{return Err("Слишком большой блок загрузки".into());}
+   length=length.saturating_add(bytes.len() as u64);if length>limit as u64{oversized=true;break;}
    let generation=state.pause_generation.load(Ordering::SeqCst);let was_paused=state.paused.load(Ordering::SeqCst);
    output.write_all(&bytes).map_err(io_error)?;*network+=bytes.len() as u64;self::network(state,*network);
    crate::download::throttle_paused(bytes.len(),&state.cancel,&state.paused).await?;
    if was_paused||state.pause_generation.load(Ordering::SeqCst)!=generation{paused=true;break;}
   }
+  if oversized{drop(output);drop(response);no_links(&partial)?;fs::remove_file(&partial).map_err(|e|io_at("Удаление повреждённого блока",&partial,e))?;if restarted{return Err("Слишком большой блок загрузки".into());}restarted=true;continue;}
   output.sync_all().map_err(io_error)?;drop(output);drop(response);
   if paused{continue;}
-  let bytes=fs::read(&partial).map_err(io_error)?;let data=decode_chunk(&bytes)?;fs::rename(&partial,&complete).map_err(io_error)?;return Ok(data);
+  let bytes=fs::read(&partial).map_err(|e|io_at("Чтение блока",&partial,e))?;
+  let data=match decode_chunk(&bytes){Ok(data)=>data,Err(error)=>{
+   no_links(&partial)?;fs::remove_file(&partial).map_err(|e|io_at("Удаление повреждённого блока",&partial,e))?;
+   if restarted{return Err(error);}restarted=true;continue;
+  }};
+  fs::rename(&partial,&complete).map_err(|e|io_at("Сохранение блока",&complete,e))?;return Ok(data);
  }
 }
 pub(super) fn cleanup(stage:&Path,id:&str)->Result<(),String>{
@@ -126,6 +146,46 @@ pub(super) fn cleanup(stage:&Path,id:&str)->Result<(),String>{
 }
 #[cfg(test)]mod tests{
  use super::*;
+ struct ChunkFixture{root:PathBuf,parent:PathBuf}
+ impl ChunkFixture{fn new()->Self{let parent=std::env::var_os("UM_TEMP_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);no_links(&parent).unwrap();fs::create_dir_all(&parent).unwrap();let root=parent.join(format!("um-chunk-recovery-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();Self{root,parent}}}
+ impl Drop for ChunkFixture{fn drop(&mut self){if self.root.parent()==Some(self.parent.as_path())&&no_links(&self.root).is_ok(){let _=fs::remove_dir_all(&self.root);}}}
+ fn accept_request(server:&std::net::TcpListener)->(std::net::TcpStream,String){
+  server.set_nonblocking(true).unwrap();let start=Instant::now();let mut stream=loop{match server.accept(){Ok((s,_))=>break s,Err(e)if e.kind()==std::io::ErrorKind::WouldBlock&&start.elapsed()<Duration::from_secs(5)=>std::thread::sleep(Duration::from_millis(5)),Err(e)=>panic!("Fixture accept: {e}")}};
+  stream.set_nonblocking(false).unwrap();stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();let mut bytes=vec![];let mut b=[0];while !bytes.ends_with(b"\r\n\r\n"){assert!(bytes.len()<8192);stream.read_exact(&mut b).unwrap();bytes.push(b[0]);}(stream,String::from_utf8(bytes).unwrap().to_lowercase())
+ }
+ #[tokio::test]async fn corrupt_full_partial_416_restarts_only_its_chunk(){
+  let f=ChunkFixture::new();let key=digest(b"guid");let partial=f.root.join(format!("{key}.part"));let bad=encoded(b"wrong");let mut invalid=bad.clone();*invalid.last_mut().unwrap()^=1;fs::write(&partial,&invalid).unwrap();
+  let sibling=f.root.join(format!("{}.chunk",digest(b"keep-guid")));let keep=encoded(b"verified keep");fs::write(&sibling,&keep).unwrap();let keep_time=fs::metadata(&sibling).unwrap().modified().unwrap();let server=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=server.local_addr().unwrap();let expected=vec![9u8;65536];let raw=encoded(&expected);let body=raw.clone();let offset=invalid.len();
+  let worker=std::thread::spawn(move||{let(mut s,h)=accept_request(&server);assert!(h.contains(&format!("range: bytes={offset}-")));write!(s,"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();drop(s);let(mut s,h)=accept_request(&server);assert!(!h.contains("range:"));write!(s,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();s.write_all(&body).unwrap();});
+  let mut network=0;let result=chunk(&reqwest::Client::new(),&reqwest::Url::parse(&format!("http://{address}/chunk")).unwrap(),"guid",&f.root,&VaultState::default(),&mut network).await.unwrap();worker.join().unwrap();assert_eq!(result,expected);assert_eq!(network,raw.len()as u64);assert!(!partial.exists());assert_eq!(fs::read(sibling.clone()).unwrap(),keep);assert_eq!(fs::metadata(sibling).unwrap().modified().unwrap(),keep_time);
+ }
+ #[tokio::test]async fn repeatedly_corrupt_server_is_bounded_and_does_not_leave_poisoned_partial(){
+  let f=ChunkFixture::new();let server=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=server.local_addr().unwrap();let mut body=encoded(b"bad server");*body.last_mut().unwrap()^=1;
+  let worker=std::thread::spawn(move||{for _ in 0..2{let(mut s,h)=accept_request(&server);assert!(!h.contains("range:"));write!(s,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();s.write_all(&body).unwrap();}});
+  let mut network=0;assert!(chunk(&reqwest::Client::new(),&reqwest::Url::parse(&format!("http://{address}/chunk")).unwrap(),"guid",&f.root,&VaultState::default(),&mut network).await.is_err());worker.join().unwrap();assert!(!f.root.join(format!("{}.part",digest(b"guid"))).exists());assert!(!f.root.join(format!("{}.chunk",digest(b"guid"))).exists());
+ }
+ #[tokio::test]async fn oversized_cached_partial_and_chunk_restart_without_reading_the_oversized_body(){
+  for extension in ["part","chunk"]{
+   let f=ChunkFixture::new();let poison=f.root.join(format!("{}.{extension}",digest(b"guid")));let file=OpenOptions::new().write(true).create_new(true).open(&poison).unwrap();file.set_len(CHUNK_LIMIT as u64+1).unwrap();drop(file);
+   let sibling=f.root.join(format!("{}.chunk",digest(b"keep")));fs::write(&sibling,b"untouched").unwrap();let server=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=server.local_addr().unwrap();let body=encoded(b"replacement");
+   let worker=std::thread::spawn(move||{let(mut s,h)=accept_request(&server);assert!(!h.contains("range:"));write!(s,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();s.write_all(&body).unwrap();});
+   let mut network=0;assert_eq!(chunk(&reqwest::Client::new(),&reqwest::Url::parse(&format!("http://{address}/chunk")).unwrap(),"guid",&f.root,&VaultState::default(),&mut network).await.unwrap(),b"replacement");worker.join().unwrap();assert_eq!(fs::read(sibling).unwrap(),b"untouched");assert!(!f.root.join(format!("{}.part",digest(b"guid"))).exists());
+  }
+ }
+ #[tokio::test]async fn oversized_stream_restarts_once_and_then_accepts_valid_block(){
+  let f=ChunkFixture::new();let server=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=server.local_addr().unwrap();let worker=std::thread::spawn(move||{for body in [encoded(&vec![4u8;2048]),encoded(b"replacement")]{let(mut s,h)=accept_request(&server);assert!(!h.contains("range:"));write!(s,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();s.write_all(&body).unwrap();}});
+  let mut network=0;assert_eq!(chunk_with_limit(&reqwest::Client::new(),&reqwest::Url::parse(&format!("http://{address}/chunk")).unwrap(),"guid",&f.root,&VaultState::default(),&mut network,1024).await.unwrap(),b"replacement");worker.join().unwrap();assert!(!f.root.join(format!("{}.part",digest(b"guid"))).exists());
+ }
+ #[tokio::test]async fn repeatedly_oversized_stream_stops_after_one_restart_and_removes_poison(){
+  let f=ChunkFixture::new();let server=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=server.local_addr().unwrap();let body=encoded(&vec![4u8;2048]);let worker=std::thread::spawn(move||{for _ in 0..2{let(mut s,h)=accept_request(&server);assert!(!h.contains("range:"));write!(s,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();s.write_all(&body).unwrap();}});
+  let mut network=0;assert!(chunk_with_limit(&reqwest::Client::new(),&reqwest::Url::parse(&format!("http://{address}/chunk")).unwrap(),"guid",&f.root,&VaultState::default(),&mut network,1024).await.unwrap_err().contains("Слишком большой блок"));worker.join().unwrap();assert!(!f.root.join(format!("{}.part",digest(b"guid"))).exists());assert!(!f.root.join(format!("{}.chunk",digest(b"guid"))).exists());
+ }
+ #[tokio::test]async fn abrupt_stream_failure_keeps_prefix_and_next_call_resumes_it(){
+  let f=ChunkFixture::new();let server=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=server.local_addr().unwrap();let expected=vec![3u8;32768];let raw=encoded(&expected);let body=raw.clone();let half=8000;
+  let worker=std::thread::spawn(move||{let(mut s,h)=accept_request(&server);assert!(!h.contains("range:"));write!(s,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();s.write_all(&body[..half]).unwrap();drop(s);let(mut s,h)=accept_request(&server);assert!(h.contains(&format!("range: bytes={half}-")));write!(s,"HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",body.len()-half,half,body.len()-1,body.len()).unwrap();s.write_all(&body[half..]).unwrap();});
+  let url=reqwest::Url::parse(&format!("http://{address}/chunk")).unwrap();let mut network=0;let state=VaultState::default();assert!(chunk(&reqwest::Client::new(),&url,"guid",&f.root,&state,&mut network).await.is_err());let partial=f.root.join(format!("{}.part",digest(b"guid")));assert_eq!(fs::read(&partial).unwrap(),raw[..half]);
+  assert_eq!(chunk(&reqwest::Client::new(),&url,"guid",&f.root,&state,&mut network).await.unwrap(),expected);worker.join().unwrap();assert_eq!(network,raw.len()as u64);assert!(!partial.exists());
+ }
  #[tokio::test]async fn paused_task_waits_and_cancel_unblocks_it(){let state=std::sync::Arc::new(VaultState::default());state.paused.store(true,Ordering::SeqCst);let s=state.clone();let task=tokio::spawn(async move{checkpoint(&s).await});tokio::time::sleep(Duration::from_millis(20)).await;assert!(!task.is_finished());state.cancel.store(true,Ordering::SeqCst);assert!(tokio::time::timeout(Duration::from_secs(1),task).await.unwrap().unwrap().is_err());}
  #[test]fn chunk_guard_removes_only_its_temporary_file(){let base=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());fs::create_dir_all(&base).unwrap();fs::write(base.join("own.tmp"),b"partial").unwrap();fs::write(base.join("keep"),b"keep").unwrap();drop(Temporary(base.join("own.tmp")));assert!(!base.join("own.tmp").exists());assert_eq!(fs::read(base.join("keep")).unwrap(),b"keep");fs::remove_dir_all(base).unwrap();}
  fn fixture(root:&Path)->Plan{

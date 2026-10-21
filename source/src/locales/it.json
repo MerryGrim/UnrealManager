@@ -1033,5 +1033,19 @@
   "Проверьте права доступа к указанной записи Epic и повторите операцию.": "Verifica i permessi di accesso per la voce Epic indicata e ripeti l’operazione.",
   "Подробности ошибки": "Dettagli dell’errore",
   "Ошибка регистрации Epic: {path}: {error}": "Errore di registrazione Epic: {path}: {error}",
-  "Недостаточно прав для операции с папкой: {path}": "Permessi insufficienti per l’operazione sulla cartella: {path}"
+  "Недостаточно прав для операции с папкой: {path}": "Permessi insufficienti per l’operazione sulla cartella: {path}",
+  "Чтение файла": "Lettura di un file",
+  "Ошибка файловой системы (Чтение файла): {path}: {error}": "Errore del file system (Lettura di un file): {path}: {error}",
+  "Чтение блока": "Lettura di un blocco",
+  "Ошибка файловой системы (Чтение блока): {path}: {error}": "Errore del file system (Lettura di un blocco): {path}: {error}",
+  "Удаление повреждённого блока": "Rimozione di un blocco danneggiato",
+  "Ошибка файловой системы (Удаление повреждённого блока): {path}: {error}": "Errore del file system (Rimozione di un blocco danneggiato): {path}: {error}",
+  "Сохранение блока": "Salvataggio di un blocco",
+  "Ошибка файловой системы (Сохранение блока): {path}: {error}": "Errore del file system (Salvataggio di un blocco): {path}: {error}",
+  "Чтение файла при откате": "Lettura di un file durante il ripristino",
+  "Ошибка файловой системы (Чтение файла при откате): {path}: {error}": "Errore del file system (Lettura di un file durante il ripristino): {path}: {error}",
+  "Удаление файла при откате": "Rimozione di un file durante il ripristino",
+  "Ошибка файловой системы (Удаление файла при откате): {path}: {error}": "Errore del file system (Rimozione di un file durante il ripristino): {path}: {error}",
+  "Возврат прежнего файла": "Ripristino del file precedente",
+  "Ошибка файловой системы (Возврат прежнего файла): {path}: {error}": "Errore del file system (Ripristino del file precedente): {path}: {error}"
 }

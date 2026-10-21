@@ -1,4 +1,5 @@
 import {useRef} from 'react';
+import {EpicAuthError} from './EpicAuthError';
 import {ArrowDown, ArrowUp, GripVertical, PackageOpen, Pause, Play, X} from 'lucide-react';
 import {tr} from './i18n';
 import {VaultPauseButton} from './VaultPauseButton';
@@ -73,7 +74,7 @@ export function VaultQueue({queue, busy, resumeBusy, error, onPaused, onReorder,
             <button disabled={busy || !queue.items.length} onClick={() => onPaused(!queue.paused)}>{queue.paused ? <Play size={16}/> : <Pause size={16}/>} {tr(queue.paused ? 'Запустить очередь' : 'Приостановить очередь')}</button>
         </div>
         <p className="downloads-hint">{tr(queue.paused ? 'Очередь приостановлена' : headNeedsAttention ? 'Очередь требует внимания: продолжите, повторите или уберите первое задание.' : !active && pending.length ? 'Ожидает завершения текущей операции' : 'Очередь выполняется только пока открыт Unreal Manager.')}</p>
-        {(error || queue.error) && <p className="error-text" role="alert">{tr(error || queue.error || '')}</p>}
+        <EpicAuthError error={error || queue.error || ''}/>
         <div className="vault-queue-list">{[...pending, ...attention].map(item => {
             const position = pending.findIndex(row => row.id === item.id), movable = position >= 0;
             return <article className="vault-queue-row" key={item.id} data-queue-id={item.id} data-status={item.status} aria-label={item.title} draggable={movable && !busy}
@@ -101,7 +102,7 @@ export function VaultQueue({queue, busy, resumeBusy, error, onPaused, onReorder,
                     }}
                     onPointerCancel={() => {pointerDrag.current = null;}}
                     onLostPointerCapture={() => {pointerDrag.current = null;}}>{movable ? <GripVertical size={18}/> : <PackageOpen size={18}/>}</span>
-                <div className="vault-queue-info"><b>{movable ? `${position + 1}. ` : ''}{item.title}</b><p>UE {item.selectedEngine} · {tr(movable ? 'В очереди' : item.status === 'interrupted' ? 'Загрузка прервана' : 'Требует внимания')}</p><small>{item.requestedVaultPath}</small>{item.error && <p className="error-text">{tr(item.error)}</p>}</div>
+                <div className="vault-queue-info"><b>{movable ? `${position + 1}. ` : ''}{item.title}</b><p>UE {item.selectedEngine} · {tr(movable ? 'В очереди' : item.status === 'interrupted' ? 'Загрузка прервана' : 'Требует внимания')}</p><small>{item.requestedVaultPath}</small><EpicAuthError error={item.error || ''}/></div>
                 <div className="vault-queue-actions">{movable ? <><button className="icon" disabled={busy || position === 0} aria-label={tr(`Выше: ${item.title}`)} onClick={() => move(item.id, -1)}><ArrowUp size={17}/></button><button className="icon" disabled={busy || position === pending.length - 1} aria-label={tr(`Ниже: ${item.title}`)} onClick={() => move(item.id, 1)}><ArrowDown size={17}/></button></> : item.status === 'interrupted' && item.packageId ? <button disabled={busy || resumeBusy || !!active} onClick={() => onResume(item.packageId!)}>{tr('Продолжить загрузку')}</button> : <button disabled={busy} onClick={() => onRetry(item.id, queue.revision)}>{tr('Повторить')}</button>}
                     <button className="icon" disabled={busy} aria-label={tr(`Убрать из очереди: ${item.title}`)} onClick={() => onRemove(item.id, queue.revision)}><X size={17}/></button>
                 </div>

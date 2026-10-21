@@ -1,4 +1,5 @@
 import {EngineResumeTasks} from './EngineResumeTasks';
+import {EpicAuthError} from './EpicAuthError';
 import {VaultPauseButton} from './VaultPauseButton';
 import {VaultResumeTasks,type VaultTask} from './VaultResumeTasks';
 import {EngineTransferCard, type EngineTransfer} from './EngineTransferCard';
@@ -70,7 +71,7 @@ export function DownloadsView({ engineDownload, active, progress, installing, re
    {tr(active ? <article className="transfer-card vault-transfer-card"><div className="transfer-main"><div className="transfer-art"><FabCover item={active.item}/></div><div className="transfer-info"><h3>{active.item.title}</h3><p>{tr("UE ")}{tr(active.plan.engines.map(engineVersion).join(', '))}{tr(" · ")}{tr(progress?.paused?'На паузе':progress?.phase || 'Подготовка загрузки')}</p><div className="transfer-meter"><progress aria-label={tr("Прогресс загрузки")} max={100} value={progress?.total ? pct : undefined}/><strong>{progress?.total ? `${pct}%` : "—"}</strong></div></div><div className="transfer-buttons">{!installing&&<VaultPauseButton paused={progress?.paused} canPause={progress?.canPause}/>}<button onClick={onDetails}>{tr("Подробнее")}</button><button disabled={installing} onClick={onStop}><Square size={15}/>{tr("Остановить")}</button></div></div>
    <div className="transfer-metrics"><div><small>{tr("Обработано")}</small><b>{tr(size(progress?.done || 0))}{progress?.total ? <>{tr(" / ")}{tr(size(progress.total))}</> : null}</b></div><div><small>{tr("Скорость сети")}</small><b>{tr(size(progress?.bytesPerSecond || 0))}{tr("/с")}</b></div><div><small>{tr("Получено по сети")}</small><b>{tr(size(progress?.networkBytes || 0))}</b></div><div><small>{tr(installing ? 'Состояние' : 'Осталось')}</small><b>{tr(installing ? progress?.phase || 'Устанавливаем…' : progress && progress.bytesPerSecond > 0 && active.plan.downloadBytes > (progress.networkBytes || 0) ? eta((active.plan.downloadBytes - progress.networkBytes) / progress.bytesPerSecond) : '—')}</b></div></div></article>
             : !engineDownload && !currentQueue && <div className="downloads-idle"><Download size={27}/><div><b>{tr("Нет активных загрузок")}</b>{!queue.items.length && <p>{tr("Выберите материал в библиотеке, чтобы начать скачивание.")}</p>}</div></div>)}
-   {tr(error && <p className="error-text" role="alert">{tr(error)}</p>)}
+   <EpicAuthError error={error}/>
   </section>
   <VaultQueue queue={queue} busy={queueBusy} resumeBusy={busy} error={queueError} onPaused={onQueuePaused} onReorder={onQueueReorder} onRemove={onQueueRemove} onRetry={onQueueRetry} onResume={onResume}/>
   <VaultResumeTasks tasks={pending.filter(t=>t.id!==active?.plan.id&&t.id!==queueActive?.packageId)} busy={busy} covers={covers} onResume={onResume} onForget={onForget}/>

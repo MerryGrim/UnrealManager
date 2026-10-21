@@ -84,6 +84,68 @@ tracked public key before creating outputs. The app verifies the signature and
 payload again before applying an update. Signing checks prove artifact
 integrity; native update and recovery behavior require their own verification.
 
+## Interrupted installed updates (current source)
+
+The recovery flow described here is implemented in the current source. It does
+not retrofit these commands into already distributed 0.9.3 executables.
+
+An installer that stops during file replacement can leave output whose hashes
+were never recorded. Startup does not guess that those files are safe to
+overwrite automatically. If all five old backups match their recorded hashes,
+the current application offers an explicit, default-No recovery confirmation.
+Before changing anything, it copies and verifies every existing owned
+application file into a unique `repair-<uuid>/current` archive under
+`.um-app-update-<update-id>`. Missing files are recorded as missing. It then
+restores the verified old files. The old backups, current-file archive and
+original journal remain available as evidence. The active journal is moved
+into that archive only after all restored files match the old hashes.
+
+Recovery is limited to `unreal-manager.exe`, `README.txt`, `LICENSE`,
+`THIRD_PARTY_NOTICES.md` and `THIRD-PARTY-LICENSES.txt`. It does not modify
+`Data`, portable markers, Epic sessions, downloads, projects or other files.
+It refuses changed inputs and damaged/missing backups. A failure can leave
+some owned files restored and others unchanged; all backups and repair
+evidence remain. Retry requires a fresh explicit confirmation. Do not delete
+the journal or backup directory to bypass a recovery error.
+
+If the installed EXE cannot run, close Unreal Manager and use a trusted new
+portable EXE that contains this recovery command. Run it as the original
+Windows user, without elevation:
+
+```powershell
+& 'C:\path\to\new-portable\unreal-manager.exe' --repair-app-update `
+  "$env:LOCALAPPDATA\Programs\Unreal Manager\.um-app-update.json"
+```
+
+Use the actual installation folder if it differs from the example. The command
+checks the retained signed manifest, installer payload, journal and old backups;
+after approval it restores the old application and starts it. A new Setup also
+uses its own extracted EXE to perform this check before copying application
+files. It does not start the old app during Setup. A normal signed auto-update
+whose exact live helper owns that installer continues through the gate without
+a repair prompt. An unrelated installer or process cannot claim that bypass.
+
+This flow requires a readable intact journal, signed staging metadata and
+verified old backups. If those are missing, recovery stops with retained
+evidence; it cannot reconstruct a missing backup or a destroyed executable
+without a separate trusted download. It does not repair uninstall registration
+or other installer side effects outside the five owned files.
+
+## Update health acknowledgement (current source)
+
+The new app acknowledges an update once React has successfully committed the
+main interface, after local preferences and interface language initialization
+have succeeded. Native window creation alone no longer acknowledges success.
+A failed preference load or failed initial render leaves the helper waiting;
+the existing bounded health timeout then follows its rollback rules. Optional
+network update checks and drive scans do not block this signal.
+
+The acknowledgement retains the existing `id`, `version` and `appSha256`
+payload, so an older 0.9.3 helper can accept a new app's signal. This is a
+startup readiness check, not proof that every later screen or network operation
+works. The helper remains a one-shot process; no service or persistent monitor
+is installed.
+
 Run the preparation regression after a native build:
 
 ```powershell

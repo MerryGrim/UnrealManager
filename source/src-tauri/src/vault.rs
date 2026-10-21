@@ -17,7 +17,8 @@ pub struct Package { #[serde(default)] artifact_id: String, #[serde(default)] se
 #[derive(Clone, Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct Progress { pub(crate) phase: String, done: u64, total: u64, files_done: usize, files_total: usize, network_bytes: u64, bytes_per_second: u64, pub(crate) paused:bool, pub(crate) can_pause:bool }
-fn io_error(_: std::io::Error) -> String { "Ошибка файловой системы. Проверьте свободное место и доступ к каталогу".into() }
+fn io_error(error: std::io::Error) -> String { format!("Ошибка файловой системы: {error}") }
+fn io_at(operation:&str,path:&Path,error:std::io::Error)->String{format!("Ошибка файловой системы ({operation}): {}: {error}",path.display())}
 fn digest(bytes: &[u8]) -> String { format!("{:x}", Sha1::digest(bytes)) }
 
 pub(crate) fn relative(name: &str) -> Result<PathBuf, String> {
@@ -51,28 +52,29 @@ pub(crate) fn no_links(path: &Path) -> Result<(), String> {
 pub(crate) fn hash_file(path: &Path) -> Result<String, String> {
     hash_file_progress(path, |_| {})
 }
-fn hash_file_progress(path:&Path,mut progress:impl FnMut(u64))->Result<String,String>{
+pub(crate) fn hash_file_progress(path:&Path,mut progress:impl FnMut(u64))->Result<String,String>{
     no_links(path)?;
-    let mut file = File::open(path).map_err(io_error)?;
+    let mut file = File::open(path).map_err(|e|io_at("Чтение файла",path,e))?;
     let mut hash = Sha1::new(); let mut buffer = [0u8; 65536];
-    loop { let n = file.read(&mut buffer).map_err(io_error)?; if n == 0 { break; } hash.update(&buffer[..n]); progress(n as u64); }
+    loop { let n = file.read(&mut buffer).map_err(|e|io_at("Чтение файла",path,e))?; if n == 0 { break; } hash.update(&buffer[..n]); progress(n as u64); }
     Ok(format!("{:x}", hash.finalize()))
 }
 fn local_progress(phase:&str,done:u64,total:u64,files_done:usize,files_total:usize)->Progress{
     Progress{phase:phase.into(),done,total,files_done,files_total,network_bytes:0,bytes_per_second:0,paused:false,can_pause:false}
 }
-struct FileProgress<'a>{phase:&'static str,done:u64,total:u64,files_done:usize,files_total:usize,last:Instant,notify:&'a mut dyn FnMut(Progress)}
+struct FileProgress<'a>{phase:&'static str,done:u64,total:u64,files_done:usize,files_total:usize,last:Instant,interval:Duration,notify:&'a mut dyn FnMut(Progress)}
 impl<'a> FileProgress<'a>{
     fn new(phase:&'static str,total:u64,files_total:usize,notify:&'a mut dyn FnMut(Progress))->Self{
-        let mut progress=Self{phase,done:0,total,files_done:0,files_total,last:Instant::now(),notify};progress.send(false);progress
+        Self::with_interval(phase,total,files_total,Duration::from_millis(250),notify)
     }
+    fn with_interval(phase:&'static str,total:u64,files_total:usize,interval:Duration,notify:&'a mut dyn FnMut(Progress))->Self{let mut p=Self{phase,done:0,total,files_done:0,files_total,last:Instant::now(),interval,notify};p.send(false);p}
     fn send(&mut self,complete:bool){
         // A full buffer read is not a verified file. Reserve the final byte until checks pass.
         let done=if complete{self.done.min(self.total)}else{self.done.min(self.total.saturating_sub(1))};
         (self.notify)(local_progress(self.phase,done,self.total,self.files_done,self.files_total));self.last=Instant::now();
     }
-    fn advance(&mut self,bytes:u64){self.done=self.done.saturating_add(bytes);if self.last.elapsed()>=Duration::from_millis(250){self.send(false);}}
-    fn file_done(&mut self){self.files_done+=1;if self.files_done==self.files_total||self.last.elapsed()>=Duration::from_millis(250){self.send(self.files_done==self.files_total);}}
+    fn advance(&mut self,bytes:u64){self.done=self.done.saturating_add(bytes);if self.last.elapsed()>=self.interval{self.send(false);}}
+    fn file_done(&mut self){self.files_done+=1;if self.files_done==self.files_total||self.last.elapsed()>=self.interval{self.send(self.files_done==self.files_total);}}
 }
 async fn hash_download_file(state:&VaultState,path:&Path,mut progress:Progress)->Result<(String,u64),String>{
     no_links(path)?;let mut file=File::open(path).map_err(io_error)?;let mut hash=Sha1::new();let mut buffer=vec![0u8;65536];let mut last=Instant::now();let mut since_yield=0;let initial_done=progress.done;
@@ -603,6 +605,8 @@ pub async fn vault_install(state: tauri::State<'_, VaultState>,webview:tauri::We
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn filesystem_error_keeps_the_os_cause_and_local_operation_path(){let path=Path::new("X:/Fixture/Vault/file.bin");let error=io_at("Чтение файла",path,std::io::Error::from_raw_os_error(112));assert!(error.contains("os error 112"));assert!(error.contains(&path.to_string_lossy().to_string()));assert!(error.starts_with("Ошибка файловой системы (Чтение файла):"));assert!(io_error(std::io::Error::from_raw_os_error(112)).contains("os error 112"));}
     #[test]
     fn cached_verification_future_fits_async_stack_budget(){
         // Constructing (not polling) this future must not embed the file I/O buffer.

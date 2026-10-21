@@ -8,21 +8,113 @@ acceleration and GPU compositing disabled.
 
 ```powershell
 $env:UM_PLAYWRIGHT_MODULE = (Resolve-Path '.\tools\playwright\node_modules\playwright').Path
-node .\verification\run-beta7.cjs
+node .\verification\run-regression.cjs
 ```
 
-The beta.7 selection includes the signed-update settings UI, startup deduplication,
+The current selection includes the signed-update settings UI, startup deduplication,
 channels, verified download/apply states, errors and retry. These are mocked UI
 checks. It also checks all eight non-Russian locale catalogues, preference
 migration and persistence, library filters, Vault pause/resume and installation
 intent for assets/projects/plugins, saved engine task resume, confirmed removal
-from the resume list, and transfer controls at 1280/600 px.
+from the resume list, and transfer controls at 1280/600 px. The auth-required
+regression covers explicit sign-in actions, all nine languages and preservation
+of mocked saved downloads; it does not verify a genuinely expired Epic session.
 
 To rerun one selected test, pass its file name to the runner, for example
-`node .\verification\run-beta7.cjs test-preferences.cjs`. Multiple selected file
+`node .\verification\run-regression.cjs test-preferences.cjs`. Multiple selected file
 names are supported. Each run writes logs, screenshots, and a JSON report into a
 new timestamped folder under `verification/current`. Set
 `UM_VERIFICATION_OUTPUT_DIRECTORY` to choose a different output directory.
+
+`run-regression.cjs` is the canonical current selection; `run-beta7.cjs` remains
+a compatible alias. `--list` lists the selected tests without loading browser
+dependencies. `--validate` resolves existing dependencies and records the plan
+and test hashes without executing tests or opening a browser. The current
+selection also includes the nine-language accessibility matrix: renderer DPR
+emulation, viewport layout and keyboard checks, not native Windows DPI or
+assistive-technology acceptance. Each executed test receives a fresh output
+subdirectory. Older fixtures which create their own timestamped folder remain
+linked through their captured log and `reportedEvidenceDirectories`.
+
+## Canonical Windows acceptance and CI
+
+Prepare dependencies separately with the project's `npm ci`, an installed
+Microsoft Edge, MSVC, Rust and an existing Playwright package. Cargo's cache
+must already contain the locked Windows dependencies (`cargo fetch --locked
+--target x86_64-pc-windows-msvc` is the separate online preparation step).
+Nothing in the acceptance entry point installs a dependency, downloads a
+browser, creates a signing key or changes machine/user environment settings.
+
+From the repository root, with PowerShell 7:
+
+```powershell
+pwsh -NoProfile -File .\verification\run-acceptance.ps1 `
+  -PlaywrightModule '<existing-playwright-package-directory>' -ValidateOnly
+
+pwsh -NoProfile -File .\verification\run-acceptance.ps1 `
+  -PlaywrightModule '<existing-playwright-package-directory>'
+```
+
+`-ValidateOnly` checks tool/module availability and writes a plan. Its report
+has `passed: null`; it does not claim acceptance. A full run calls `BUILD-ENV.ps1`
+for process-local paths, then runs TypeScript without emitting, Vite assets
+needed by Tauri's release tests, production `cargo check --release`, library
+`cargo test --release` with one test thread, the current UI/locale selection,
+and privacy self-tests plus a public-source scan. Both Cargo commands use
+`--locked --offline`; no `npx` or implicit install is used. A stage failure
+makes the final result fail and remains in its log. Do not run this against a
+Cargo target or frontend build directory another build is using.
+
+Every invocation creates `verification/current/acceptance-<UTC>-<uuid>` with
+stage timestamps, exit codes, command arguments, source/lockfile hashes, tool
+versions and a final `reports/acceptance-report.json`. After a successful native
+suite, that report binds its unique Cargo-emitted library test executable by
+absolute path, SHA256 and, in CI, the source commit. `-OutputDirectory`
+chooses a parent **inside** `verification/current`; existing reports are never
+overwritten. Fresh temporary and synthetic fixture directories are recorded
+and retained for exact reviewed cleanup. The entry point does not stop an app
+or silently delete a directory. Runtime/GPU measurement, static distribution
+inspection, clean-Windows acceptance, live accounts, website checks and actual
+update transitions remain separately authorized checks.
+
+Signed updater subprocess fixtures are deliberately opt-in and local:
+
+```powershell
+pwsh -NoProfile -File .\verification\run-acceptance.ps1 `
+  -PlaywrightModule '<existing-playwright-package-directory>' `
+  -IncludeSignedUpdater -SigningKeyPath '<existing-current-user-DPAPI-key>'
+```
+
+This mode uses the test executable emitted by **that run's successful Cargo
+suite**. It requires the existing matching signing key and C# fixture compiler;
+it does not generate a replacement key or publish the signed synthetic files.
+It may launch owned fixture subprocesses. It is refused when `CI` is set and
+does not replace full installed/portable application-update acceptance. The
+default run never accesses the signing key.
+
+`.github/workflows/verify-windows.yml` runs the same default entry point on
+Windows Server 2022 for pull requests, main changes, the explicit isolated
+`codex/acceptance` branch and manual dispatch. Pinned Node/Rust/Playwright tools
+and locked dependencies are provisioned online before offline acceptance. New
+downloads, caches and outputs stay on the runner workspace volume; Edge and
+MSVC come from the hosted image. Actions are SHA-pinned, repository permission
+is `contents: read`, and checkout does not persist credentials.
+
+After acceptance, a hosted-only wrapper exercises actual disk-full handling
+on its own temporary VHD, using exactly that run's compiled test executable
+and hash. The ignored disk-full test is never run on the developer host by the
+default entry point. The primary job then builds unsigned CI distributions
+once with the warm target. Separate Windows Server 2022/2025 jobs download the
+same-run artifact by immutable ID and exercise installer and portable lifecycle
+with synthetic profile data and actual UI Automation readiness. These are
+hosted Server results, not clean Windows 10/11, standard-user or live-account
+acceptance. See [distribution/HOSTED-LIFECYCLE.md](distribution/HOSTED-LIFECYCLE.md).
+
+There are no signing secrets, release uploads or deployment steps. Reports,
+logs and fabricated UI evidence expire after 14 days; the unsigned CI package
+artifact expires after one day and is not a publishable application update.
+The workflow must actually pass on GitHub before claiming CI acceptance; local
+syntax/plan validation alone does not establish that result.
 
 Individual `test-*.cjs` scripts use the shared `test-env.cjs` helper and default
 to writing screenshots into `verification/current`. Their source root is
@@ -36,7 +128,38 @@ beta.6, so they are not all included in the current regression runner. These UI
 checks mock native Tauri commands; actual filesystem operations and Windows
 application behavior require the Rust tests and native smoke checks as well.
 
+`test-engine-recovery-progress.cjs` covers manual recovery's native progress
+channel, per-file/read-byte metrics, current-transfer propagation, blocked
+dismissal while busy, and completion/failure states. It uses synthetic paths
+and mocked native commands. Native rollback tests separately verify restored
+file contents and events emitted while hashing large files.
+
+`test-app-startup-ready.cjs` mounts the actual application entry point with
+mocked native commands. It covers failed preference initialization, an aborted
+initial render, StrictMode deduplication, optional pending scans and a rejected
+acknowledgement. These browser checks do not install an update. The native
+subprocess fixtures and isolated application runs establish separate evidence.
+
 ## Native idle runtime measurement
+
+See [release gates](RELEASE-GATES.md) for the acceptance boundary and
+[the disposable Windows kit](distribution/README.md) for clean-OS cases.
+No clean Windows acceptance is inferred from tests on a development host.
+
+For an observed workload use `-Seconds 300 -PhaseFile <absolute-label-file>`.
+The optional file contains one label: `idle`, `tray`, `login-open`, `transfer`,
+or `unclassified`. The collector reads this label; it does not drive the UI,
+authenticate or start a transfer. Its report records CPU/private-memory
+summaries per observed phase. Inspect the actual workload separately.
+
+Immediately after measurement on the same boot, run
+`./verification/classify-runtime-gpu.ps1 -RuntimeReportPath <runtime-report.json>`.
+This maps owned GPU counter LUIDs to DXGI adapters and distinguishes software
+from hardware rows. Missing hardware rows remain unavailable telemetry.
+`test-runtime-evidence.ps1` checks the collector's process-identity cleanup and
+flag-observation history; it is included in the default acceptance command.
+Late unreadable process metadata stays in the report and cannot inherit
+evidence from a reused PID.
 
 After building the Windows executable, run:
 

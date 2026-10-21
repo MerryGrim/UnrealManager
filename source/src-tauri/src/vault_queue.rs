@@ -12,6 +12,10 @@ const VAULT:&str="Папка Vault изменилась. Удалите зада
 const PARTIAL:&str="Продолжите сохранённую загрузку в списке задач.";
 const NO_MANUAL_MATCH:&str="No matching interrupted queue request.";
 const SAVE_ERROR:&str="Не удалось сохранить очередь. Существующие задачи сохранены.";
+fn failed_entry(entry:&mut Entry,partial:bool,error:&str){
+ entry.status=if partial{Status::Interrupted}else{Status::NeedsAction};
+ entry.error=Some(if error==crate::epic::AUTH_REQUIRED{crate::epic::AUTH_REQUIRED}else if partial||error==PARTIAL{PARTIAL}else if error==VAULT{VAULT}else if error==ACCOUNT{ACCOUNT}else if error=="Недостаточно свободного места."{"Недостаточно свободного места."}else{"Не удалось выполнить загрузку. Повторите попытку."}.into());
+}
 static WAKE:tokio::sync::Notify=tokio::sync::Notify::const_new();
 pub(crate) fn wake(){WAKE.notify_one();}
 
@@ -160,7 +164,7 @@ async fn run_one(app:&tauri::AppHandle)->bool{
   let e=d.items.iter_mut().find(|e|e.id==entry.id).ok_or(STALE)?;
   match outcome{Ok(package)=>{completed=Some(package);d.items.retain(|e|e.id!=entry.id);},Err(error)=>{
    let partial=e.package_id.as_ref().is_some_and(|id|crate::vault::transfers::has_saved_task(id).unwrap_or(true));
-   e.status=if partial{Status::Interrupted}else{Status::NeedsAction};e.error=Some(if partial||error==PARTIAL{PARTIAL}else if error==VAULT{VAULT}else if error==ACCOUNT{ACCOUNT}else if error=="Недостаточно свободного места."{"Недостаточно свободного места."}else{"Не удалось выполнить загрузку. Повторите попытку."}.into());
+   failed_entry(e,partial,&error);
   }}Ok(())});
  match result{Ok(mut s)=>{s.completed=completed;emit(app,s);true},Err(_)=>{if let Ok(mut i)=queue.inner.lock(){i.paused=true;i.error=Some("Не удалось сохранить очередь. Существующие задачи сохранены.".into());emit(app,snapshot(&i));}false}}
 }
@@ -174,6 +178,31 @@ pub(crate) fn setup(app:&tauri::AppHandle){
  fn root()->PathBuf{std::env::temp_dir().join(format!("um-queue-{}",uuid::Uuid::new_v4()))}
  fn request(id:&str)->Request{Request{asset_id:format!("asset-{id}"),artifact_id:format!("artifact-{id}"),selected_engine:"5.7".into(),title:format!("Synthetic {id}")}}
  fn add(q:&QueueState,id:&str)->Snapshot{q.transaction(|d,p,u|enqueue(d,p,*u,request(id),"X:/Fixture/Vault".into(),"a".repeat(64))).unwrap()}
+ struct AuthQueueFixture{root:PathBuf,parent:PathBuf}
+ impl AuthQueueFixture{fn new()->Self{let parent=std::env::temp_dir();let path=root();crate::vault::no_links(&path).unwrap();fs::create_dir(&path).unwrap();Self{root:path,parent}}}
+ impl Drop for AuthQueueFixture{fn drop(&mut self){if self.root.parent()!=Some(self.parent.as_path())||crate::vault::no_links(&self.root).is_err(){return;}let Ok(entries)=fs::read_dir(&self.root)else{return};let entries=entries.collect::<Result<Vec<_>,_>>();let Ok(entries)=entries else{return};if entries.iter().any(|e|e.file_name()!="q.json"||!e.file_type().is_ok_and(|t|t.is_file())||crate::vault::no_links(&e.path()).is_err()){return;}for e in entries{let _=fs::remove_file(e.path());}let _=fs::remove_dir(&self.root);}}
+ #[test]fn authentication_failure_keeps_partial_queue_binding_and_manual_resume_status(){
+  let f=AuthQueueFixture::new();let q=interrupted_fixture(f.root.join("q.json"));
+  let before=q.get().unwrap();let other=serde_json::to_vec(&q.inner.lock().unwrap().disk.items[1]).unwrap();
+  let updated=q.transaction(|d,_,_|{failed_entry(&mut d.items[0],true,crate::epic::AUTH_REQUIRED);Ok(())}).unwrap();
+  assert!(updated.items[0].status==Status::Interrupted);assert_eq!(updated.items[0].error.as_deref(),Some(crate::epic::AUTH_REQUIRED));
+  assert_eq!(updated.items[0].package_id,before.items[0].package_id);assert_eq!(updated.items[0].id,before.items[0].id);assert_eq!(updated.items[0].requested_vault_path,before.items[0].requested_vault_path);
+  assert_eq!(updated.paused,before.paused);assert!(q.inner.lock().unwrap().user_paused);assert!(!q.eligible());
+  assert_eq!(serde_json::to_vec(&q.inner.lock().unwrap().disk.items[1]).unwrap(),other);
+  let disk=QueueState::load(q.path.clone()).get().unwrap();assert_eq!(disk.items[0].package_id,before.items[0].package_id);assert_eq!(disk.items[0].error.as_deref(),Some(crate::epic::AUTH_REQUIRED));
+ }
+ #[test]fn authentication_failure_without_partial_stays_actionable_and_does_not_create_tasks(){
+  let f=AuthQueueFixture::new();let q=QueueState::load(f.root.join("q.json"));let initial=add(&q,"one");
+  let updated=q.transaction(|d,_,_|{failed_entry(&mut d.items[0],false,crate::epic::AUTH_REQUIRED);Ok(())}).unwrap();
+  assert!(updated.items[0].status==Status::NeedsAction);assert!(updated.items[0].package_id.is_none());assert_eq!(updated.items[0].error.as_deref(),Some(crate::epic::AUTH_REQUIRED));assert_eq!(updated.items[0].id,initial.items[0].id);assert_eq!(updated.items[0].requested_vault_path,initial.items[0].requested_vault_path);assert!(!q.eligible());assert_eq!(fs::read_dir(&f.root).unwrap().count(),1);
+ }
+ #[test]fn non_auth_queue_failure_does_not_offer_login_or_lose_saved_package(){
+  let f=AuthQueueFixture::new();let q=interrupted_fixture(f.root.join("q.json"));let package=q.get().unwrap().items[0].package_id.clone();
+  for error in ["CDN HTTP 403 signed URL","401 text without typed API status","Ошибка файловой системы: disk full"]{
+   let updated=q.transaction(|d,_,_|{failed_entry(&mut d.items[0],true,error);Ok(())}).unwrap();
+   assert!(updated.items[0].status==Status::Interrupted);assert_eq!(updated.items[0].error.as_deref(),Some(PARTIAL));assert_eq!(updated.items[0].package_id,package);assert!(!q.eligible());
+  }
+ }
  #[test]fn durable_requests_restart_paused_and_hide_native_account_binding(){
   let root=root();let path=root.join("queue.json");let q=QueueState::load(path.clone());assert!(q.get().unwrap().paused);
   let s=add(&q,"one");assert!(!s.paused);let id=s.items[0].id.clone();

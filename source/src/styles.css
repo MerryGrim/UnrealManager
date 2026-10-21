@@ -384,6 +384,7 @@ input[type=checkbox]{padding:0}
 .engine-pause-controls{display:flex;flex-direction:column;align-items:stretch;gap:8px;max-width:280px}
 .engine-pause-controls small{color:var(--muted);font-size:12px;line-height:1.5}
 .engine-pause-controls .error-text{margin:0}
+.engine-recovery-progress{display:block;margin-bottom:18px;min-width:0}.engine-recovery-progress>.engine-operation{display:flex;flex-direction:column;gap:10px}.engine-recovery-progress>.engine-operation>span{display:flex;align-items:center;gap:8px}
 .engine-permission-error{min-width:0;overflow-wrap:anywhere}.engine-permission-error>p{margin:0 0 8px;color:inherit}.engine-permission-error>p:last-child{margin-bottom:0}.engine-permission-path{white-space:pre-wrap;user-select:text}
 .engine-pause-button{min-width:144px}
 .engine-operation-actions{display:flex;justify-content:flex-end;align-items:flex-start;gap:10px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:14px;margin-top:2px}

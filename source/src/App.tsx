@@ -1,4 +1,6 @@
 import {ClosePrompt} from './WindowSettings';
+import {EpicAuthError,isEpicAuthRequired,useEpicAuthLogin} from './EpicAuthError';
+import {acknowledgeMountedApplication} from './appStartupReady';
 import {AppUpdateNotice,useAppUpdates} from './AppUpdateSettings';
 import {SettingsView,type SettingsCategory} from './SettingsView';
 import {formatEnginePhase,enginePercentText,engineProgressPercent,type EngineTransfer} from './EngineTransferCard';
@@ -37,9 +39,11 @@ const nav: {
 ];
 export default function App() {
     useLanguage();
+    useEffect(() => { void acknowledgeMountedApplication().catch(() => { /* helper timeout restores the previous app */ }); }, []);
     const appUpdates = useAppUpdates();
     const [about, setAbout] = useState(false);
     const epic = useEpic();
+    useEpicAuthLogin(epic.openLogin);
     const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
     const [section, setSection] = useState<Section>('home');
     const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('interface');
@@ -101,7 +105,7 @@ export default function App() {
       </div>
     </main></PageActionsTarget.Provider>
     <footer className="workspace-footer"><button className={section === 'downloads' ? 'active' : ''} aria-current={section === 'downloads' ? 'page' : undefined} onClick={() => setSection('downloads')}><Download size={16}/>{tr(downloadPhase)}{vault.queuedCount>0&&<> · {tr('В очереди')}: {vault.queuedCount}</>}</button><button className={section === 'settings' ? 'active' : ''} aria-current={section === 'settings' ? 'page' : undefined} onClick={() => setSection('settings')}><Settings size={16}/>{tr("Настройки")}</button></footer>
-    {tr(epic.accountError && <div className="account-notice" role="alert">{tr(epic.accountError)}<span>{tr("Вход доступен в меню аккаунта справа сверху.")}</span></div>)}
+    {tr(epic.accountError && <div className="account-notice" role="alert">{isEpicAuthRequired(epic.accountError) ? <EpicAuthError error={epic.accountError}/> : tr(epic.accountError)}<span>{tr("Вход доступен в меню аккаунта справа сверху.")}</span></div>)}
     {section !== 'settings' && <AppUpdateNotice updates={appUpdates} onOpen={() => { setSettingsCategory('appupdates'); setSection('settings'); }}/>}
     <ClosePrompt/>{tr(epic.dialog)}{tr(vault.dialog)}{tr(about && <AboutDialog onClose={() => setAbout(false)}/>)}
   </div>;

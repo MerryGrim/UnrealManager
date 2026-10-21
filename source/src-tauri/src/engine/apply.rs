@@ -24,6 +24,8 @@ impl<F:FnMut(Snapshot)> Reporter<F> {
         (self.notify)(Snapshot{phase:phase.into(),done,total,current_file:None,current_file_stage:None,
             current_file_done:None,current_file_total:None,read_bytes:self.read,read_bytes_per_second:0});
     }
+    pub fn rollback(&mut self,mut snapshot:Snapshot,base_read:u64){snapshot.read_bytes=snapshot.read_bytes.saturating_add(base_read);self.read=snapshot.read_bytes;(self.notify)(snapshot);}
+    pub fn read_bytes(&self)->u64{self.read}
     fn active(&mut self,c:&Context,stats:&Stats,paused:bool,force:bool){
         if !force && self.last_paused==paused && self.last.elapsed()<self.interval{return;}
         self.last_paused=paused;

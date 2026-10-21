@@ -171,11 +171,8 @@ fn apply_update_progress(plan:UpdatePlan,mode:&str,backup:bool,backup_base:&Path
         Ok(())
     })();
     if let Err(error)=operation{
-        work(local_progress("Восстанавливаем исходные файлы",0,0,0,moved.len()+installed.len()));
-        let mut failed=false;
-        for &i in installed.iter().rev(){let e=chosen[i];let path=plan.root.join(&e.relative);if present_hash(&path).ok().flatten()==Some(e.hash.clone()){if fs::remove_file(path).is_err(){failed=true;}}else{failed=true;}}
-        for &i in moved.iter().rev(){let target=plan.root.join(&chosen[i].relative);if no_links(&target).is_err()||target.exists()||fs::rename(transaction.join(format!("{i}.old")),target).is_err(){failed=true;}}
-        if failed{return Err(format!("{error}. Восстановление требует внимания. Оригиналы и журнал: {}",transaction.display()));}
+        let failure=restore_update(&plan.root,&transaction,&chosen,&moved,&installed,Duration::from_millis(250),work).err();
+        if let Some(failure)=failure{return Err(format!("{error}. {failure}. Восстановление требует внимания. Оригиналы и журнал: {}",transaction.display()));}
         cleanup(&transaction,chosen.len()).map_err(|e|format!("{error}. {e}"))?;
         return Err(format!("{error}. Изменения отменены. Резервная копия: {}",result.backup_path.as_deref().unwrap_or("не запрашивалась")));
     }
@@ -184,6 +181,21 @@ fn apply_update_progress(plan:UpdatePlan,mode:&str,backup:bool,backup_base:&Path
     cleanup(&transaction,chosen.len()).map_err(|e|format!("Обновление выполнено, но {e}"))?;
     work(local_progress("Файлы установлены и проверены",1,1,chosen.len(),chosen.len()));
     Ok(result)
+}
+fn restore_update(root:&Path,transaction:&Path,chosen:&[&Entry],moved:&[usize],installed:&[usize],interval:Duration,work:&mut dyn FnMut(Progress))->Result<(),String>{
+    let mut bytes=0u64;
+    for &i in installed{let path=root.join(&chosen[i].relative);if no_links(&path).is_ok(){if let Ok(meta)=fs::metadata(path){bytes=bytes.saturating_add(meta.len());}}}
+    let mut p=FileProgress::with_interval("Восстанавливаем исходные файлы",bytes,moved.len()+installed.len(),interval,work);
+    let mut failure=None;
+    for &i in installed.iter().rev(){let e=chosen[i];let path=root.join(&e.relative);
+        let attempt=(||{if present_hash_progress(&path,|n|p.advance(n))?!=Some(e.hash.clone()){return Err("Файлы проекта изменились во время обновления".into());}fs::remove_file(&path).map_err(|e|io_at("Удаление файла при откате",&path,e))})();
+        match attempt{Ok(())=>p.file_done(),Err(e)=>{if failure.is_none(){failure=Some(e);}}}
+    }
+    for &i in moved.iter().rev(){let target=root.join(&chosen[i].relative);
+        let attempt=(||{no_links(&target)?;if target.exists(){return Err("Файлы проекта изменились во время обновления".into());}fs::rename(transaction.join(format!("{i}.old")),&target).map_err(|e|io_at("Возврат прежнего файла",&target,e))})();
+        match attempt{Ok(())=>p.file_done(),Err(e)=>{if failure.is_none(){failure=Some(e);}}}
+    }
+    if let Some(error)=failure{Err(error)}else{Ok(())}
 }
 fn cleanup(transaction:&Path,count:usize)->Result<(),String>{
     no_links(transaction)?;
@@ -273,6 +285,18 @@ mod tests {
         assert!(!progress.iter().any(|p|p.phase=="Файлы установлены и проверены"));assert!(progress.iter().any(|p|p.phase=="Восстанавливаем исходные файлы"));
         assert!(error.contains("Изменения отменены"));assert_eq!(fs::read(f.root.join("project").join(first)).unwrap(),original);assert_eq!(fs::read(f.root.join("project").join(second)).unwrap(),b"external-edit");
         assert!(make_update(&f.old,&f.new,&f.target).is_ok());
+    }
+    #[test]
+    fn rollback_reports_actual_reads_inside_large_file_before_restoring_it(){
+        let f=fixture();let target=f.root.join("project/Large.bin");let transaction=f.root.join("rollback-progress");fs::create_dir(&transaction).unwrap();let before=vec![1u8;256*1024];let after=vec![2u8;256*1024];fs::write(&target,&after).unwrap();fs::write(transaction.join("0.old"),&before).unwrap();
+        let entry=Entry{relative:PathBuf::from("Large.bin"),source:f.root.join("unused"),hash:digest(&after),before:Some(digest(&before)),changed:true,conflict:false};let mut events=vec![];
+        restore_update(&f.root.join("project"),&transaction,&[&entry],&[0],&[0],Duration::ZERO,&mut|p|events.push(p)).unwrap();
+        assert!(events.iter().any(|p|p.done>0&&p.done<p.total&&p.files_done==0));assert!(events.iter().all(|p|p.phase=="Восстанавливаем исходные файлы"&&p.network_bytes==0&&!p.can_pause));let last=events.last().unwrap();assert_eq!((last.done,last.total),(after.len()as u64,after.len()as u64));assert_eq!((last.files_done,last.files_total),(2,2));assert_eq!(fs::read(target).unwrap(),before);assert!(!transaction.join("0.old").exists());
+    }
+    #[test]
+    fn rollback_refuses_foreign_target_and_never_reports_success(){
+        let f=fixture();let target=f.root.join("project/Large.bin");let transaction=f.root.join("rollback-conflict");fs::create_dir(&transaction).unwrap();let foreign=vec![7u8;128*1024];fs::write(&target,&foreign).unwrap();fs::write(transaction.join("0.old"),b"original").unwrap();let entry=Entry{relative:PathBuf::from("Large.bin"),source:f.root.join("unused"),hash:digest(b"expected installed"),before:Some(digest(b"original")),changed:true,conflict:false};let mut events=vec![];
+        assert!(restore_update(&f.root.join("project"),&transaction,&[&entry],&[0],&[0],Duration::ZERO,&mut|p|events.push(p)).unwrap_err().contains("Файлы проекта изменились"));assert!(events.iter().any(|p|p.done>0));assert!(events.iter().all(|p|p.files_done<p.files_total&&p.done<p.total));assert_eq!(fs::read(target).unwrap(),foreign);assert_eq!(fs::read(transaction.join("0.old")).unwrap(),b"original");
     }
     #[test]
     fn stale_preview_changes_token_and_mismatched_material_is_rejected(){

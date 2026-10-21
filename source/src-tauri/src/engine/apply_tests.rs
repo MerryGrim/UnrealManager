@@ -14,7 +14,7 @@ pub(super) fn permission_baseline(plan:&Plan,stage:&Path,ops:&[Operation])->Resu
 }
 
 mod frozen_dce2 {
-    use super::*;
+use super::*;
     thread_local! {static READ_BYTES:Cell<u64>=const{Cell::new(0)};}
     pub(super) fn reset_bytes(){READ_BYTES.with(|n|n.set(0));}
     pub(super) fn read_bytes()->u64{READ_BYTES.with(Cell::get)}
@@ -230,6 +230,9 @@ fn original_verify_bulk(root:&Path,stage:&Path,ops:&[Operation],paused:Option<&A
     })
 }
 }
+
+#[path="apply_failure_tests.rs"]
+mod failure_matrix;
 
 struct Fixture { base: PathBuf, id: String, marker_ready: bool }
 impl Fixture {

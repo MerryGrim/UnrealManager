@@ -1,5 +1,38 @@
 # Change notes
 
+## Unreleased — 1.0 stabilization
+
+- Offer explicit restoration of verified old application files after an
+  interrupted installed update. Preserve current files, old backups and the
+  original journal in a retained repair archive; leave user data untouched.
+- Let a new Setup check interrupted-update recovery before copying files,
+  including when the installed executable is damaged. Reuse the signed update
+  metadata and reject changed backups or unrelated installer claims.
+- Acknowledge update startup after the initialized React interface commits,
+  retaining compatibility with the existing helper health payload.
+- Recover a damaged or out-of-range partial download with one bounded clean
+  retry of that block. Keep verified sibling blocks and interrupted transfers.
+- Preserve the operating-system cause in Vault filesystem errors and provide
+  file-operation context during material updates and rollback.
+- Report actual read bytes and progress within a large file during engine and
+  material rollback. Show manual engine recovery in the current transfers view.
+- Keep keyboard dismissal consistent with disabled close controls during
+  material installation, and contain focus within Vault dialogs.
+- Remove only the owned partial temporary file when an atomic settings/task
+  write fails; retain the previous durable record.
+- Add interrupted-APPLY, write-failure and locked-file regression checks, a
+  canonical acceptance command, and a separate disposable-Windows distribution
+  kit. Development and test tooling remains outside the runtime package.
+- Check settings navigation and modal keyboard behavior across all nine
+  languages, four renderer pixel scales and two window sizes.
+- Show an explicit Epic sign-in action when an account or Fab API returns
+  HTTP 401. Keep saved partial downloads and queue order; resume only after
+  the user chooses Continue or Retry. CDN errors retain their own meaning.
+
+These changes retain software rendering and use no permanent helper service.
+Validation results for this unreleased work are recorded separately from the
+published 0.9.3 checks below.
+
 ## 0.9.3 — 2026-10-20
 
 Download the installer or portable edition from

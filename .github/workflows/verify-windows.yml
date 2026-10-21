@@ -1,0 +1,158 @@
+name: Verify Windows source
+
+on:
+  push:
+    # New workflows can be exercised by a branch push before they are present
+    # on the default branch. No PR, main merge or release is needed.
+    branches: [main, codex/acceptance]
+    paths: ['source/**', 'verification/**', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '.github/workflows/verify-windows.yml']
+  pull_request:
+    paths: ['source/**', 'verification/**', 'LICENSE', 'THIRD_PARTY_NOTICES.md', '.github/workflows/verify-windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      distribution_artifact_id: ${{ steps.ci_distributions.outputs.artifact-id }}
+      distribution_artifact_digest: ${{ steps.ci_distributions.outputs.artifact-digest }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # Only preinstalled rustup/Edge/MSVC come from the hosted image. New
+      # tools, downloaded crates, npm cache and build outputs stay in workspace.
+      CARGO_HOME: ${{ github.workspace }}/verification/current/ci-tools/cargo
+      RUSTUP_HOME: ${{ github.workspace }}/verification/current/ci-tools/rustup
+      RUSTUP_TOOLCHAIN: '1.99.0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/verification/current/ci-tools/target
+      npm_config_cache: ${{ github.workspace }}/verification/current/ci-tools/npm-cache
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      UM_PLAYWRIGHT_MODULE: ${{ github.workspace }}/verification/current/ci-tools/browser/node_modules/playwright
+      UM_TEMP_DIR: ${{ github.workspace }}/verification/current/ci-temp
+      UM_ACCEPTANCE_HOSTED_SCOPE: 'GitHub-hosted Windows Server 2022; administrative token recorded at runtime. Not clean Windows 10/11 or standard-user acceptance.'
+    steps:
+      - name: Check out source without persistent credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Provision pinned Node on the workspace volume
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tools = Join-Path $env:GITHUB_WORKSPACE 'verification/current/ci-tools'
+          New-Item -ItemType Directory -Force -Path $tools, $env:UM_TEMP_DIR | Out-Null
+          $env:TEMP = $env:UM_TEMP_DIR
+          $env:TMP = $env:UM_TEMP_DIR
+          $name = 'node-v24.21.0-win-x64.zip'
+          Invoke-WebRequest ('https://nodejs.org/dist/v24.21.0/' + $name) -OutFile (Join-Path $tools $name)
+          Invoke-WebRequest 'https://nodejs.org/dist/v24.21.0/SHASUMS256.txt' -OutFile (Join-Path $tools 'SHASUMS256.txt')
+          $entry = @(Get-Content (Join-Path $tools 'SHASUMS256.txt') | Where-Object { $_ -match ('^[0-9a-f]{64}\s+' + [regex]::Escape($name) + '$') })
+          $expected = '158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541'
+          if ($entry.Count -ne 1 -or ($entry[0] -split '\s+')[0] -ne $expected -or (Get-FileHash (Join-Path $tools $name) -Algorithm SHA256).Hash -ne $expected) { throw 'Node archive checksum mismatch.' }
+          Expand-Archive (Join-Path $tools $name) -DestinationPath $tools
+          Join-Path $tools 'node-v24.21.0-win-x64' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Provision pinned development dependencies (network allowed here)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          New-Item -ItemType Directory -Force -Path $env:UM_TEMP_DIR | Out-Null
+          $env:TEMP = $env:UM_TEMP_DIR
+          $env:TMP = $env:UM_TEMP_DIR
+          rustup toolchain install 1.99.0 --profile minimal --no-self-update
+          npm.cmd ci --prefix source --no-audit --no-fund
+          # This isolated test tool is not an application/package dependency.
+          npm.cmd install --prefix verification/current/ci-tools/browser --no-save --package-lock=false --ignore-scripts --no-audit --no-fund playwright@1.62.1
+          cargo fetch --manifest-path source/src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
+      - name: Run offline locked acceptance (no signing key, app or installer)
+        run: ./verification/run-acceptance.ps1
+      - name: Exercise real disk-full rollback on an owned hosted VHD
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $reports = @(Get-ChildItem -Path 'verification/current/acceptance-*/reports/acceptance-report.json' -File)
+          if ($reports.Count -ne 1) { throw 'Expected exactly one report from this fresh acceptance run.' }
+          $report = Get-Content -LiteralPath $reports[0].FullName -Raw | ConvertFrom-Json
+          $test = $report.nativeTestExecutable
+          if (-not $report.passed -or -not $test -or $report.sourceCommit -ne $env:GITHUB_SHA -or $test.sourceCommit -ne $env:GITHUB_SHA -or $test.target -ne 'unreal_manager_lib' -or $test.profile -ne 'release-test') { throw 'Test executable is not bound to this successful run and source commit.' }
+          if ((Get-FileHash -LiteralPath $test.path -Algorithm SHA256).Hash -ne $test.sha256) { throw 'Native test executable changed after acceptance.' }
+          ./verification/distribution/Invoke-HostedDiskFull.ps1 -TestExecutable $test.path -TestExecutableSha256 $test.sha256 -OutputDirectory "$env:GITHUB_WORKSPACE/verification/current/hosted-disk-full"
+      - name: Build unsigned CI distributions using the warm target
+        run: ./verification/distribution/Build-HostedDistribution.ps1 -OutputDirectory "$env:GITHUB_WORKSPACE/verification/current/hosted-packages"
+      - name: Retain exact-run unsigned packages for isolated lifecycle jobs
+        id: ci_distributions
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-ci-distributions-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+          path: verification/current/hosted-packages/Packages/
+      - name: Retain verification reports and mocked UI evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-verification-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: warn
+          # No build caches, binaries, DPAPI keys or native fixture bodies.
+          path: |
+            verification/current/acceptance-*/logs/**
+            verification/current/acceptance-*/reports/**
+            verification/current/acceptance-*/ui/**
+            verification/current/app-updates-*/**
+            verification/current/app-startup-ready-*/**
+            verification/current/runtime-evidence-tests-*/test-report.json
+            verification/current/epic-auth-required-*/ui-report.json
+            verification/current/hosted-disk-full/reports/**
+            verification/current/hosted-disk-full/logs/**
+            verification/current/hosted-packages/build-report.json
+            verification/current/hosted-packages/logs/**
+            verification/current/hosted-packages/Packages/build-info.json
+
+  distribution-lifecycle:
+    name: Isolated distribution lifecycle (${{ matrix.os }})
+    needs: acceptance
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      # Same built bytes on both hosted images. No fresh compiler/tool cache,
+      # signing secret or package build is used in these lifecycle jobs.
+      UM_ACCEPTANCE_HOSTED_SCOPE: 'GitHub-hosted Windows Server lifecycle only; actual token/OS recorded. Not clean Windows 10/11 or standard-user acceptance.'
+    steps:
+      - name: Check out the same source commit without persistent credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Download only the immutable package artifact from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.acceptance.outputs.distribution_artifact_id }}
+          merge-multiple: true
+          path: verification/current/hosted-packages/Packages
+      - name: Exercise isolated installer and portable lifecycle
+        run: ./verification/distribution/Invoke-HostedLifecycle.ps1 -PackagesDirectory "$env:GITHUB_WORKSPACE/verification/current/hosted-packages/Packages" -OutputDirectory "$env:GITHUB_WORKSPACE/verification/current/hosted-lifecycle"
+      - name: Retain lifecycle reports without packages or profiles
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-lifecycle-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            verification/current/hosted-lifecycle/reports/**
+            verification/current/hosted-lifecycle/logs/**
+            verification/current/hosted-packages/Packages/build-info.json

@@ -1033,5 +1033,19 @@
   "Проверьте права доступа к указанной записи Epic и повторите операцию.": "Prüfe die Zugriffsrechte für den angegebenen Epic-Eintrag und wiederhole den Vorgang.",
   "Подробности ошибки": "Fehlerdetails",
   "Ошибка регистрации Epic: {path}: {error}": "Fehler bei der Epic-Registrierung: {path}: {error}",
-  "Недостаточно прав для операции с папкой: {path}": "Unzureichende Rechte für den Ordnervorgang: {path}"
+  "Недостаточно прав для операции с папкой: {path}": "Unzureichende Rechte für den Ordnervorgang: {path}",
+  "Чтение файла": "Lesen einer Datei",
+  "Ошибка файловой системы (Чтение файла): {path}: {error}": "Dateisystemfehler (Lesen einer Datei): {path}: {error}",
+  "Чтение блока": "Lesen eines Blocks",
+  "Ошибка файловой системы (Чтение блока): {path}: {error}": "Dateisystemfehler (Lesen eines Blocks): {path}: {error}",
+  "Удаление повреждённого блока": "Entfernen eines beschädigten Blocks",
+  "Ошибка файловой системы (Удаление повреждённого блока): {path}: {error}": "Dateisystemfehler (Entfernen eines beschädigten Blocks): {path}: {error}",
+  "Сохранение блока": "Speichern eines Blocks",
+  "Ошибка файловой системы (Сохранение блока): {path}: {error}": "Dateisystemfehler (Speichern eines Blocks): {path}: {error}",
+  "Чтение файла при откате": "Lesen einer Datei beim Zurücksetzen",
+  "Ошибка файловой системы (Чтение файла при откате): {path}: {error}": "Dateisystemfehler (Lesen einer Datei beim Zurücksetzen): {path}: {error}",
+  "Удаление файла при откате": "Entfernen einer Datei beim Zurücksetzen",
+  "Ошибка файловой системы (Удаление файла при откате): {path}: {error}": "Dateisystemfehler (Entfernen einer Datei beim Zurücksetzen): {path}: {error}",
+  "Возврат прежнего файла": "Wiederherstellen der bisherigen Datei",
+  "Ошибка файловой системы (Возврат прежнего файла): {path}: {error}": "Dateisystemfehler (Wiederherstellen der bisherigen Datei): {path}: {error}"
 }

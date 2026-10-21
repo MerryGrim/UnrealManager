@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "status": "notRun",
+  "os": ["Windows 10 x64 clean image", "Windows 11 x64 clean image"],
+  "perOsCases": [
+    {"id":"installed-runtime-offline","mode":"installed","webView":"present","network":"offline","expected":"Install, actual UI, close, uninstall, reinstall UI, close, uninstall; sentinel and registry assertions pass"},
+    {"id":"installed-missing-online","mode":"installed","webView":"missing","network":"online","expected":"Actual Microsoft bootstrapper installs runtime, Setup and actual UI succeed; standard user remains original profile"},
+    {"id":"installed-missing-offline","mode":"installed","webView":"missing","network":"offline","expected":"Expected failure: Setup nonzero, no app EXE copied, runtime absent; clear error recorded"},
+    {"id":"portable-runtime-offline","mode":"portable","webView":"present","network":"offline","expected":"Fixed-six ZIP extraction, actual UI, close, own Data sentinels preserved"},
+    {"id":"portable-missing-offline","mode":"portable","webView":"missing","network":"offline","expected":"Actionable runtime error/controlled exit observed manually; not a working offline application"}
+  ],
+  "onlineManualGatesPerMode": ["fresh Epic login then close/relaunch", "same test account in official redemption with empty key", "legitimately expired/revoked session reauthentication"],
+  "manualUxGates": ["all nine app locales", "keyboard focus/Escape behavior", "real display-scale and short-workarea checks"],
+  "neverInfer": ["mock = real", "process spawn = mounted UI", "software flags = physical GPU zero", "package checks = installed lifecycle", "manual offline assertion = independently measured network isolation"]
+}

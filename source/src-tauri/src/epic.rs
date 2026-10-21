@@ -4,6 +4,14 @@ use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
 
 use tokio::sync::Mutex;
 
+pub(crate) const AUTH_REQUIRED: &str = "UM_EPIC_AUTH_REQUIRED";
+fn api_failure(error: egs_api::api::error::EpicAPIError, fallback: &str) -> String {
+    match error {
+        egs_api::api::error::EpicAPIError::HttpError { status, .. } if status == reqwest::StatusCode::UNAUTHORIZED => AUTH_REQUIRED.into(),
+        _ => fallback.into(),
+    }
+}
+
 // Login resets the shared website profile. Reserve it before either flow can
 // await so a pending login cannot replace cookies underneath redemption.
 static WEB_FLOW:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
@@ -113,7 +121,7 @@ async fn ensure(app: &tauri::AppHandle, session: &mut Session) -> Result<bool, S
     if session.api.user_details().refresh_token().is_none() { return Ok(false); }
     let result = tokio::time::timeout(Duration::from_secs(40), session.api.try_login()).await
         .map_err(|_| "Epic не ответил вовремя. Повторите попытку")?
-        .map_err(|_| "Не удалось восстановить вход Epic. Проверьте сеть или войдите заново")?;
+        .map_err(|error| api_failure(error, "Не удалось восстановить вход Epic. Проверьте сеть или войдите заново"))?;
     if result { save(app, session)?; }
     Ok(result)
 }
@@ -267,7 +275,7 @@ pub(crate) async fn download_manifest_bound(app: &tauri::AppHandle, state: &Epic
     let item = session.library.iter().find(|i| i.id == id && i.versions.iter().any(|v| v.artifact_id == artifact))
         .cloned().ok_or("Обновите библиотеку и выберите доступную версию материала")?;
     let infos = tokio::time::timeout(Duration::from_secs(45), session.api.fab_asset_manifest(artifact, &item.namespace, &item.id, Some("Windows")))
-        .await.map_err(|_| "Fab не ответил вовремя")?.map_err(|_| "Fab не предоставил файлы выбранной версии")?;
+        .await.map_err(|_| "Fab не ответил вовремя")?.map_err(|error| api_failure(error, "Fab не предоставил файлы выбранной версии"))?;
     for info in infos {
         for url in &info.distribution_point_base_urls {
             if let Ok(Ok(manifest)) = tokio::time::timeout(Duration::from_secs(45), session.api.fab_download_manifest(info.clone(), url)).await {
@@ -293,7 +301,7 @@ async fn fetch_library(client: &reqwest::Client, endpoint: &str, token: &str, mu
         let status = response.status();
         if !status.is_success() {
             return Err(match status.as_u16() {
-                401 => "Сеанс Epic истёк или не принят Fab. Войдите заново".into(),
+                401 => AUTH_REQUIRED.into(),
                 403 => "Fab отказал в доступе. Откройте Fab в браузере и проверьте доступ аккаунта; повторите позже".into(),
                 429 => "Fab ограничил частоту запросов. Повторите позже".into(),
                 _ => format!("Fab вернул ошибку HTTP {}. Библиотека не обновлена", status.as_u16()),
@@ -368,6 +376,42 @@ mod tests {
         ]);
         assert!(fetch_library(&reqwest::Client::new(),&url,"synthetic-test-token", |_, _| {}).await.is_err());
         server.join().unwrap();
+    }
+    #[tokio::test]
+    async fn library_401_requires_login_without_exposing_response_or_retrying() {
+        let (url,server)=mock(vec![(401,serde_json::json!({"error":"synthetic-private-response"}))]);
+        let mut progress=Vec::new();
+        let error=fetch_library(&reqwest::Client::new(),&url,"synthetic-private-token",|p,n|progress.push((p,n))).await.err().unwrap();
+        assert_eq!(error,AUTH_REQUIRED);assert!(progress.is_empty());
+        assert!(!error.contains("synthetic"));assert!(!error.contains(&url));
+        assert_eq!(server.join().unwrap().len(),1);
+    }
+    #[tokio::test]
+    async fn library_non_auth_statuses_keep_their_distinct_meaning() {
+        for (status,expected) in [(403,"Fab отказал в доступе"),(429,"Fab ограничил частоту"),(500,"HTTP 500")] {
+            let (url,server)=mock(vec![(status,serde_json::json!({"error":"synthetic-private-response"}))]);
+            let error=fetch_library(&reqwest::Client::new(),&url,"synthetic-private-token",|_,_|{}).await.err().unwrap();
+            assert_ne!(error,AUTH_REQUIRED);assert!(error.contains(expected));assert!(!error.contains("synthetic"));
+            assert_eq!(server.join().unwrap().len(),1);
+        }
+    }
+    #[test]
+    fn api_authentication_requires_a_typed_401_not_message_text_or_forbidden() {
+        use egs_api::api::error::EpicAPIError;
+        let fallback="Fab не предоставил файлы выбранной версии";
+        for status in [401,403,429,500] {
+            let error=EpicAPIError::HttpError{status:reqwest::StatusCode::from_u16(status).unwrap(),body:"synthetic-private-response".into()};
+            assert_eq!(api_failure(error,fallback),if status==401{AUTH_REQUIRED}else{fallback});
+        }
+        for error in [EpicAPIError::APIError("401 expired synthetic-private-response".into()),EpicAPIError::InvalidCredentials,EpicAPIError::FabTimeout] {
+            assert_eq!(api_failure(error,fallback),fallback);
+        }
+    }
+    #[tokio::test]
+    async fn account_exchange_401_requires_login_without_exposing_response() {
+        let (url,server)=mock(vec![(401,serde_json::json!({"error":"synthetic-private-response"}))]);
+        assert_eq!(request_web_exchange(&exchange_client().unwrap(),&url,"synthetic-private-token").await.unwrap_err(),AUTH_REQUIRED);
+        assert_eq!(server.join().unwrap().len(),1);
     }
     #[tokio::test]
     async fn repeated_cursor_stops() {
@@ -496,6 +540,7 @@ async fn request_web_exchange(client:&reqwest::Client,url:&str,access_token:&str
     // response body on failure. Never include tokens, URLs or bodies in errors.
     let mut response=client.get(url).bearer_auth(access_token).send().await.map_err(|_|WEB_EXCHANGE_ERROR)?;
     const LIMIT:usize=8*1024;
+    if response.status()==reqwest::StatusCode::UNAUTHORIZED{return Err(AUTH_REQUIRED.into());}
     if response.status()!=reqwest::StatusCode::OK || response.content_length().is_some_and(|n|n>LIMIT as u64){return Err(WEB_EXCHANGE_ERROR.into());}
     let mut body=Vec::new();
     while let Some(chunk)=response.chunk().await.map_err(|_|WEB_EXCHANGE_ERROR)?{

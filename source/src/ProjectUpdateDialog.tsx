@@ -1,4 +1,5 @@
 import { tr, getLocale } from './i18n';
+import {ModalFocusScope} from './ModalFocusScope';
 import { useEffect, useRef, useState } from 'react';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { FolderOpen, RefreshCw, ShieldCheck, X } from 'lucide-react';
@@ -99,8 +100,7 @@ export function ProjectUpdateDialog({ items, projects, engines, initial, initial
         setWork(null);
     } };
     const count = preview ? (mode === 'all' ? preview.allFiles : preview.changed.length + preview.added.length) : 0;
-    return <div className="modal-backdrop" onKeyDown={e => { if (e.key === 'Escape' && !busy)
-        onClose(); }}><section className="login-dialog vault-dialog project-update-dialog" role="dialog" aria-modal="true" aria-label={tr("Обновление установленного материала")}>
+    return <ModalFocusScope onClose={onClose} closeDisabled={busy}><section className="login-dialog vault-dialog project-update-dialog" role="dialog" aria-modal="true" aria-label={tr("Обновление установленного материала")}>
   <div className="section-head"><h2>{tr(old?.kind === 'Plugin' ? 'Обновление плагина' : 'Обновление в проекте')}</h2><button disabled={busy} aria-label={tr("Закрыть обновление")} onClick={onClose}><X /></button></div>
   {tr(progress && <div ref={operation} role="status" className="update-operation"><RefreshCw className="spin" size={18}/><div><strong>{tr(work?.phase||progress)}</strong>{work&&<><progress max={Math.max(1,work.total)} value={work.total?work.done:undefined}/><p>{tr('Файлы')}: {work.filesDone} / {work.filesTotal||'…'} · {tr('Обработано')}: {workSize(work.done)}{work.total>0&&<> / {workSize(work.total)}</>}</p></>}<p>{tr(progress)}{tr(" · Дождитесь завершения перед закрытием приложения.")}</p></div></div>)}
 
@@ -124,5 +124,5 @@ export function ProjectUpdateDialog({ items, projects, engines, initial, initial
   </>)}
 {tr(error && <p role="alert" className="error-text">{tr(error)}</p>)}
   {tr(result && <><p className="vault-success" role="status">{tr("Обновлено файлов: ")}{tr(result.copied)}{tr(". Сохранено конфликтующих файлов: ")}{tr(result.preserved)}{tr(".")}</p>{tr(result.backupPath && <><p>{tr("Резервная копия:")}</p><p className="project-delete-path">{tr(result.backupPath)}</p></>)}<div className="wizard-footer"><button className="primary" onClick={onClose}>{tr("Готово")}</button></div></>)}
- </section></div>;
+ </section></ModalFocusScope>;
 }

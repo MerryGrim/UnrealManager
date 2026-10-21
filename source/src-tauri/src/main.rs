@@ -3,6 +3,19 @@
 fn main() {
     let mut args = std::env::args_os().skip(1);
     let mode=args.next();
+    if mode.as_deref()==Some(std::ffi::OsStr::new("--repair-app-update")) {
+        let repair_args:Vec<_>=args.collect();
+        let journal=repair_args.first().map(std::path::PathBuf::from);
+        match unreal_manager_lib::repair_app_update(repair_args){
+            Ok(true)=>{},
+            Ok(false)=>std::process::exit(2),
+            Err(error)=>{
+                let detail=journal.map(|path|format!("{error}\n\nЖурнал: {}",path.display())).unwrap_or(error);
+                unreal_manager_lib::report_app_repair_error(&detail);std::process::exit(1);
+            }
+        }
+        return;
+    }
     if mode.as_deref()==Some(std::ffi::OsStr::new("--epic-registration-broker")) {
         let result=args.next().ok_or_else(||"Missing registration job".to_string()).and_then(|p| {
             if args.next().is_some() { return Err("Unexpected registration arguments".into()); }

@@ -1,4 +1,5 @@
 import {getPreference,setPreference} from './preferences';
+import {EpicAuthError} from './EpicAuthError';
 import { tr, getLocale } from './i18n';
 import { PageActions } from './PageActions';
 import { LibraryTile } from './LibraryTile';
@@ -77,7 +78,7 @@ export function RedeemView({ account, onLibrary, onActivated }: {
       {tr(result.status === 'ready' && <p>{tr("Ключ ещё не активирован. Завершите подтверждение в окне Epic.")}</p>)}
       {tr(result.status === 'unknown' && <p>{tr("Окно закрыто, связь прервана или ответ Epic не удалось распознать. Проверьте результат у Epic и обновите библиотеку.")}</p>)}
     </div>)}
-    {tr(error && <p role="alert" className="error-text">{tr(error)}</p>)}
+    <EpicAuthError error={error}/>
   </section></div>;
 }
 export function useEpic() {
@@ -140,7 +141,7 @@ function LoginDialog({ onClose, onSuccess }: {
     <label className="remember"><input type="checkbox" checked={remember} disabled={busy} onChange={e => setRemember(e.target.checked)}/>{tr(" Запомнить вход на этом компьютере")}</label>
     <p className="muted">{tr("Пароль и код подтверждения вводятся только на сайте Epic. Сохранённый сеанс защищён Windows.")}</p>
     {tr(busy && <div className="library-loading" role="status"><RefreshCw className="loading-spinner" size={24}/><div><strong>{tr("Ожидаем вход в Epic Games…")}</strong><p>{tr("Завершите вход в открывшемся окне. Копировать коды не нужно.")}</p></div></div>)}
-    {tr(error && <p className="error-text" role="alert">{tr(error)}</p>)}
+    <EpicAuthError error={error}/>
     <div className="dialog-actions"><button className="primary" onClick={begin} disabled={busy}><LogIn size={17}/>{tr(busy ? 'Выполняется вход…' : 'Войти через Epic Games')}</button>
     {tr(busy && <button onClick={cancel}>{tr("Отменить вход")}</button>)}</div>
   </section></div>;
@@ -292,7 +293,7 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
         setPreference('um-library-page-size', String(n));
     }
     catch { } }}>{tr([24, 48, 96, 192].map(n => <option key={n} value={n}>{tr(n)}</option>))}</select></label></div>
-    {tr(error && <p className="error-text" role="alert">{tr(error)}</p>)}
+    <EpicAuthError error={error}/>
     {tr(!loading && loaded && !filtered.length && <div className="empty">{tr(category === 'downloaded' ? 'В Vault пока нет материалов, соответствующих фильтрам.' : 'Материалы не найдены.')}</div>)}
     <div className="library-items"><div className="fab-grid">{tr(filtered.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map(item => <LibraryTile key={item.id} item={item} onOpen={onDownload} busy={downloadBusy} progress={downloadProgress?.id===item.id?downloadProgress:pendingProgress[item.id]||null} resumeId={pendingProgress[item.id]?.taskId} onResume={onResume} downloaded={downloadedIds.has(item.id)} onVaultChanged={onVaultChanged} packageIds={downloaded.filter(p => p.assetId === item.id || (!p.assetId && p.title === item.title && downloadedIds.has(item.id))).map(p => p.id)} packageId={downloaded.find(p => p.assetId === item.id || (!p.assetId && p.title === item.title && downloadedIds.has(item.id)))?.id}/>))}</div></div>
     {tr(filtered.length > 0 && <div className="pagination"><span>{tr("Найдено: ")}{tr(filtered.length)}{tr(" · Страница ")}{tr(currentPage + 1)}{tr(" из ")}{tr(pages)}</span><button disabled={!currentPage} onClick={() => setPage(p => p - 1)}>{tr("Назад")}</button><button disabled={currentPage >= pages - 1} onClick={() => setPage(p => p + 1)}>{tr("Далее")}</button></div>)}

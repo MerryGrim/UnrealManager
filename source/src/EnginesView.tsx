@@ -2,6 +2,7 @@ import {type EngineTransfer, type EngineProgress, transferSize, formatEnginePhas
 import {EngineResumeTasks} from './EngineResumeTasks';
 import {EnginePauseButton} from './EnginePauseButton';
 import {EnginePermissionError,parseEnginePermissionError} from './EnginePermissionError';
+import {EngineRecoveryProgress} from './EngineRecoveryProgress';
 import { tr, getLocale } from './i18n';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -66,6 +67,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
     const [isUpdate, setIsUpdate] = useState(false);
     const [isModify, setIsModify] = useState(false);
     const [resuming,setResuming]=useState(false);
+    const [recovering,setRecovering]=useState<string|null>(null);
     const check = async () => { setChecking(true); setError(''); try {
         setPending(await invoke<{
             path: string;
@@ -92,6 +94,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
         if (lock.current)
             return;
         setResuming(false);
+        setRecovering(null);
         selectedComponents.current = undefined;
         setChoice(release);
         setPath(destination || '');
@@ -160,10 +163,22 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
         lock.current = false;
         onProgress(null);
     } };
-    const resume=async(id:string,legacyPath?:string)=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');try{
+    const resume=async(id:string,legacyPath?:string)=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');setRecovering(null);setProgress(null);try{
         const info=await invoke<Preview>(legacyPath?'engine_resume_legacy_prepare':'engine_resume_prepare',legacyPath?{path:legacyPath}:{id});
         selectedComponents.current=undefined;setChoice({appName:info.appName,build:info.build,version:info.appName.replace('UE_',''),installed:[]});setPath(info.path);setIsUpdate(info.update);setIsModify(false);setResuming(true);setPreview(info);setProgress(null);setResult('');visible.current=true;setOpen(true);
     }catch(e){setError(String(e));}finally{setBusy(false);lock.current=false;}};
+    const recover=async(destination:string)=>{
+        if(lock.current)return;
+        lock.current=true;setBusy(true);setError('');setResult('');setRecovering(destination);
+        setChoice(null);setOpen(false);visible.current=false;
+        const initial:Progress={phase:'Восстанавливаем исходные файлы',done:0,total:0,percent:0,networkBytes:0,canPause:false};
+        setProgress(initial);onProgress({...initial,title:tr('Восстанавливаем исходные файлы'),bytesPerSecond:0});
+        const channel=new Channel<Progress>();
+        channel.onmessage=value=>{const current={...value,networkBytes:0,bytesPerSecond:0,canPause:false};setProgress(current);onProgress({...current,title:tr('Восстанавливаем исходные файлы')});};
+        try{await invoke('engine_recover',{path:destination,onProgress:channel});setResult('Изменения отменены');await onRefresh();await check();}
+        catch(error){setError(String(error));}
+        finally{setBusy(false);lock.current=false;onProgress(null);}
+    };
     useEffect(()=>{const handler=(event:Event)=>{void resume((event as CustomEvent<string>).detail);};window.addEventListener('um-resume-engine',handler);return()=>window.removeEventListener('um-resume-engine',handler);},[]);
     const browse = async () => { try {
         const folder = await invoke<string | null>('choose_project_location', { folder: true });
@@ -194,8 +209,9 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
     };
     const local = engines.map(e => ({ e, release: releases.find(r => r.installed.some(i => i.path.toLowerCase() === e.path.toLowerCase())) }));
     return <div className="content engine-content"><div className="toolbar"><div className="tabs"><button className={tab === 'installed' ? 'selected' : ''} onClick={() => setTab('installed')}>{tr("Установленные")}</button><button className={tab === 'available' ? 'selected' : ''} onClick={() => setTab('available')}>{tr("Доступные")}</button></div><PageActions><button disabled={checking || busy} onClick={() => void check()}><RefreshCw size={17} className={checking ? 'spin' : ''}/>{tr(checking ? 'Проверяем…' : 'Проверить обновления')}</button><button className="primary" onClick={() => setTab('available')}><Download size={17}/>{tr("Установить движок")}</button></PageActions></div>
- {!busy&&<EngineResumeTasks busy={busy} legacy={pending} onResume={(id,path)=>void resume(id,path)} refreshKey={result} onRecover={async path=>{setBusy(true);try{await invoke('engine_recover',{path});await onRefresh();await check();}catch(e){setError(String(e));}finally{setBusy(false);}}}/>}
- {tr(error && !open && <EnginePermissionError error={error}/>)}{tr(busy && !open && <button className="engine-operation" onClick={() => { visible.current = true; setOpen(true); }}><RefreshCw className={progress?.paused?"":"spin"} size={17}/>{tr(progress?.paused?"На паузе":formatEnginePhase(progress?.phase || 'Операция с движком'))}{progress && engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</button>)}
+ {!busy&&<EngineResumeTasks busy={busy} legacy={pending} onResume={(id,path)=>void resume(id,path)} refreshKey={result} onRecover={destination=>void recover(destination)}/>}
+ {recovering&&<EngineRecoveryProgress path={recovering} progress={progress} busy={busy} result={result} error={error} onClose={()=>{setRecovering(null);setProgress(null);setResult('');setError('');}}/>}
+ {tr(error && !open && !recovering && <EnginePermissionError error={error}/>)}{tr(busy && !open && !recovering && <button className="engine-operation" onClick={() => { visible.current = true; setOpen(true); }}><RefreshCw className={progress?.paused?"":"spin"} size={17}/>{tr(progress?.paused?"На паузе":formatEnginePhase(progress?.phase || 'Операция с движком'))}{progress && engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</button>)}
  {tr(tab === 'installed' ? <div className="grid" onContextMenu={event => event.preventDefault()}>{tr(local.map(({ e, release }) => { const installed = release?.installed.find(i => i.path.toLowerCase() === e.path.toLowerCase()); return <div className="card engine" key={e.path} tabIndex={0} aria-label={tr(`Unreal Engine ${installed?.version || e.version}`)}><div className="ue-logo">{tr("UE")}</div><div><span className="eyebrow">{tr("UNREAL ENGINE")}</span><div className="engine-version-heading"><h3>{tr(installed?.version || e.version)}</h3>{tr(installed?.updateAvailable && <span className="engine-update-badge">{tr("Доступна ")}{tr(release?.build.split('-')[0])}</span>)}</div><p>{e.path}</p><small>{tr("Установлена")}</small></div><div className="card-actions"><button disabled={busy} className="primary" onClick={() => void launch(e.path)}><Rocket size={16}/>{tr("Запустить")}</button><button className="engine-icon-action" title={tr("Изменить")} aria-label={tr("Изменить")} disabled={busy} onClick={() => { if (release) select(release, e.path, true); else setError(tr("Войдите в Epic и проверьте список доступных движков.")); }}><SlidersHorizontal size={19}/></button><button disabled={busy} className="danger-text engine-icon-action" title={tr("Удалить навсегда")} aria-label={tr("Удалить навсегда")} onClick={() => setDeletion(e.path)}><Trash2 size={19}/></button>{tr(release && installed?.updateAvailable && <button disabled={busy} onClick={() => select(release, e.path)}><Download size={17}/>{tr("Обновить")}</button>)}</div>{tr(activeApp === release?.appName && progress && busy && <div className="engine-tile-progress"><progress aria-label={tr("Прогресс загрузки")} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><span>{tr(progress.paused?"На паузе":formatEnginePhase(progress.phase))}{engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</span></div>)}</div>; }))}</div> : <div className="fab-grid engine-available-grid">{tr(available.map(r => <EngineTile key={r.appName} version={r.build.split('-')[0]} installed={r.installed.length > 0} busy={busy} active={active && tab === 'available'} onInstall={() => select(r)}/>))}</div>)}
  {tr(deletion && <EngineDelete path={deletion} onClose={() => setDeletion(null)} onDeleted={async () => { await onRefresh(); setPending(await invoke<{
         path: string;

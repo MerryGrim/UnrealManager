@@ -1033,5 +1033,19 @@
   "Проверьте права доступа к указанной записи Epic и повторите операцию.": "Comprueba los permisos del registro de Epic indicado y repite la operación.",
   "Подробности ошибки": "Detalles del error",
   "Ошибка регистрации Epic: {path}: {error}": "Error de registro de Epic: {path}: {error}",
-  "Недостаточно прав для операции с папкой: {path}": "Permisos insuficientes para la operación con la carpeta: {path}"
+  "Недостаточно прав для операции с папкой: {path}": "Permisos insuficientes para la operación con la carpeta: {path}",
+  "Чтение файла": "Lectura de archivo",
+  "Ошибка файловой системы (Чтение файла): {path}: {error}": "Error del sistema de archivos (Lectura de archivo): {path}: {error}",
+  "Чтение блока": "Lectura de bloque",
+  "Ошибка файловой системы (Чтение блока): {path}: {error}": "Error del sistema de archivos (Lectura de bloque): {path}: {error}",
+  "Удаление повреждённого блока": "Eliminación de bloque dañado",
+  "Ошибка файловой системы (Удаление повреждённого блока): {path}: {error}": "Error del sistema de archivos (Eliminación de bloque dañado): {path}: {error}",
+  "Сохранение блока": "Guardado de bloque",
+  "Ошибка файловой системы (Сохранение блока): {path}: {error}": "Error del sistema de archivos (Guardado de bloque): {path}: {error}",
+  "Чтение файла при откате": "Lectura de archivo durante la reversión",
+  "Ошибка файловой системы (Чтение файла при откате): {path}: {error}": "Error del sistema de archivos (Lectura de archivo durante la reversión): {path}: {error}",
+  "Удаление файла при откате": "Eliminación de archivo durante la reversión",
+  "Ошибка файловой системы (Удаление файла при откате): {path}: {error}": "Error del sistema de archivos (Eliminación de archivo durante la reversión): {path}: {error}",
+  "Возврат прежнего файла": "Restauración del archivo anterior",
+  "Ошибка файловой системы (Возврат прежнего файла): {path}: {error}": "Error del sistema de archivos (Restauración del archivo anterior): {path}: {error}"
 }

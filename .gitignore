@@ -8,6 +8,8 @@ tools/
 Releases/
 builds/
 distribution/
+!verification/distribution/
+!verification/distribution/**
 
 # User data and credentials must never be published
 Data/

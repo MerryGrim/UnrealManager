@@ -5,6 +5,9 @@ use tauri::Manager;
 mod verification;
 #[path="apply.rs"]
 mod apply;
+#[cfg(all(test,windows))]
+#[path="enospc_tests.rs"]
+mod enospc_tests;
 use std::{
     io::Write,
     time::{Duration, Instant},
@@ -125,10 +128,18 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
     f.sync_all().map_err(io)
 }
 pub(crate) fn atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    atomic_with_writer(path,bytes,|file,bytes|file.write_all(bytes).map_err(io))
+}
+fn atomic_with_writer(path:&Path,bytes:&[u8],write:impl FnOnce(&mut fs::File,&[u8])->Result<(),String>)->Result<(),String>{
     no_links(path)?;
     let temp = path.with_extension(format!("um-{}", uuid::Uuid::new_v4()));
-    write_new(&temp, bytes)?;
-    let result=fs::rename(&temp,path).map_err(io);
+    no_links(&temp)?;
+    fs::create_dir_all(temp.parent().ok_or("Путь файла")?).map_err(io)?;
+    // Own the temporary only after create_new succeeds. Even a partial write
+    // failure must close and remove this file without touching the old record.
+    let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(io)?;
+    let written=write(&mut file,bytes).and_then(|_|file.sync_all().map_err(io));drop(file);
+    let result=written.and_then(|_|fs::rename(&temp,path).map_err(io));
     if result.is_err(){let _=fs::remove_file(&temp);}
     result
 }
@@ -300,50 +311,49 @@ fn rollback(root: &Path, stage: &Path, operations: &[Operation]) -> Result<(), S
     rollback_reported(root,stage,operations,|_,_|{})
 }
 fn rollback_reported(root:&Path,stage:&Path,operations:&[Operation],mut progress:impl FnMut(u64,u64))->Result<(),String>{
-    progress(0,operations.len() as u64);
-    let mut last=Instant::now();
+    rollback_detailed(root,stage,operations,Duration::from_millis(250),|s|progress(s.done,s.total))
+}
+struct RollbackReporter<F:FnMut(apply::Snapshot)>{notify:F,last:Instant,interval:Duration,done:u64,total:u64,read:u64,last_read:u64,name:Option<String>,kind:&'static str,current:u64,current_total:Option<u64>}
+impl<F:FnMut(apply::Snapshot)> RollbackReporter<F>{
+    fn send(&mut self,force:bool){if !force&&self.last.elapsed()<self.interval{return;}let secs=self.last.elapsed().as_secs_f64();let rate=if secs>0.0{(self.read.saturating_sub(self.last_read)as f64/secs)as u64}else{0};(self.notify)(apply::Snapshot{phase:ROLLBACK_PHASE.into(),done:self.done,total:self.total,current_file:self.name.clone(),current_file_stage:self.name.as_ref().map(|_|self.kind),current_file_done:self.name.as_ref().map(|_|self.current.min(self.current_total.unwrap_or(u64::MAX).saturating_sub(1))),current_file_total:self.current_total,read_bytes:self.read,read_bytes_per_second:rate});self.last=Instant::now();self.last_read=self.read;}
+    fn hash(&mut self,path:&Path,kind:&'static str)->Result<String,String>{self.kind=kind;self.current=0;self.current_total=Some(fs::metadata(path).map_err(|e|super::access::contextual("Чтение файла при откате",path,e))?.len());self.send(false);crate::vault::hash_file_progress(path,|n|{self.read=self.read.saturating_add(n);self.current=self.current.saturating_add(n);self.send(false)})}
+}
+fn rollback_detailed(root:&Path,stage:&Path,operations:&[Operation],interval:Duration,progress:impl FnMut(apply::Snapshot))->Result<(),String>{
+    let mut report=RollbackReporter{notify:progress,last:Instant::now(),interval,done:0,total:operations.len()as u64,read:0,last_read:0,name:None,kind:"readOld",current:0,current_total:None};report.send(true);
     for (index,op) in operations.iter().rev().enumerate() {
         let rel = relative(&op.name)?;
         let target = root.join(&rel);
         let original = stage.join("originals").join(&rel);
         no_links(&target)?;
         no_links(&original)?;
+        report.name=Some(op.name.clone());report.current=0;report.current_total=None;
         if original.exists() {
-            if op
-                .old_hash
-                .as_ref()
-                .is_none_or(|h| hash_file(&original).ok().as_ref() != Some(h))
+            if op.old_hash.as_ref()!=Some(&report.hash(&original,"readOld")?)
             {
                 return Err(format!("Резервный файл изменён: {}", op.name));
             }
             if target.exists() {
-                if op
-                    .new_hash
-                    .as_ref()
-                    .is_none_or(|h| hash_file(&target).ok().as_ref() != Some(h))
+                if op.new_hash.as_ref()!=Some(&report.hash(&target,"readNew")?)
                 {
                     return Err(format!(
                         "При откате обнаружены внешние изменения: {}",
                         op.name
                     ));
                 }
-                fs::remove_file(&target).map_err(io)?;
+                fs::remove_file(&target).map_err(|e|super::access::contextual("Удаление файла при откате",&target,e))?;
             }
-            fs::rename(original, target).map_err(io)?;
+            fs::rename(&original, &target).map_err(|e|super::access::contextual("Возврат прежнего файла",&target,e))?;
         } else if op.old_hash.is_none() && target.exists() {
-            if op
-                .new_hash
-                .as_ref()
-                .is_none_or(|h| hash_file(&target).ok().as_ref() != Some(h))
+            if op.new_hash.as_ref()!=Some(&report.hash(&target,"readNew")?)
             {
                 return Err(format!(
                     "При откате обнаружены внешние изменения: {}",
                     op.name
                 ));
             }
-            fs::remove_file(target).map_err(io)?;
+            fs::remove_file(&target).map_err(|e|super::access::contextual("Удаление файла при откате",&target,e))?;
         }
-        if last.elapsed()>=Duration::from_millis(250)||index+1==operations.len(){progress((index+1) as u64,operations.len() as u64);last=Instant::now();}
+        report.done=(index+1)as u64;report.name=None;report.current_total=None;report.send(index+1==operations.len());
     }
     Ok(())
 }
@@ -444,8 +454,9 @@ fn commit_registered_with_options(plan:&Plan,stage:&Path,ops:&[Operation],paused
     })();
     if let Err(error) = result {
         if error==super::resume::SUSPENDED{return Err(error);}
-        match rollback_reported(&root, stage, &started,|done,total|reporter.basic(ROLLBACK_PHASE,done,total))
-            .and_then(|_| registration_update(&journal.item,true,&mut broker))
+        let rollback_base=reporter.read_bytes();
+        match rollback_detailed(&root, stage, &started,Duration::from_millis(250),|s|reporter.rollback(s,rollback_base))
+            .and_then(|_| {reporter.basic(REGISTRATION_PHASE,0,0);registration_update(&journal.item,true,&mut broker)})
             .and_then(|_| update_item(&journal.launcher, true))
         {
             Ok(()) => {
@@ -1122,6 +1133,49 @@ fn cleanup_completed_controlled(root:&Path,stage:&Path,keep_backup:bool,suspend:
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct RollbackFixture(PathBuf);
+    impl RollbackFixture{fn new()->Self{let parent=std::env::var_os("UM_TEMP_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);no_links(&parent).unwrap();fs::create_dir_all(&parent).unwrap();let root=parent.join(format!("um-rollback-progress-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();Self(root)}}
+    impl Drop for RollbackFixture{fn drop(&mut self){if no_links(&self.0).is_ok(){let _=fs::remove_dir_all(&self.0);}}}
+    #[cfg(windows)]
+    #[test]
+    #[ignore="Requires an explicitly supplied dedicated <=64MiB NTFS VHD, never the host workspace volume"]
+    fn real_enospc_atomic_preserves_record_and_retries(){super::enospc_tests::run();}
+    #[test]
+    fn atomic_partial_write_error_112_preserves_record_and_removes_own_temp(){
+        let f=RollbackFixture::new();let path=f.0.join("record.json");fs::write(&path,b"original record").unwrap();let modified=fs::metadata(&path).unwrap().modified().unwrap();
+        let error=atomic_with_writer(&path,b"replacement record",|file,bytes|{file.write_all(&bytes[..5]).map_err(io)?;Err(io(std::io::Error::from_raw_os_error(112)))}).unwrap_err();
+        assert!(error.contains("os error 112"),"{error}");assert_eq!(fs::read(&path).unwrap(),b"original record");assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(),modified);assert_eq!(fs::read_dir(&f.0).unwrap().count(),1);
+        atomic(&path,b"replacement record").unwrap();assert_eq!(fs::read(&path).unwrap(),b"replacement record");assert_eq!(fs::read_dir(&f.0).unwrap().count(),1);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn atomic_real_sharing_failure_preserves_record_and_removes_own_temp(){
+        use std::os::windows::fs::OpenOptionsExt;
+        let f=RollbackFixture::new();let path=f.0.join("record.json");fs::write(&path,b"original record").unwrap();let modified=fs::metadata(&path).unwrap().modified().unwrap();let held=fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap();
+        let error=atomic(&path,b"replacement record").unwrap_err();assert!(error.contains("os error 32")||error.contains("os error 5"),"Windows replacement sharing failure must retain its native code: {error}");assert!(!error.starts_with("UM_ELEVATION_REQUIRED:"));assert_eq!(fs::read(&path).unwrap(),b"original record");assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(),modified);assert_eq!(fs::read_dir(&f.0).unwrap().count(),1);drop(held);
+        atomic(&path,b"replacement record").unwrap();assert_eq!(fs::read(&path).unwrap(),b"replacement record");
+    }
+    #[test]
+    fn rollback_reports_in_file_reads_without_advancing_files_before_restore(){
+        let f=RollbackFixture::new();let dest=f.0.join("engine");let stage=f.0.join("stage");let old=vec![1u8;192*1024];let new=vec![2u8;192*1024];write_new(&stage.join("originals/a"),&old).unwrap();write_new(&dest.join("a"),&new).unwrap();let op=Operation{name:"a".into(),old_hash:Some(digest(&old)),new_hash:Some(digest(&new))};let mut events=vec![];
+        rollback_detailed(&dest,&stage,&[op],Duration::ZERO,|s|{if s.current_file_done.is_some_and(|n|n>0){assert_eq!(s.done,0);assert!(stage.join("originals/a").exists());assert_eq!(fs::metadata(dest.join("a")).unwrap().len(),new.len()as u64);}events.push(s);}).unwrap();
+        assert!(events.iter().any(|s|s.current_file_done.is_some_and(|n|n>0&&n<192*1024)&&s.current_file_stage==Some("readOld")));assert!(events.iter().any(|s|s.current_file_stage==Some("readNew")&&s.read_bytes>old.len()as u64));let last=events.last().unwrap();assert_eq!((last.done,last.total),(1,1));assert_eq!(last.read_bytes,(old.len()+new.len())as u64);assert!(last.current_file.is_none());assert_eq!(fs::read(dest.join("a")).unwrap(),old);
+    }
+    #[test]
+    fn rollback_read_failure_keeps_original_and_never_advances_to_complete(){
+        let f=RollbackFixture::new();let dest=f.0.join("engine");let stage=f.0.join("stage");write_new(&stage.join("originals/a"),&vec![7u8;128*1024]).unwrap();write_new(&dest.join("a"),b"new").unwrap();let op=Operation{name:"a".into(),old_hash:Some(digest(b"expected old")),new_hash:Some(digest(b"new"))};let mut events=vec![];
+        assert!(rollback_detailed(&dest,&stage,&[op],Duration::ZERO,|s|events.push(s)).unwrap_err().contains("Резервный файл изменён"));assert!(events.iter().any(|s|s.read_bytes>0));assert!(events.iter().all(|s|s.done==0));assert_eq!(fs::read(dest.join("a")).unwrap(),b"new");assert!(stage.join("originals/a").exists());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn rollback_real_delete_sharing_failure_keeps_both_copies_and_os_error(){
+        use std::os::windows::fs::OpenOptionsExt;
+        let f=RollbackFixture::new();let dest=f.0.join("engine");let stage=f.0.join("stage");let target=dest.join("a");let backup=stage.join("originals/a");write_new(&backup,b"old content").unwrap();write_new(&target,b"new content").unwrap();let op=Operation{name:"a".into(),old_hash:Some(digest(b"old content")),new_hash:Some(digest(b"new content"))};
+        // Read sharing permits both checksums. Denying DELETE blocks the actual
+        // removal after verification, rather than simulating an error string.
+        let held=fs::OpenOptions::new().read(true).share_mode(1).open(&target).unwrap();let mut events=vec![];let error=rollback_detailed(&dest,&stage,&[op],Duration::ZERO,|s|events.push(s)).unwrap_err();
+        assert!(error.contains("os error 32"),"{error}");assert!(error.contains(target.to_str().unwrap()));assert!(error.contains("Удаление файла при откате"));assert_eq!(events.last().unwrap().read_bytes,(b"old content".len()+b"new content".len())as u64);assert!(events.iter().all(|s|s.done==0));assert_eq!(fs::read(&backup).unwrap(),b"old content");assert_eq!(fs::read(&target).unwrap(),b"new content");drop(held);
+    }
     #[test]
     fn rollback_restores_original_and_removes_new() {
         let root = std::env::temp_dir().join(format!("um-engine-test-{}", uuid::Uuid::new_v4()));
@@ -1827,8 +1881,11 @@ pub fn engine_pending() -> Vec<Pending> {
 pub async fn engine_recover(
     state: tauri::State<'_, EngineState>,
     vault: tauri::State<'_, crate::vault::VaultState>,
+    webview:tauri::Webview,
     path: String,
+    on_progress:Option<tauri::ipc::JavaScriptChannelId>,
 ) -> Result<(), String> {
+    let on_progress:Option<tauri::ipc::Channel<Progress>>=on_progress.map(|id|id.channel_on(webview));
     let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) {
         return Err("Дождитесь текущей операции".into());
@@ -1843,14 +1900,20 @@ pub async fn engine_recover(
         idle(&root)?;
         let _installation_lock = lock_installation(&root)?;
         let (stage, mut j) = recovery(&root)?;
+        let notify=|p:Progress|{if let Some(channel)=&on_progress{let _=channel.send(p);}};
         let mut broker=None;
         if j.status != "complete" {
             match item_access(&j.item,true,"recovery"){
-                Ok(())=>(),Err(error)if error.starts_with("UM_ELEVATION_REQUIRED:")=>{broker=Some(crate::elevation::prepare(j.item.as_ref().ok_or("Не найдена запись Epic для восстановления")?)?);},Err(error)=>return Err(error),
+                Ok(())=>(),Err(error)if error.starts_with("UM_ELEVATION_REQUIRED:")=>{notify(Progress::waiting_for_permission());broker=Some(crate::elevation::prepare(j.item.as_ref().ok_or("Не найдена запись Epic для восстановления")?)?);},Err(error)=>return Err(error),
             }
             if let Some(broker)=broker.as_mut(){broker.check()?;}
-            super::access::operations(&root,&stage,&j.operations,"recovery")?;
-            rollback(&root, &stage, &j.operations)?;
+            super::access::operations_reported(&root,&stage,&j.operations,"recovery",|done,total,name|notify(Progress{phase:"Проверяем права доступа".into(),done,total,percent:done.saturating_mul(100)/total.max(1),files_done:done,files_total:total,current_file:name.map(str::to_owned),..Default::default()}))?;
+            rollback_detailed(&root,&stage,&j.operations,Duration::from_millis(250),|s|{
+                let mut p=commit_progress(&s.phase,s.done,s.total,0,&[],0,false);
+                p.current_file=s.current_file;p.current_file_stage=s.current_file_stage;p.current_file_done=s.current_file_done;p.current_file_total=s.current_file_total;p.read_bytes=Some(s.read_bytes);p.read_bytes_per_second=Some(s.read_bytes_per_second);
+                notify(p);
+            })?;
+            notify(Progress{phase:REGISTRATION_PHASE.into(),..Default::default()});
             registration_update(&j.item,true,&mut broker)?;
             update_item(&j.launcher, true)?;
             j.status = "rolledBack".into();
@@ -1859,6 +1922,7 @@ pub async fn engine_recover(
                 &serde_json::to_vec(&j).unwrap(),
             )?;
         }
+        notify(Progress{phase:"Завершаем очистку".into(),..Default::default()});
         let marker=root.join(".um-engine-update.json");super::access::remove(&marker,"recovery")?;
         fs::remove_file(&marker).map_err(|e|super::access::contextual("Удаление маркера восстановления",&marker,e))
     })

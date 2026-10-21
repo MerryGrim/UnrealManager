@@ -1033,5 +1033,19 @@
   "Проверьте права доступа к указанной записи Epic и повторите операцию.": "Vérifiez les droits d’accès à l’entrée Epic indiquée et réessayez.",
   "Подробности ошибки": "Détails de l’erreur",
   "Ошибка регистрации Epic: {path}: {error}": "Erreur d’enregistrement Epic : {path} : {error}",
-  "Недостаточно прав для операции с папкой: {path}": "Droits insuffisants pour l’opération sur le dossier : {path}"
+  "Недостаточно прав для операции с папкой: {path}": "Droits insuffisants pour l’opération sur le dossier : {path}",
+  "Чтение файла": "Lecture d’un fichier",
+  "Ошибка файловой системы (Чтение файла): {path}: {error}": "Erreur du système de fichiers (Lecture d’un fichier) : {path} : {error}",
+  "Чтение блока": "Lecture d’un bloc",
+  "Ошибка файловой системы (Чтение блока): {path}: {error}": "Erreur du système de fichiers (Lecture d’un bloc) : {path} : {error}",
+  "Удаление повреждённого блока": "Suppression d’un bloc endommagé",
+  "Ошибка файловой системы (Удаление повреждённого блока): {path}: {error}": "Erreur du système de fichiers (Suppression d’un bloc endommagé) : {path} : {error}",
+  "Сохранение блока": "Enregistrement d’un bloc",
+  "Ошибка файловой системы (Сохранение блока): {path}: {error}": "Erreur du système de fichiers (Enregistrement d’un bloc) : {path} : {error}",
+  "Чтение файла при откате": "Lecture d’un fichier pendant la restauration",
+  "Ошибка файловой системы (Чтение файла при откате): {path}: {error}": "Erreur du système de fichiers (Lecture d’un fichier pendant la restauration) : {path} : {error}",
+  "Удаление файла при откате": "Suppression d’un fichier pendant la restauration",
+  "Ошибка файловой системы (Удаление файла при откате): {path}: {error}": "Erreur du système de fichiers (Suppression d’un fichier pendant la restauration) : {path} : {error}",
+  "Возврат прежнего файла": "Restauration du fichier précédent",
+  "Ошибка файловой системы (Возврат прежнего файла): {path}: {error}": "Erreur du système de fichiers (Restauration du fichier précédent) : {path} : {error}"
 }
