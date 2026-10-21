@@ -226,7 +226,9 @@ mod tests {
         let before = fs::read(&valid).unwrap();
         let mut bad_path_observed = false;
         let inspected = scan(&f.root.join("search"), uuid::Uuid::new_v4().to_string(), &Control::new(false), Options::default(), |_| {}, |paths| { assert_eq!(paths.len(), 1); assert_eq!(crate::project_registry::path_key(&paths[0]), crate::project_registry::path_key(&valid)); bad_path_observed = true; Ok(0) }).unwrap();
-        assert!(bad_path_observed); assert!(inspected.errors.iter().any(|error| error.starts_with("Не удалось проверить проект ") && error.contains(&invalid.to_string_lossy().to_string())));
+        let invalid_display = crate::project_registry::display_path(invalid.canonicalize().unwrap());
+        let expected_context = format!("Не удалось проверить проект {}: ", invalid_display.display());
+        assert!(bad_path_observed); assert!(inspected.errors.iter().any(|error| error.starts_with(&expected_context)), "expected exact descriptor context {expected_context:?}, got {:?}", inspected.errors);
         let error = scan(&f.root.join("search"), uuid::Uuid::new_v4().to_string(), &Control::new(false), Options::default(), |_| {}, |_| Err("fixture write denied".into())).unwrap_err();
         assert!(error.starts_with("Не удалось сохранить список найденных проектов:")); assert_eq!(fs::read(valid).unwrap(), before); assert_eq!(fs::read(invalid).unwrap(), b"[]"); assert!(!f.record().exists());
         assert!(scan(Path::new("relative"), uuid::Uuid::new_v4().to_string(), &Control::new(false), Options::default(), |_| {}, |_| panic!("invalid root")).is_err());
@@ -262,8 +264,8 @@ mod tests {
         struct Junction(PathBuf); impl Drop for Junction { fn drop(&mut self) { if fs::symlink_metadata(&self.0).is_ok_and(|m| reparse(&m)) { let _ = fs::remove_dir(&self.0); } } }
         let command = format!("mklink /J \"{}\" \"{}\"", link.display(), outside.display());
         let junction = Junction(link.clone());
-        let created = std::process::Command::new("cmd.exe").args(["/d", "/c", &command]).creation_flags(0x08000000).output().unwrap();
-        assert!(created.status.success());
+        let created = std::process::Command::new("cmd.exe").args(["/d", "/s", "/c"]).raw_arg(&command).creation_flags(0x08000000).output().unwrap();
+        assert!(created.status.success(), "junction creation failed: status={}, stdout={:?}, stderr={:?}", created.status, String::from_utf8_lossy(&created.stdout), String::from_utf8_lossy(&created.stderr));
         let result = run(&f, Options::default()); assert_eq!((result.found, result.added), (0, 0)); assert_eq!(result.skipped, 1); assert!(!f.record().exists());
         assert!(checked_root(&link).is_err()); assert!(outside.join("Private.uproject").is_file()); drop(junction);
         assert_eq!(checked_root(Path::new(r"\\server\share\project")).unwrap_err(), NETWORK_ERROR);
