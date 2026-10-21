@@ -1133,8 +1133,8 @@ fn cleanup_completed_controlled(root:&Path,stage:&Path,keep_backup:bool,suspend:
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct RollbackFixture(PathBuf);
-    impl RollbackFixture{fn new()->Self{let parent=std::env::var_os("UM_TEMP_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);no_links(&parent).unwrap();fs::create_dir_all(&parent).unwrap();let root=parent.join(format!("um-rollback-progress-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();Self(root)}}
+    pub(super) struct RollbackFixture(pub(super) PathBuf);
+    impl RollbackFixture{pub(super) fn new()->Self{let parent=std::env::var_os("UM_TEMP_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);no_links(&parent).unwrap();fs::create_dir_all(&parent).unwrap();let root=parent.join(format!("um-rollback-progress-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();Self(root)}}
     impl Drop for RollbackFixture{fn drop(&mut self){if no_links(&self.0).is_ok(){let _=fs::remove_dir_all(&self.0);}}}
     #[cfg(windows)]
     #[test]
@@ -1370,7 +1370,7 @@ mod transaction_tests {
     }
     #[test]
     fn registration_repair_cancel_and_late_preflight_failure_never_write_metadata(){
-        let f=RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");let payload=f.0.join("engine-file");
+        let f=super::tests::RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");let payload=f.0.join("engine-file");
         let old=serde_json::json!({"version":"old","foreign":"keep"});let new=serde_json::json!({"version":"new","foreign":"keep"});
         for path in [&first,&global]{write_new(path,&serde_json::to_vec(&old).unwrap()).unwrap();}write_new(&payload,b"engine bytes unchanged").unwrap();
         let changes=vec![(first.clone(),old.clone(),new.clone()),(global.clone(),old.clone(),new.clone())];
@@ -1386,7 +1386,7 @@ mod transaction_tests {
     }
     #[test]
     fn registration_repair_global_failure_restores_own_items_preserves_external_edit(){
-        let f=RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");let payload=f.0.join("engine-file");
+        let f=super::tests::RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");let payload=f.0.join("engine-file");
         let old=serde_json::json!({"version":"old","foreign":"keep"});let new=serde_json::json!({"version":"new","foreign":"keep"});let external=serde_json::json!({"external":"preserve"});
         for path in [&first,&global]{write_new(path,&serde_json::to_vec(&old).unwrap()).unwrap();}write_new(&payload,b"engine bytes unchanged").unwrap();
         let changes=vec![(first.clone(),old.clone(),new.clone()),(global.clone(),old.clone(),new)];
@@ -1401,7 +1401,7 @@ mod transaction_tests {
     }
     #[test]
     fn registration_repair_late_error_rolls_back_only_authorized_metadata(){
-        let f=RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");
+        let f=super::tests::RollbackFixture::new();let first=f.0.join("first.item");let global=f.0.join("LauncherInstalled.dat");
         let old=serde_json::json!({"version":"old","futureField":[1,2]});let new=serde_json::json!({"version":"new","futureField":[1,2]});
         for path in [&first,&global]{write_new(path,&serde_json::to_vec(&old).unwrap()).unwrap();}
         let changes=vec![(first.clone(),old.clone(),new.clone()),(global.clone(),old.clone(),new.clone())];
