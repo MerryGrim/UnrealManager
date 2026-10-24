@@ -4,8 +4,8 @@ An independent, lightweight Unreal Engine manager for **Windows x64**.
 Manage engines, projects, Fab assets, Vault content and plugins in one desktop
 application, without a game storefront.
 
-**Version 0.9.6.** Download the installer or portable edition, or build from source.
-See the [0.9.6 change notes](source/CHANGELOG.md).
+**Version 0.9.7.** Download the installer or portable edition, or build from source.
+See the [0.9.7 change notes](source/CHANGELOG.md).
 
 [Website & screenshots](https://merrygrim.github.io/UnrealManager/) ·
 [Build instructions](source/README.md) · [Verification](verification/README.md) ·
@@ -26,13 +26,20 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 ## Features
 
 - Discover installed Unreal Engine versions and local `.uproject` files.
-- Refresh the known project list, or search a selected local folder or drive with
-  directory/project counts, the current path and a Stop control. Discovered paths,
-  including results found before Stop, are remembered without a background watcher.
+- Configure and remember project scan folders, then refresh them and their
+  subfolders with progress and Stop. Discovered paths are retained without a
+  watcher; completion uses a short notification, and removing a scan folder does
+  not delete project files.
 - Launch projects through their Windows association and manage engine associations.
 - Record projects successfully created through the app in any folder, without
   a background watcher. A list-update failure is reported without deleting the project.
-- Sign in through Epic's website; browse the Fab library and redeem keys.
+- Sign in through Epic's website and browse the Fab library.
+- Enter product keys in the app or import a TXT batch, preview products and the
+  Epic account, then explicitly confirm redemption. The result list has exactly
+  three columns: key suffix, product title, and status with a reason. Keys are
+  processed sequentially with a two-second pause; Stop waits for the current
+  key, and unknown results are never retried automatically. A separate official
+  Epic window remains available without copying keys into it.
 - Install, verify, modify or remove engines with component selection.
 - Check access rights before fresh engine installs, updates and resumes. A
   temporary headless UAC helper handles only the mandatory Epic registration
@@ -69,6 +76,8 @@ priority ordering, project copying, engine installation and Editor launch, and
 removal of the test installation. These checks cover specific builds and a tested
 Windows environment; clean-Windows setup and every Epic/Fab scenario remain
 outside that acceptance scope. Website screenshots use fictional demonstration data.
+Acceptance of the new batch-redemption workflow is recorded separately from those
+earlier account and transfer checks.
 GitHub application updates support installed and portable editions. **Settings → App updates** offers
 stable/beta channels, a startup check at most daily, manual checks, verified downloads
 and apply with restart. No update service or permanent helper is installed.
@@ -85,11 +94,11 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
-## Download 0.9.6
+## Download 0.9.7
 
-[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.6/UnrealManager-0.9.6-Windows-x64-Setup.exe) ·
-[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.6/UnrealManager-0.9.6-Windows-x64-Portable.zip) ·
-[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.6)
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.7/UnrealManager-0.9.7-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.7/UnrealManager-0.9.7-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.7)
 
 The installer installs for the current user. For portable use, extract the ZIP to
 a writable directory and keep `portable.marker` beside `unreal-manager.exe`.
