@@ -35,3 +35,19 @@ for(const lang of languages){
     }
 }
 console.log(languages.length+' languages × '+projectKeys.length+' project discovery messages checked');
+
+for(const addon of ['project-folders','redemption']){
+    const data=JSON.parse(fs.readFileSync(root+'/src/locales/'+addon+'.json','utf8'));
+    const keys=Object.keys(data.en);
+    assert.deepEqual(Object.keys(data).sort(),[...languages].sort(),addon+': exact locales');
+    for(const lang of languages){
+        assert.deepEqual(Object.keys(data[lang]).sort(),[...keys].sort(),addon+': keys '+lang);
+        for(const [key,value] of Object.entries(data[lang])){
+            assert.equal(typeof value,'string',addon+': '+lang+': '+key);
+            assert(value.trim(),addon+': empty '+lang+': '+key);
+            assert.deepEqual(placeholders(value),placeholders(key),addon+': placeholders '+lang+': '+key);
+            assert(!/[А-Яа-яЁё]/.test(value),addon+': untranslated '+lang+': '+key);
+        }
+    }
+    console.log(languages.length+' languages × '+keys.length+' '+addon+' messages checked');
+}

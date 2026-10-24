@@ -34,54 +34,8 @@ type Library = {
     scope: string;
 };
 const signedOut: Account = { signedIn: false, displayName: null };
-type RedemptionResult = {
-    status: 'ready' | 'success' | 'failed' | 'unknown';
-    title: string;
-    errorCode: string;
-};
-export function RedeemView({ account, onLibrary, onActivated }: {
-    account: Account;
-    onLibrary: () => void;
-    onActivated: () => void;
-}) {
-    const [error, setError] = useState('');
-    const [busy, setBusy] = useState(false);
-    const [result, setResult] = useState<RedemptionResult | null>(null);
-    const open = async () => {
-        setError('');
-        setResult(null);
-        setBusy(true);
-        try {
-            const onResult = new Channel<RedemptionResult>(value => { setResult(value); if (value.status === 'success')
-                onActivated(); });
-            await invoke('epic_open_redeem', { onResult });
-            setResult(value => value?.status === 'success' || value?.status === 'failed' ? value : { status: 'unknown', title: value?.title || '', errorCode: '' });
-        }
-        catch (e) {
-            setError(String(e));
-        }
-        finally {
-            setBusy(false);
-        }
-    };
-    const reason = result?.errorCode.endsWith('.code_used') ? 'Этот ключ уже использован.' : result?.errorCode.includes('already') ? 'Этот ключ уже использован или продукт уже есть в аккаунте.' : result?.errorCode.includes('invalid') ? 'Epic отклонил ключ. Проверьте введённые символы.' : 'Epic не подтвердил активацию. Точная причина показана в окне Epic.';
-    return <div className="content"><section className="redeem-panel"><h2>{tr("Активировать ключ")}</h2>
-    <p>{tr("Введите ключ в отдельном окне официального сайта Epic. Перед подтверждением проверьте название продукта и выбранный аккаунт.")}</p>
-    <p>{tr(account.signedIn ? `В менеджере подключён ${account.displayName || 'аккаунт Epic'}. В окне активации должен быть выбран тот же аккаунт.` : 'При необходимости войдите в Epic в окне активации.')}</p>
-    <div className="dialog-actions"><button className="primary" disabled={busy} onClick={open}>{tr(busy ? 'Окно активации открыто' : 'Открыть окно активации')}</button>
-    <button onClick={onLibrary}><RefreshCw size={17}/>{tr("Открыть и обновить библиотеку")}</button></div>
-    {tr(busy && !result && <p role="status">{tr("Ожидаем активацию в окне Epic…")}</p>)}
-    {tr(result && <div className={`redemption-result redemption-${result.status}`} role="status">
-      <h3>{tr(result.status === 'success' ? 'Ключ успешно активирован' : result.status === 'failed' ? 'Активация не удалась' : result.status === 'ready' ? 'Ключ проверен — ожидаем подтверждения' : 'Результат активации не подтверждён')}</h3>
-      {tr(result.title && <p><b>{tr(result.status === 'success' ? 'Активировано:' : 'Продукт:')} {result.title}</b></p>)}
-      {tr(result.status === 'success' && <p>{tr(result.title ? 'Библиотека обновляется в фоне.' : 'Epic подтвердил активацию, но не передал название продукта. Проверьте подтверждение в окне Epic.')}{tr(" Материалы Fab появятся после обновления; игры в этой библиотеке не отображаются.")}</p>)}
-      {tr(result.status === 'failed' && <><p>{tr(reason)}</p>{tr(result.errorCode && <small>{tr("Код ошибки Epic: ")}{tr(result.errorCode)}</small>)}</>)}
-      {tr(result.status === 'ready' && <p>{tr("Ключ ещё не активирован. Завершите подтверждение в окне Epic.")}</p>)}
-      {tr(result.status === 'unknown' && <p>{tr("Окно закрыто, связь прервана или ответ Epic не удалось распознать. Проверьте результат у Epic и обновите библиотеку.")}</p>)}
-    </div>)}
-    <EpicAuthError error={error}/>
-  </section></div>;
-}
+export { RedeemView } from './RedeemView';
+
 export function useEpic() {
     const [account, setAccount] = useState<Account>(signedOut);
     const [loginOpen, setLoginOpen] = useState(false);

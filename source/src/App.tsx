@@ -17,7 +17,7 @@ import { PluginsView } from './PluginsView';
 import { ProjectTile } from './ProjectTile';
 import { ProjectsView } from './ProjectsView';
 import { useVault } from './Vault';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useEpic, FabLibrary, RedeemView } from './EpicLibrary';
 import { Boxes, Download, FolderKanban, HardDrive, Home, Library, PackageOpen, PlugZap, RefreshCw, Rocket, Settings, Wrench } from 'lucide-react';
 import { scanEngines, scanProjects, type EngineInstall, type UnrealProject } from './lib/backend';
@@ -55,6 +55,7 @@ export default function App() {
     const [engineProgress, setEngineProgress] = useState<EngineTransfer | null>(null);
     const [engines, setEngines] = useState<EngineInstall[]>([]);
     const [projects, setProjects] = useState<UnrealProject[]>([]);
+    const removeProject = useCallback((path: string) => setProjects(current => current.filter(project => project.path !== path)), []);
     const vault = useVault(projects, async () => { try {
         setProjects(await scanProjects());
     }
@@ -79,11 +80,6 @@ export default function App() {
         }
     };
     useEffect(() => { refresh(); }, []);
-    const refreshProjects = async () => {
-        const found = await scanProjects();
-        setProjects(found);
-        return found;
-    };
     const queueProgress = vault.queueActive?.progress;
     const downloadPhase = engineProgress ? `${engineProgress.paused ? tr('На паузе') : formatEnginePhase(engineProgress.phase)}${engineProgressPercent(engineProgress)!==undefined ? ` · ${enginePercentText(engineProgress)}` : ''}`
         : vault.queueActive ? `${queueProgress?.paused ? tr('На паузе') : queueProgress?.phase || tr('Подготовка загрузки')}${queueProgress?.total ? ` · ${Math.min(100,Math.floor(queueProgress.done/queueProgress.total*100))}%` : ''}`
@@ -99,13 +95,13 @@ export default function App() {
       {tr(section !== 'home' && <header className="workspace-heading"><h1>{tr(title(section))}</h1><div className="page-actions" ref={setActionsTarget}></div></header>)}
       <div className="workspace-page">      {tr(error ? <div role="alert" className="empty">{tr(error)}<button onClick={refresh}>{tr("Повторить")}</button></div> : section === 'home' && <HomeView downloaded={vault.items.length} engines={engines} projects={projects} onGo={setSection} onRemoved={path => setProjects(current => current.filter(p => p.path !== path))}/>)}      
       <PageActionsTarget.Provider value={section === 'engines' ? actionsTarget : null}><div className="library-view" hidden={section !== 'engines'}><EnginesView active={section === 'engines'} engines={engines} onRefresh={refresh} onProgress={setEngineProgress}/></div></PageActionsTarget.Provider>      
-      <PageActionsTarget.Provider value={section === 'projects' ? actionsTarget : null}><div className="library-view" hidden={section !== 'projects'}><ProjectsView projects={projects} onRefresh={refreshProjects} initialLoading={loading} onRemoved={path => setProjects(current => current.filter(p => p.path !== path))}/></div></PageActionsTarget.Provider>
+      <PageActionsTarget.Provider value={section === 'projects' ? actionsTarget : null}><div className="library-view" hidden={section !== 'projects'}><ProjectsView active={section === 'projects'} projects={projects} onProjects={setProjects} initialLoading={loading} onRemoved={removeProject}/></div></PageActionsTarget.Provider>
       <PageActionsTarget.Provider value={section === 'library' ? actionsTarget : null}><div className="library-view" hidden={section !== 'library'}><FabLibrary pluginRequest={pluginLibraryRequest} account={epic.account} onLogin={epic.openLogin} onDownload={vault.select} downloadBusy={vault.busy} downloadProgress={vault.tileProgress} pendingProgress={vault.pendingProgress} onResume={id=>window.dispatchEvent(new CustomEvent('um-resume-vault',{detail:id}))} refreshSignal={libraryRefresh} downloaded={vault.items} onVaultChanged={vault.refresh}/></div></PageActionsTarget.Provider>
       {tr(section === 'plugins' && <PluginsView onDownload={item => vault.select(item, false, true)} transfers={vault.updateTransfers} downloadProgress={vault.tileProgress} pendingProgress={vault.pendingProgress} onResume={id=>window.dispatchEvent(new CustomEvent('um-resume-vault',{detail:id}))} items={vault.items} busy={vault.busy} onInstall={vault.openInstall} onUpdate={vault.openProjectUpdate} onLibrary={() => { setPluginLibraryRequest(n => n + 1); setSection('library'); }} onRefresh={vault.refresh}/>)}
       <PageActionsTarget.Provider value={section === 'updates' ? actionsTarget : null}><div className="library-view" hidden={section !== 'updates'}><UpdatesView transfers={vault.updateTransfers} items={vault.items} account={epic.account} busy={vault.busy} onDownload={vault.openUpdate} onProjectUpdate={vault.openProjectUpdate} onCount={setUpdateCount}/></div></PageActionsTarget.Provider>
       {section === 'downloads' && vault.view}
       {section === 'settings' && <SettingsView category={settingsCategory} onCategoryChange={setSettingsCategory} appUpdates={appUpdates} vaultBusy={vault.busy||!!engineProgress} onVaultChanged={vault.refresh} epicVaultSettings={vault.epicSettings}/>}
-      <div className="library-view" hidden={section !== 'redeem'}><RedeemView account={epic.account} onActivated={() => setLibraryRefresh(n => n + 1)} onLibrary={() => { setSection('library'); setLibraryRefresh(n => n + 1); }}/></div>
+      <div className="library-view" hidden={section !== 'redeem'}><RedeemView active={section === 'redeem'} account={epic.account} onActivated={() => setLibraryRefresh(n => n + 1)} onLibrary={() => { setSection('library'); setLibraryRefresh(n => n + 1); }}/></div>
       </div>
     </main></PageActionsTarget.Provider>
     <footer className="workspace-footer"><button className={section === 'downloads' ? 'active' : ''} aria-current={section === 'downloads' ? 'page' : undefined} onClick={() => setSection('downloads')}><Download size={16}/>{tr(downloadPhase)}{vault.queuedCount>0&&<> · {tr('В очереди')}: {vault.queuedCount}</>}</button><button className={section === 'settings' ? 'active' : ''} aria-current={section === 'settings' ? 'page' : undefined} onClick={() => setSection('settings')}><Settings size={16}/>{tr("Настройки")}</button></footer>

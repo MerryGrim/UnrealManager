@@ -569,6 +569,17 @@ pub(crate) async fn prepare_web_session(app: &tauri::AppHandle, state: &EpicStat
     Ok(WebSession { remember, exchange_code: Some(code) })
 }
 
+// Native-only identity binding. Never return account IDs or credentials in a
+// redemption snapshot; the displayed name is informational, not authorization.
+pub(crate) async fn web_account_binding(app:&tauri::AppHandle,state:&EpicState)->Result<(String,String),String>{
+    let mut session=state.0.lock().await;
+    if !ensure(app,&mut session).await? {return Err(AUTH_REQUIRED.into());}
+    let details=session.api.user_details();
+    let id=details.account_id.ok_or(AUTH_REQUIRED)?;
+    if id.len()!=32 || !id.bytes().all(|b|b.is_ascii_hexdigit()){return Err(AUTH_REQUIRED.into());}
+    Ok((id,details.display_name.unwrap_or_else(||"Epic Games".into())))
+}
+
 pub(crate) async fn library_item(state: &EpicState, id: &str) -> Result<LibraryItem,String> {
     state.0.lock().await.library.iter().find(|i|i.id==id).cloned().ok_or("Материал отсутствует в текущей библиотеке".into())
 }

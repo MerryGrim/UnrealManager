@@ -44,6 +44,7 @@ fn all_current_webview_constructors_set_the_shared_api_policy_before_build() {
         ("main from_config", include_str!("lib.rs")),
         ("Epic login", include_str!("epic_login.rs")),
         ("Epic redemption", include_str!("epic_redeem.rs")),
+        ("hidden Epic batch redemption", include_str!("epic_redeem_batch.rs")),
         ("hidden Epic session reset", include_str!("epic_browser.rs")),
     ];
     let mut constructors = 0;
@@ -62,7 +63,7 @@ fn all_current_webview_constructors_set_the_shared_api_policy_before_build() {
         }
         assert_eq!(found, 1, "Review changes to the current constructor inventory: {name}");
     }
-    assert_eq!(constructors, 4);
+    assert_eq!(constructors, 5);
 }
 
 #[test]

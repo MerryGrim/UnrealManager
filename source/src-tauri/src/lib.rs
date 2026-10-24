@@ -6,6 +6,7 @@ mod webview_policy;
 mod project_association;
 mod project_registry;
 mod project_discovery;
+mod project_scan_folders;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -18,6 +19,7 @@ mod engine;
 mod epic;
 mod epic_login;
 mod epic_redeem;
+mod epic_redeem_batch;
 mod epic_browser;
 mod vault;
 mod vault_queue;
@@ -299,8 +301,9 @@ pub fn run() {
     for window in &mut context.config_mut().app.windows {window.create=false;window.data_directory=None;}
     let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![app_update_apply::app_update_ui_ready,app_updates::app_update_settings_get,app_updates::app_update_settings_set,app_updates::app_update_check,app_updates::app_update_download,app_updates::app_update_apply,window_behavior::close_behavior_get,window_behavior::close_behavior_set,window_behavior::window_close_action,download::download_limit_get, download::download_limit_set,project_association::project_association_get,project_association::project_association_set,storage::vault_storage_get,storage::vault_storage_set,storage::settings_read,storage::settings_write,storage::storage_info,storage::clear_cache,ui_locale::set_ui_language,open_author_profile,engine::install::engine_register_managed,engine::delete::engine_delete_preview, engine::delete::engine_delete, engine::engine_discard, engine::resume::engine_resume_forget, engine::resume::engine_resume_tasks, engine::resume::engine_resume_prepare, engine::resume::engine_resume_legacy_prepare, engine::install::engine_pending, engine::install::engine_recover, engine::install::engine_install, engine::install::engine_cancel, engine::install::engine_pause, engine::engine_catalog, engine::engine_prepare, engine::engine_launch, scan_engines, scan_projects, launch_project, project_actions::reveal_project, project_actions::choose_project_location, project_actions::project_delete_preview, project_actions::delete_project,
         project_discovery::project_discovery_scan,project_discovery::project_discovery_cancel,
+        project_scan_folders::list_scan_folders,project_scan_folders::set_scan_folders,project_scan_folders::refresh_projects,
         epic::epic_status, epic::epic_begin_login, epic_login::epic_cancel_login,
-        epic::epic_logout, epic_redeem::epic_open_redeem, epic::fab_library, epic::fab_cached_library, epic::fab_cover,
+        epic::epic_logout, epic_redeem::epic_open_redeem, epic_redeem_batch::epic_redeem_batch_prepare, epic_redeem_batch::epic_redeem_batch_activate, epic_redeem_batch::epic_redeem_batch_cancel, epic_redeem_batch::epic_redeem_batch_discard, epic::fab_library, epic::fab_cached_library, epic::fab_cover,
         fab_details::fab_details, fab_details::fab_detail_image, fab_details::fab_open_listing,
         vault_queue::vault_queue_get,vault_queue::vault_queue_enqueue,vault_queue::vault_queue_remove,vault_queue::vault_queue_reorder,vault_queue::vault_queue_set_paused,vault_queue::vault_queue_retry,vault::vault_discard,vault::transfers::vault_pause,vault::transfers::vault_resume_tasks,vault::transfers::vault_resume_prepare,vault::transfers::vault_resume_forget,vault::project_update::project_update_preview, vault::project_update::project_update_apply, vault::vault_epic_status, vault::vault_sync_epic, vault::vault_check_update, vault::vault_prepare, vault::vault_download, vault::vault_cancel, vault::vault_list, vault::vault_reveal, vault::vault_delete_preview, vault::vault_delete, vault::plugins_installed, vault::plugin_remove_engine, vault::vault_install_preview, vault::vault_prepared_preview, vault::vault_install];
     tauri::Builder::default()

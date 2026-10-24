@@ -13,6 +13,8 @@ import overrides from './locales/overrides.json';
 import appUpdateMessages from './locales/app-updates.json';
 import libraryControlMessages from './locales/library-controls.json';
 import projectDiscoveryMessages from './locales/project-discovery.json';
+import projectFolderMessages from './locales/project-folders.json';
+import redemptionMessages from './locales/redemption.json';
 export type Language='ru'|'en'|'de'|'it'|'es'|'fr'|'zh'|'ja'|'ko';
 const supported=['ru','en','de','it','es','fr','zh','ja','ko'];
 const key='unreal-manager.language.v1';
@@ -30,6 +32,8 @@ for(const [locale,entries] of Object.entries(overrides))Object.assign(catalogs[l
 for(const [locale,entries] of Object.entries(appUpdateMessages))Object.assign(catalogs[locale],entries);
 for(const [locale,entries] of Object.entries(libraryControlMessages))Object.assign(catalogs[locale],entries);
 for(const [locale,entries] of Object.entries(projectDiscoveryMessages))Object.assign(catalogs[locale],entries);
+for(const [locale,entries] of Object.entries(projectFolderMessages))Object.assign(catalogs[locale],entries);
+for(const [locale,entries] of Object.entries(redemptionMessages))Object.assign(catalogs[locale],entries);
 const normalize=(s:string)=>s.replace(/\s+/g,' ').trim();
 const escape=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 const indexes=new Map<string,Map<string,string>>();

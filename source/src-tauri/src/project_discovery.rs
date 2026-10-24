@@ -62,6 +62,7 @@ impl Drop for Lease {
 pub(crate) struct DiscoveryProgress {
     id: String, directories: usize, scanned_entries: usize, found: usize, skipped: usize,
     current_directory: String, phase: &'static str,
+    limited: bool, limit_reason: Option<&'static str>, errors: Vec<String>,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +86,7 @@ fn no_links(path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
-fn checked_root(path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn checked_root(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) || path.to_string_lossy().contains('\0') { return Err(ROOT_ERROR.into()); }
     #[cfg(windows)] {
         use std::path::Prefix;
@@ -111,10 +112,32 @@ fn engine_marker(root: &Path, children: &[PathBuf]) -> bool {
     no_links(&build).is_ok() && build.is_file() && [editor, editor4].iter().any(|p| no_links(p).is_ok() && p.is_file())
 }
 fn scan(root: &Path, id: String, control: &Control, options: Options, mut notify: impl FnMut(DiscoveryProgress), register: impl FnOnce(&[PathBuf]) -> Result<usize, String>) -> Result<DiscoveryResult, String> {
-    let started = Instant::now(); let root = checked_root(root)?;
-    let mut result = DiscoveryResult { id, root: root.to_string_lossy().into_owned(), directories: 0, scanned_entries: 0, found: 0, added: 0, skipped: 0, cancelled: false, limited: false, limit_reason: None, errors: Vec::new() };
-    let mut found = Vec::new(); let mut seen = BTreeSet::new(); let mut pending = vec![(root, 0usize)]; let mut last = Instant::now();
-    let emit = |result: &DiscoveryResult, current: &Path, phase| DiscoveryProgress { id: result.id.clone(), directories: result.directories, scanned_entries: result.scanned_entries, found: result.found, skipped: result.skipped, current_directory: current.to_string_lossy().into_owned(), phase };
+    let root = checked_root(root)?;
+    scan_checked(&[root], Vec::new(), id, control, options, &mut notify, register)
+}
+
+// Folder preferences are discovery scope only. They never extend the separate
+// project deletion allowlist. One worker, budget, cancellation and atomic save
+// cover the whole configured set, including a cancellation between roots.
+pub(crate) fn scan_configured(roots: &[PathBuf], id: String, lease: &Lease, notify: impl FnMut(DiscoveryProgress), register: impl FnOnce(&[PathBuf]) -> Result<usize, String>) -> Result<DiscoveryResult, String> {
+    let mut checked = Vec::new(); let mut errors = Vec::new();
+    if !lease.control.cancelled() {
+        for root in roots {
+            if lease.control.cancelled() { break; }
+            match checked_root(root) {
+                Ok(root) => checked.push(root),
+                Err(error) => { if errors.len() < 20 { errors.push(format!("{}: {error}", root.display())); } }
+            }
+        }
+    }
+    scan_checked(&checked, errors, id, &lease.control, Options::default(), notify, register)
+}
+
+fn scan_checked(roots: &[PathBuf], errors: Vec<String>, id: String, control: &Control, options: Options, mut notify: impl FnMut(DiscoveryProgress), register: impl FnOnce(&[PathBuf]) -> Result<usize, String>) -> Result<DiscoveryResult, String> {
+    let started = Instant::now();
+    let mut result = DiscoveryResult { id, root: roots.first().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), directories: 0, scanned_entries: 0, found: 0, added: 0, skipped: errors.len(), cancelled: false, limited: false, limit_reason: None, errors };
+    let mut found = Vec::new(); let mut seen = BTreeSet::new(); let mut pending: Vec<_> = roots.iter().rev().map(|root| (root.clone(), 0usize)).collect(); let mut last = Instant::now();
+    let emit = |result: &DiscoveryResult, current: &Path, phase| DiscoveryProgress { id: result.id.clone(), directories: result.directories, scanned_entries: result.scanned_entries, found: result.found, skipped: result.skipped, current_directory: current.to_string_lossy().into_owned(), phase, limited: result.limited, limit_reason: result.limit_reason, errors: result.errors.clone() };
     let mut current = PathBuf::from(&result.root); notify(emit(&result, &current, "scan"));
     'walk: while let Some((directory, depth)) = pending.pop() {
         if control.cancelled() { break; }
@@ -219,6 +242,31 @@ mod tests {
         let depth = run(&f, Options { depth: 0, ..Default::default() }); assert!(depth.limited); assert_eq!(depth.limit_reason, Some("depth")); assert_eq!(depth.found, 1);
         let entries = run(&f, Options { entries: 0, ..Default::default() }); assert!(entries.limited); assert_eq!(entries.limit_reason, Some("entries")); assert_eq!(entries.scanned_entries, 0); assert_eq!(entries.added, 0);
         let timed = run(&f, Options { time: Duration::ZERO, ..Default::default() }); assert!(timed.limited); assert_eq!(timed.limit_reason, Some("time")); assert_eq!(timed.added, 0);
+    }
+    #[test]
+    fn configured_roots_share_cancellation_and_save_partial_results_once() {
+        let f = Fixture::new(); let old = put(&f.root, "known/Original.uproject"); f.register(&[old]).unwrap();
+        let roots = [put(&f.root, "first/A.uproject").parent().unwrap().to_path_buf(), put(&f.root, "second/B.uproject").parent().unwrap().to_path_buf()];
+        let state = ProjectDiscoveryState::default(); let id = uuid::Uuid::new_v4().to_string(); let lease = state.reserve(id.clone()).unwrap();
+        let mut saves = 0; let mut terminal = Vec::new();
+        let result = scan_checked(&roots, Vec::new(), id.clone(), &lease.control, Options { interval: Duration::ZERO, ..Default::default() }, |p| {
+            if p.phase == "scan" && p.found == 1 { assert!(state.cancel(&id)); }
+            if p.phase == "save" { assert!(!state.cancel(&id)); }
+            terminal.push(p.phase);
+        }, |paths| { saves += 1; f.register_count(paths) }).unwrap();
+        assert!(result.cancelled); assert_eq!((result.found, result.added, result.directories), (1, 1, 1));
+        assert_eq!(saves, 1); assert_eq!(terminal.iter().filter(|phase| **phase == "save").count(), 1); assert_eq!(terminal.last(), Some(&"cancelled"));
+        assert_eq!(f.paths().len(), 2); drop(lease); assert!(state.reserve(uuid::Uuid::new_v4().to_string()).is_ok());
+    }
+    #[test]
+    fn configured_roots_share_entry_budget_and_deduplicate_overlapping_findings() {
+        let f = Fixture::new(); let first = put(&f.root, "first/A.uproject"); let second = put(&f.root, "second/B.uproject");
+        let roots = [first.parent().unwrap().to_path_buf(), second.parent().unwrap().to_path_buf()];
+        let limited = scan_checked(&roots, Vec::new(), uuid::Uuid::new_v4().to_string(), &Control::new(false), Options { entries: 1, ..Default::default() }, |_| {}, |paths| f.register_count(paths)).unwrap();
+        assert!(limited.limited); assert_eq!(limited.limit_reason, Some("entries")); assert_eq!((limited.scanned_entries, limited.found, limited.added), (1, 1, 1));
+        let same = [roots[0].clone(), roots[0].clone()];
+        let duplicated = scan_checked(&same, Vec::new(), uuid::Uuid::new_v4().to_string(), &Control::new(false), Options::default(), |_| {}, |paths| f.register_count(paths)).unwrap();
+        assert_eq!((duplicated.found, duplicated.added), (1, 0)); assert_eq!(f.paths().len(), 1);
     }
     #[test]
     fn malformed_descriptors_and_registry_failure_never_modify_original_project_files() {

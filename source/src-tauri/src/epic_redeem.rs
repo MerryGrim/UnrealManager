@@ -5,9 +5,9 @@ const LABEL:&str="epic-redeem";
 const REDEEM_URL:&str="https://store.epicgames.com/redeem";
 const EXCHANGE_URL:&str="https://www.epicgames.com/id/exchange";
 static ACTIVE:AtomicBool=AtomicBool::new(false);
-pub(crate) fn is_open()->bool{ACTIVE.load(Ordering::SeqCst)}
+pub(crate) fn is_open()->bool{ACTIVE.load(Ordering::SeqCst)||super::epic_redeem_batch::is_open()}
 
-fn redemption_url(language:&str,exchange_code:Option<&str>)->Result<tauri::Url,String>{
+pub(crate) fn redemption_url(language:&str,exchange_code:Option<&str>)->Result<tauri::Url,String>{
     // App languages are resolved from the persisted preference (including
     // "system") before rendering. Never accept a URL or arbitrary locale here.
     let locale=match language {

@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles.css';
+import './RedeemView.css';
 import {initializePreferences,getPreference} from './preferences';
 import {setLanguagePreference} from './i18n';
 import {installMainContextMenuPolicy} from './contextMenuPolicy';

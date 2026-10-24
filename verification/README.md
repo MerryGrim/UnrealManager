@@ -20,12 +20,23 @@ from the resume list, and transfer controls at 1280/600 px. The auth-required
 regression covers explicit sign-in actions, all nine languages and preservation
 of mocked saved downloads; it does not verify a genuinely expired Epic session.
 
-`test-project-discovery.cjs` mounts the actual Projects view and project tiles
-with a synthetic native provider. It checks visible refresh/search outcomes,
-chosen-root progress, duplicate-action guards, cancellation with partial results,
-limits/errors, preserved projects and search filters, and status text in nine
-languages. It never scans a real folder or drive; native traversal, remembered
-descriptor persistence and filesystem cancellation require their separate tests.
+`test-project-discovery.cjs` mounts the actual Projects view, project-folder
+dialog and project tiles with a synthetic native provider. It checks saved folder
+choices, explicit refresh, single-job guards, cancellation with partial results,
+authoritative returned summaries when the final channel event is late or absent,
+limits/errors, preserved projects, keyboard focus and nine languages. Successful
+refresh uses a dismissible five-second notification; project search and its old
+help paragraphs are absent. It never scans a real folder or drive; native
+traversal, preference/descriptor persistence and filesystem cancellation require
+their separate isolated tests.
+
+`test-redemption-batch.cjs` exercises the actual key-entry component and its TXT
+parser using synthetic IPC. It checks the three-column queue, preview before
+explicit confirmation, single-use activation intent, cancellation and unknown
+outcomes, import bounds, stale callbacks, account changes and the separate
+official-window fallback. Synthetic keys remain in memory and are excluded from
+screenshots, call-recorder values and reports. This is not evidence that a real
+key was activated or that Epic's current service accepted an end-to-end batch.
 
 To rerun one selected test, pass its file name to the runner, for example
 `node .\verification\run-regression.cjs test-preferences.cjs`. Multiple selected file

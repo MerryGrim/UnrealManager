@@ -17,7 +17,7 @@ pub fn restore_main(app: &tauri::AppHandle) {
 
 // Only the dedicated Epic profile is cleared; the app's library/history is separate.
 pub fn clear_session(app: &tauri::AppHandle) -> Result<(), String> {
-    for label in ["epic-login", "epic-redeem"] {
+    for label in ["epic-login", "epic-redeem", "epic-redeem-batch"] {
         if app.get_webview_window(label).is_some() {
             return Err("Сначала закройте окно Epic Games".into());
         }

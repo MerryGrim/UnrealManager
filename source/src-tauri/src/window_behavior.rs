@@ -33,6 +33,7 @@ pub async fn window_close_action(app:tauri::AppHandle,action:String,remember:boo
         if EXITING.swap(true,Ordering::SeqCst){return Ok(());}
         crate::vault_queue::stop_dispatch(&app);
         let _=crate::epic_login::epic_cancel_login(app.clone());
+        crate::epic_redeem_batch::stop_for_shutdown();
         stop_operations(&app.state::<crate::engine::EngineState>(),&app.state::<crate::vault::VaultState>()).await;
         app.exit(0);
     }
@@ -49,6 +50,7 @@ pub(crate) async fn prepare_update(app:&tauri::AppHandle)->Result<(),String> {
     crate::vault_queue::stop_dispatch(app);
     let stop=async {
         crate::epic_login::epic_cancel_login(app.clone())?;
+        crate::epic_redeem_batch::stop_for_shutdown();
         stop_operations(&app.state::<crate::engine::EngineState>(),&app.state::<crate::vault::VaultState>()).await;
         Ok::<(),String>(())
     };

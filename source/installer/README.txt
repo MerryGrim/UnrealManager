@@ -1,4 +1,4 @@
-Unreal Manager 0.9.6 — Nyanma
+Unreal Manager 0.9.7 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
@@ -46,7 +46,30 @@ Unreal Engine, Epic Games and Fab belong to their owners.
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
-0.9.6
+0.9.7
+- Enter one key or import a UTF-8 TXT list in the application: up to 100 unique
+  keys and a 64 KiB file. Preview the products and Epic account, then explicitly
+  confirm activation of the ready rows. Keys are not saved in application history.
+- The scrolling list shows the key suffix, product and status with a reason.
+  Checks and activations are sequential with a visible two-second pause.
+  Large lists use groups of ten with a visible pause between groups and a
+  cooldown before activation. Already-used keys do not interrupt checking.
+  Recognized throttling pauses the queue with a bounded retry and keeps checked
+  products. Activation can continue after a specific refusal only if a fresh
+  check confirms the same unused key/product/account and obtains a fresh lock.
+  Uncertain activation results are never replayed.
+- Preparation stages are visible immediately. Countdown space stays reserved;
+  confirmation stays inside the visible window with its own scrolling content.
+- The separate official Epic window remains a manual fallback for additional
+  terms or challenges. Keys are not copied to it automatically.
+- Save project search folders once. Refresh checks those folders and their
+  subfolders with visible progress and cancellation; no watcher is added.
+- Preview acceptance includes a user-confirmed single-key activation and a
+  three-key batch. A twelve-key TXT check completed after a throttling pause;
+  final activation of that TXT batch is not yet part of the recorded result.
+  These results do not establish support for every Epic product type.
+
+0.9.6 (historical release)
 - Projects now has separate Refresh list and Find projects actions. Choose a local
   folder or drive for discovery; visible counters and the current folder show progress.
 - Stop ends traversal and saves the valid projects already found. Exact project
@@ -110,8 +133,8 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In 0.9.6, use Settings > App updates > Check for updates.
-Beta.7 and newer can receive 0.9.6 through the application updater. Stable
+In 0.9.7, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.7 through the application updater. Stable
 releases are available in both the stable and beta update channels.
 In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.
