@@ -2,10 +2,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 
 const startedAt = new Date();
-const outputDirectory = path.join(__dirname, 'current', `site-${startedAt.toISOString().replace(/[:.]/g, '-')}`);
-const temporaryDirectory = path.join(outputDirectory, 'browser-temp');
+const currentDirectory=path.resolve(__dirname,'current');
+const outputParent=path.resolve(process.env.UM_VERIFICATION_OUTPUT_DIRECTORY||currentDirectory);
+assert(outputParent===currentDirectory||outputParent.startsWith(currentDirectory+path.sep),'Site evidence must remain under verification/current');
+const outputDirectory = path.join(outputParent, `site-${startedAt.toISOString().replace(/[:.]/g, '-')}`);
+const temporaryDirectory = path.join(currentDirectory,'sbt-'+crypto.randomUUID().slice(0,8));
+fs.mkdirSync(outputDirectory,{recursive:true});
 fs.mkdirSync(temporaryDirectory, {recursive:true});
 process.env.UM_VERIFICATION_OUTPUT_DIRECTORY = outputDirectory;
 process.env.TEMP = temporaryDirectory;
@@ -14,6 +19,13 @@ const {playwright, browserLaunchOptions} = require('./test-env.cjs');
 const docsRoot = fs.realpathSync(path.resolve(__dirname, '..', 'docs'));
 const prefix = '/UnrealManager/';
 const releaseVersion = require('../source/package.json').version;
+const screenshotDefinitions=Object.fromEntries([
+  ...['engines','library','downloads','settings'].map(name=>[name,{width:1280,height:800,version:'0.9.0'}]),
+  ...['redemption-review','redemption-wait','redemption-results'].map(name=>[name,{width:1440,height:900,version:'0.9.8'}]),
+]);
+const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+const screenshotArtifacts=[];
+let captureBinding={requested:false,status:'not-requested'};
 const releaseBase = `https://github.com/MerryGrim/UnrealManager/releases/download/v${releaseVersion}/`;
 const releaseDownloads = {
   installer: releaseBase+`UnrealManager-${releaseVersion}-Windows-x64-Setup.exe`,
@@ -40,6 +52,35 @@ const serverRequests=[];
 let server;
 let browser;
 let baseUrl;
+
+function validateScreenshotArtifacts(){
+  for(const[name,expected]of Object.entries(screenshotDefinitions)){
+    const file=path.join(docsRoot,'assets/screenshots',name+'.webp'),bytes=fs.readFileSync(file);assert(bytes.length>0&&bytes.length<=4*1024*1024,name+': bounded screenshot');
+    assert.equal(bytes.toString('ascii',0,4),'RIFF');assert.equal(bytes.toString('ascii',8,12),'WEBP');assert.equal(bytes.readUInt32LE(4)+8,bytes.length);
+    let dimensions;const chunks=[];
+    for(let at=12;at+8<=bytes.length;){const type=bytes.toString('ascii',at,at+4),size=bytes.readUInt32LE(at+4),data=at+8;assert(data+size<=bytes.length,'WebP chunk bound');chunks.push(type);
+      if(type==='VP8X'){assert(size>=10);dimensions={width:bytes.readUIntLE(data+4,3)+1,height:bytes.readUIntLE(data+7,3)+1};}
+      else if(type==='VP8L'&&!dimensions){assert(size>=5&&bytes[data]===0x2f);const bits=bytes.readUInt32LE(data+1);dimensions={width:(bits&0x3fff)+1,height:((bits>>>14)&0x3fff)+1};}
+      else if(type==='VP8 '&&!dimensions){assert(size>=10);assert.equal(bytes.toString('hex',data+3,data+6),'9d012a');dimensions={width:bytes.readUInt16LE(data+6)&0x3fff,height:bytes.readUInt16LE(data+8)&0x3fff};}
+      at=data+size+(size&1);
+    }
+    assert.deepEqual(dimensions,{width:expected.width,height:expected.height},name+': declared dimensions');assert(!chunks.some(type=>['EXIF','XMP ','ICCP','ANIM','ANMF'].includes(type)),name+': metadata/animation is forbidden');
+    const needles=[['workspace',path.resolve(__dirname,'..')],['profile',process.env.USERPROFILE],['secret-directory','.release-secrets'],['authorization','Bearer '],['cookie','XSRF-TOKEN=']].filter(([,value])=>value);
+    const folded=bytes.toString('latin1').toLowerCase();for(const[label,value]of needles)for(const spelling of [value,value.replaceAll('\\','/')])for(const encoding of ['utf8','utf16le'])assert(!folded.includes(Buffer.from(spelling.toLowerCase(),encoding).toString('latin1')),name+': private raw substring '+label);
+    screenshotArtifacts.push({name,file:'docs/assets/screenshots/'+name+'.webp',...expected,bytes:bytes.length,sha256:sha(bytes),metadataAbsent:true,staticImage:true,rawPrivateSubstringsAbsent:true});
+  }
+  const manifestPath=process.env.UM_BATCH_CAPTURE_MANIFEST;if(!manifestPath)return;
+  assert(path.isAbsolute(manifestPath)&&path.resolve(manifestPath).startsWith(currentDirectory+path.sep),'Capture manifest must be private current evidence');
+  const raw=fs.readFileSync(manifestPath);assert(raw.length<=2*1024*1024);const digest=sha(raw),expectedHash=process.env.UM_BATCH_CAPTURE_MANIFEST_SHA256;
+  if(expectedHash){assert(/^[a-f0-9]{64}$/.test(expectedHash));assert.equal(digest,expectedHash,'Pinned capture manifest changed');}
+  const manifest=JSON.parse(raw.toString('utf8').replace(/^\uFEFF/,''));assert(manifest.passed&&manifest.version==='0.9.8'&&manifest.mockedNative===true&&manifest.syntheticData===true&&manifest.nativeAppExecuted===false&&manifest.realAccountAccess===false&&manifest.realEpicActivationVerified===false&&manifest.realAccountOrKeyFileAccess===false,'Capture scope is not the approved synthetic React fixture');
+  assert(Array.isArray(manifest.externalRequests)&&manifest.externalRequests.length===0&&Array.isArray(manifest.errors)&&manifest.errors.length===0,'Capture reported external requests or errors');assert(manifest.checks.every(check=>check.passed));
+  assert.equal(sha(fs.readFileSync(path.join(__dirname,'capture-redemption-screenshots.cjs'))),manifest.captureScriptSHA,'Capture generator changed');
+  assert(Array.isArray(manifest.sourceFiles)&&manifest.sourceFiles.length>0);for(const row of manifest.sourceFiles){assert(typeof row.path==='string'&&row.path.startsWith('source/')&&!row.path.split('/').includes('..')&&/^[a-f0-9]{64}$/.test(row.sha256),'Capture source reference invalid');assert.equal(sha(fs.readFileSync(path.resolve(__dirname,'..',row.path))),row.sha256,'React source changed after capture: '+row.path);}
+  assert.deepEqual(manifest.captures.map(row=>row.name).sort(),['redemption-results','redemption-review','redemption-wait']);
+  for(const row of manifest.captures){const expected=screenshotArtifacts.find(item=>item.name===row.name);assert.equal(row.publicFile,expected.file);assert.equal(row.sha256,expected.sha256);assert.equal(row.width,expected.width);assert.equal(row.height,expected.height);assert.equal(row.locale,'en');}
+  captureBinding={requested:true,status:'passed',path:manifestPath,sha256:digest,hashPinned:!!expectedHash,captureScriptSHA:manifest.captureScriptSHA,sourceFiles:manifest.sourceFiles.length,images:3,mockedNative:true,realEpicActivationVerified:false};
+}
 
 function createServer() {
   const types={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.webp':'image/webp','.png':'image/png','.ico':'image/x-icon'};
@@ -160,13 +201,15 @@ async function check(name,action) {
 }
 
 async function main() {
+  await check('screenshot-artifacts-metadata-privacy-and-capture-binding',async()=>{validateScreenshotArtifacts();return{images:screenshotArtifacts.length,captureBinding};});
+  if(!results.at(-1).passed)return;
   server=createServer();
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   baseUrl=`http://127.0.0.1:${server.address().port}${prefix}`;
   browser=await playwright.chromium.launch({...browserLaunchOptions,args:[...browserLaunchOptions.args,'--disable-background-networking','--disable-sync']});
   const matrixContext=await context();
   const page=await matrixContext.newPage();
-  for(const viewport of [{name:'desktop',width:1280,height:900},{name:'mobile',width:390,height:844}]){
+  for(const viewport of [{name:'desktop',width:1280,height:900},{name:'mobile',width:390,height:844},{name:'zoom200-reflow',width:640,height:450}]){
     await page.setViewportSize({width:viewport.width,height:viewport.height});
     for(const locale of Object.keys(locales)){
       const themeColors={};
@@ -179,12 +222,16 @@ async function main() {
         assert(layout.width<=layout.viewport+1,`horizontal overflow: ${JSON.stringify(layout)}`);
         assert(layout.images.every(image=>image.loaded),'all image assets must load');
         const screenshots=layout.images.filter(image=>image.src.includes('/screenshots/'));
-        assert.equal(screenshots.length,4);
-        assert(screenshots.every(image=>image.width===1280&&image.height===800),'published screenshot dimensions');
+        assert.equal(screenshots.length,7);
+        assert.deepEqual(screenshots.map(image=>path.basename(image.src,'.webp')).sort(),Object.keys(screenshotDefinitions).sort(),'the four earlier and three current demo images remain distinct');
+        assert(screenshots.every(image=>{const expected=screenshotDefinitions[path.basename(image.src,'.webp')];return image.width===expected.width&&image.height===expected.height;}),'published screenshot dimensions by provenance category');
+        assert.equal(await page.locator('#key-activation[aria-labelledby="key-activation-title"] .batch-steps li').count(),3);
+        assert.equal((await page.locator('.batch-limit strong').innerText()).replace(/\s/g,''),'≤100');
+        assert.equal(await page.locator('.batch-captures figure').count(),2);
         if((viewport.name==='desktop'&&((locale==='ru'&&theme==='dark')||(locale==='en'&&theme==='light')))||(viewport.name==='mobile'&&locale==='ru'&&theme==='dark')){
           await page.screenshot({path:path.join(outputDirectory,`${viewport.name}-${locale}-${theme}.png`),animations:'disabled'});
         }
-        return {viewport:{width:viewport.width,height:viewport.height},locale,theme,colors:themeColors[theme],imageCount:layout.images.length};
+        return {viewport:{width:viewport.width,height:viewport.height},locale,theme,colors:themeColors[theme],imageCount:layout.images.length,zoomScope:viewport.name==='zoom200-reflow'?'640px renderer reflow equivalent to a1280px desktop at200%; not native browser zoom or OS DPI':undefined};
       });
       await check(`${viewport.name}-${locale}-themes-visibly-differ`,async()=>{
         assert(themeColors.dark&&themeColors.light,'both theme cases completed');
@@ -194,6 +241,20 @@ async function main() {
     }
   }
   await matrixContext.close();
+
+  await check('batch-keyboard-anchors-fullsize-links-and-bounded-claims',async()=>{
+    const value=await context({viewport:{width:1280,height:900}});
+    try{
+      const page=await value.newPage();await go(page,'?lang=en&theme=dark');
+      for(const selector of ['.primary-nav a[href="#key-activation"]','.hero-batch-link']){await page.locator(selector).focus();await page.keyboard.press('Enter');assert.equal(new URL(page.url()).hash,'#key-activation');const heading=await page.locator('#key-activation-title').boundingBox();assert(heading&&heading.y>=-1&&heading.y<900,'Keyboard batch anchor must reveal its heading');}
+      const links=page.locator('a:has(img[src*="/screenshots/"])');assert.equal(await links.count(),7);
+      for(const link of await links.all()){assert.equal(await link.getAttribute('target'),'_blank');assert((await link.getAttribute('rel')||'').split(/\s+/).includes('noopener'));assert.equal(await link.getAttribute('href'),await link.locator('img').getAttribute('src'));}
+      const copy=await page.evaluate(()=>globalThis.UM_TRANSLATIONS.en);assert(/confirm/i.test(copy.batchStep2Body)&&/confirm/i.test(copy.batchStep3Title));assert(/only ready/i.test(copy.batchStep3Body));assert(/already.used.*not/i.test(copy.batchBenefitUsed));assert(/two.second/i.test(copy.batchBenefitPacing));assert(/safe retry/i.test(copy.batchWaitBody));assert(/unknown.*never.*blindly/i.test(copy.batchSafety));assert(/fictional/i.test(copy.batchNote));assert(/64\s*KiB/i.test(copy.batchLimitDetail));assert(copy.screenshotNote.includes('0.9.0'));assert(copy.batchDemoTag.includes('0.9.8'));assert(copy.actualInterface.includes('0.9.0'));
+      const policyText=[copy.batchBenefitPacing,copy.batchWaitBody,copy.batchSafety].join(' ');assert(!/(?:official|Epic).{0,30}(?:only|hard limit|maximum).{0,12}\b10\b/i.test(policyText),'Do not describe the client grouping as an official Epic hard limit');
+      const nativePath=path.resolve(__dirname,'../source/src-tauri/src/epic_redeem_batch.rs'),native=fs.readFileSync(nativePath,'utf8');assert(/INTER_REQUEST_DELAY\s*:\s*Duration\s*=\s*Duration::from_secs\(2\)/.test(native));assert(/batch_size:10,batch_pause:Duration::from_secs\(60\)/.test(native));
+      return{nativePolicySource:{path:'source/src-tauri/src/epic_redeem_batch.rs',sha256:sha(Buffer.from(native)),twoSecondSpacing:true,clientGroupSize:10,clientPauseSeconds:60,scope:'Read-only source-default guard; no native/API execution or official quota claim.'},fullsizeLinks:7,keyboardBatchAnchors:2};
+    }finally{await value.close();}
+  });
 
   await check('language-theme-persistence-system-and-deep-links',async()=>{
     const value=await context({viewport:{width:1280,height:900},colorScheme:'dark'});
@@ -255,7 +316,7 @@ async function main() {
     assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(failedRequests,[]);assert.deepEqual(badResponses,[]);assert.deepEqual(externalRequests,[]);
     assert(serverRequests.includes(prefix+'app.js'));
     assert(serverRequests.includes(prefix+'translations.js'));
-    for(const name of ['engines','library','downloads','settings'])assert(serverRequests.includes(prefix+`assets/screenshots/${name}.webp`));
+    for(const name of Object.keys(screenshotDefinitions))assert(serverRequests.includes(prefix+`assets/screenshots/${name}.webp`));
   });
 }
 
@@ -265,7 +326,8 @@ async function main() {
   finally {
     if(browser)await browser.close();
     if(server)await new Promise(resolve=>server.close(resolve));
-    const report={startedAt:startedAt.toISOString(),finishedAt:new Date().toISOString(),node:process.version,basePath:prefix,passed:!fatalError&&results.every(result=>result.passed),fatalError,results,pageErrors,consoleErrors,failedRequests,badResponses,externalRequests,requestedPaths:[...new Set(serverRequests)].sort(),softwareBrowserArguments:browserLaunchOptions.args,gpuActivity:'Not measured; browser flags are configuration only.'};
+    const siteSourceFiles=['index.html','styles.css','translations.js','app.js','assets/um-mark.svg',...Object.keys(screenshotDefinitions).map(name=>'assets/screenshots/'+name+'.webp')].map(name=>({file:name,sha256:sha(fs.readFileSync(path.join(docsRoot,name)))}));
+    const report={startedAt:startedAt.toISOString(),finishedAt:new Date().toISOString(),node:process.version,basePath:prefix,passed:!fatalError&&results.every(result=>result.passed),fatalError,results,pageErrors,consoleErrors,failedRequests,badResponses,externalRequests,requestedPaths:[...new Set(serverRequests)].sort(),softwareBrowserArguments:browserLaunchOptions.args,gpuActivity:'Not measured; browser flags are configuration only.',captureBinding,screenshotArtifacts,siteSourceFiles,zoomScope:'Renderer reflow emulation only; no native OS DPI or browser-menu zoom is measured.'};
     const reportFile=path.join(outputDirectory,'site-report.json');fs.writeFileSync(reportFile,JSON.stringify(report,null,2)+'\n');console.log(`Report: ${reportFile}`);process.exitCode=report.passed?0:1;
   }
 })();
