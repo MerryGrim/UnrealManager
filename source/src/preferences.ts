@@ -1,5 +1,5 @@
 import {invoke} from '@tauri-apps/api/core';
-const keys=['unreal-manager.language.v1','um-library-page-size','um-plugins-page-size','unreal-manager.download-history.v1','um-library-sort'];
+const keys=['unreal-manager.language.v1','unreal-manager.theme.v1','um-library-page-size','um-plugins-page-size','unreal-manager.download-history.v1','um-library-sort'];
 const native=()=>typeof window!=='undefined'&&'__TAURI_INTERNALS__' in window;
 let queue=Promise.resolve();
 export function getPreference(key:string){try{return localStorage.getItem(key);}catch{return null;}}

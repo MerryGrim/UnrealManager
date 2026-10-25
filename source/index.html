@@ -4,6 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="dark light" />
+  <script>
+    try {
+      const theme = localStorage.getItem('unreal-manager.theme.v1') === 'light' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+    } catch {}
+  </script>
   <title>Unreal Manager</title>
   <link rel="icon" type="image/svg+xml" href="/src/assets/um-logo.svg" />
 </head>

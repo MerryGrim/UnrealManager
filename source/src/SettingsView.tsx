@@ -7,6 +7,7 @@ import { LanguageSettings } from './LanguageSettings';
 import { ProjectAssociationSettings } from './ProjectAssociationSettings';
 import { VaultStorageSettings } from './VaultStorageSettings';
 import { WindowSettings } from './WindowSettings';
+import { ThemeSettings } from './ThemeSettings';
 import { tr } from './i18n';
 
 const categories = [
@@ -60,7 +61,7 @@ export function SettingsView({ category, onCategoryChange, appUpdates, vaultBusy
 
   function contents(id: SettingsCategory) {
     switch (id) {
-      case 'interface': return <><LanguageSettings /><WindowSettings /><InterfaceGraphicsSettings /></>;
+      case 'interface': return <><ThemeSettings /><LanguageSettings /><WindowSettings /><InterfaceGraphicsSettings /></>;
       case 'downloads': return <DownloadSettings />;
       case 'storage': return <><VaultStorageSettings busy={vaultBusy} onChanged={onVaultChanged} />{epicVaultSettings}<CacheSettings /></>;
       case 'projects': return <ProjectAssociationSettings />;

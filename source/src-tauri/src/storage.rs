@@ -124,12 +124,19 @@ pub fn initialize()->Result<(),String> {
     fs::create_dir_all(cache()).map_err(error)?;
     Ok(())
 }
-const KEYS:[&str;5]=["unreal-manager.language.v1","um-library-page-size","um-plugins-page-size","unreal-manager.download-history.v1","um-library-sort"];
+const KEYS:[&str;6]=["unreal-manager.language.v1","um-library-page-size","um-plugins-page-size","unreal-manager.download-history.v1","um-library-sort","unreal-manager.theme.v1"];
 fn read_preferences()->Result<BTreeMap<String,String>,String> {
     let path=settings().join("preferences.json");
     if !path.exists(){return Ok(BTreeMap::new());}
     let bytes=fs::read(path).map_err(error)?;
     serde_json::from_slice(&bytes).map_err(error)
+}
+fn theme_from_preferences(values:&BTreeMap<String,String>)->tauri::Theme {
+    if values.get("unreal-manager.theme.v1").map(String::as_str)==Some("light") {tauri::Theme::Light} else {tauri::Theme::Dark}
+}
+pub(crate) fn interface_theme()->Result<tauri::Theme,String> {
+    let _guard=SETTINGS_LOCK.lock().map_err(error)?;
+    Ok(theme_from_preferences(&read_preferences()?))
 }
 #[tauri::command]
 pub fn settings_read()->Result<BTreeMap<String,String>,String>{
@@ -180,6 +187,16 @@ pub async fn clear_cache()->Result<u64,String> {
 }
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn interface_theme_defaults_dark_and_accepts_only_saved_light(){
+        let mut values=BTreeMap::new();
+        assert_eq!(theme_from_preferences(&values),tauri::Theme::Dark);
+        values.insert("unreal-manager.theme.v1".into(),"light".into());
+        assert_eq!(theme_from_preferences(&values),tauri::Theme::Light);
+        for value in ["dark","system","LIGHT",""] {
+            values.insert("unreal-manager.theme.v1".into(),value.into());
+            assert_eq!(theme_from_preferences(&values),tauri::Theme::Dark);
+        }
+    }
     #[test] fn vault_location_rejects_drive_root_relative_file_and_engine(){
      assert!(validate_vault_path("relative/vault").is_err());assert!(validate_vault_path("X:\\").is_err());assert!(validate_vault_path("X:\\folder\\..\\vault").is_err());
      let dir=std::env::temp_dir().join(format!("um-vault-path-test-{}",uuid::Uuid::new_v4()));fs::create_dir_all(dir.join("Engine/Build")).unwrap();fs::write(dir.join("Engine/Build/Build.version"),b"{}").unwrap();assert!(validate_vault_path(dir.to_str().unwrap()).is_err());assert!(validate_vault_path(dir.join("Vault").to_str().unwrap()).is_ok());fs::write(dir.join("file"),b"data").unwrap();assert!(validate_vault_path(dir.join("file").to_str().unwrap()).is_err());fs::remove_dir_all(dir).unwrap();

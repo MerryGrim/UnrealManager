@@ -318,7 +318,11 @@ pub fn run() {
         .setup(|app| {
             storage::initialize().map_err(std::io::Error::other)?;
             let config=app.config().app.windows.first().ok_or("Main window configuration missing")?;
+            // A cosmetic preference must not prevent showing the recoverable settings error UI.
+            let theme=storage::interface_theme().unwrap_or(tauri::Theme::Dark);
+            let background=if theme==tauri::Theme::Light {tauri::window::Color(243,246,250,255)} else {tauri::window::Color(16,19,24,255)};
             tauri::WebviewWindowBuilder::from_config(app,config)?
+                .theme(Some(theme)).background_color(background)
                 .additional_browser_args(crate::webview_policy::BROWSER_ARGUMENTS)
                 .data_directory(storage::root().join("WebView")).build()?;
             window_behavior::setup(app.handle())?;

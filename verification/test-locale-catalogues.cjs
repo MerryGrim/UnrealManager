@@ -36,7 +36,7 @@ for(const lang of languages){
 }
 console.log(languages.length+' languages × '+projectKeys.length+' project discovery messages checked');
 
-for(const addon of ['project-folders','redemption']){
+for(const addon of ['project-folders','redemption','workspace']){
     const data=JSON.parse(fs.readFileSync(root+'/src/locales/'+addon+'.json','utf8'));
     const keys=Object.keys(data.en);
     assert.deepEqual(Object.keys(data).sort(),[...languages].sort(),addon+': exact locales');

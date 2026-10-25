@@ -11,3 +11,9 @@
 .redemption-confirm-backdrop{position:fixed;inset:0;padding:16px;display:flex;align-items:center;justify-content:center;overflow:hidden}.redemption-confirm-backdrop .redemption-confirm{--dialog-inset:26px;display:flex;flex-direction:column;max-height:100%;min-height:0;overflow:hidden;margin:0}.redemption-confirm-body{min-height:0;overflow:auto;overscroll-behavior:contain}.redemption-confirm>.dialog-actions{flex-shrink:0}.redemption-confirm button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 @media(max-width:650px){.redemption-confirm-backdrop .redemption-confirm{--dialog-inset:18px}}
 @media(max-height:450px){.redemption-confirm-backdrop .redemption-confirm{--dialog-inset:16px}}
+
+/* Status text stays readable on the same light table surfaces as other views. */
+:root[data-theme="light"] .redemption-row-success td:last-child>strong{color:var(--ok)}
+:root[data-theme="light"] .redemption-row-failed td:last-child>strong{color:var(--danger)}
+:root[data-theme="light"] :is(.redemption-row-unknown td:last-child>strong,.native-redemption .redemption-warning){color:var(--warning)}
+:root[data-theme="light"] .redemption-input-form textarea[aria-invalid=true]{border-color:var(--danger)}

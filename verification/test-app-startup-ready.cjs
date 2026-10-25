@@ -38,6 +38,14 @@ export async function invoke(command,args={}) {
  if(command==='vault_discard')return;
  window.unexpected.push(command);throw Error('Unexpected startup IPC: '+command);
 }`;
+// The actual App now mounts a custom titlebar. These cosmetic/window APIs are
+// simulated too; no native WebviewWindow metadata or real window is available.
+const nativeWindow = `
+const current={isMaximized:async()=>false,onResized:async()=>()=>{},
+ setTheme:async()=>{},setBackgroundColor:async()=>{},
+ minimize:async()=>{},toggleMaximize:async()=>{},close:async()=>{},startDragging:async()=>{}};
+export const getCurrentWindow=()=>current;
+`;
 const report = {mockedNative: true, realUpdateVerified: false, checks: [], externalRequests: [], cases: []};
 const check = name => report.checks.push({name, passed: true});
 async function main() {
@@ -45,8 +53,8 @@ async function main() {
   entryPoints: [path.join(root, 'src/main.tsx')], bundle: true, write: false,
   define: {'process.env.NODE_ENV': '"development"'}, loader: {'.svg':'dataurl','.css':'empty'},
   plugins: [{name:'startup-native-fixture',setup(build){
-   build.onResolve({filter:/^@tauri-apps\/api\/(core|event)$/},args=>({path:args.path,namespace:'native-fixture'}));
-   build.onLoad({filter:/.*/,namespace:'native-fixture'},args=>({contents:args.path.endsWith('/event')?'export async function listen(){return ()=>{};}':core,loader:'js'}));
+   build.onResolve({filter:/^@tauri-apps\/api\/(core|event|window)$/},args=>({path:args.path,namespace:'native-fixture'}));
+   build.onLoad({filter:/.*/,namespace:'native-fixture'},args=>({contents:args.path.endsWith('/window')?nativeWindow:args.path.endsWith('/event')?'export async function listen(){return ()=>{};}':core,loader:'js'}));
    // Deterministic child render failure exercises React's aborted commit,
    // rather than throwing before the actual App starts rendering.
    build.onLoad({filter:/[\\/]EngineResumeTasks\.tsx$/},args=>({contents:fs.readFileSync(args.path,'utf8').replace(' const[tasks,setTasks]', ' if((window as any).fixture.failRender)throw Error("simulated initial child render failure");\n const[tasks,setTasks]'),loader:'tsx'}));
@@ -69,9 +77,13 @@ async function main() {
     assert.equal(await page.locator('.app-shell').count(),0);assert.deepEqual(await page.evaluate(()=>window.acks),[]);
     if(kind==='preferences-failure'){
      await page.evaluate(()=>window.readSettings.reject(Error('simulated unreadable local settings')));
-     await page.getByText('Could not load settings:',{exact:false}).waitFor();
-     assert.equal(await page.locator('.app-shell').count(),0);assert.deepEqual(await page.evaluate(()=>window.acks),[]);
-     check('Failed local preference initialization does not mount App or acknowledge health');
+     await page.locator('.startup-failure').waitFor();
+     await page.getByRole('alert').filter({hasText:'simulated unreadable local settings'}).waitFor();
+     assert.deepEqual(await page.evaluate(()=>window.acks),[]);
+     assert.equal(await page.locator('.window-controls button').count(),3,'Preference failure retains recoverable window controls');
+     const calls=await page.evaluate(()=>window.calls.map(x=>x.command));
+     for(const command of ['epic_status','scan_engines','scan_projects','app_update_check','app_update_ui_ready'])assert.equal(calls.includes(command),false,'Failure chrome mounted the normal App or acknowledged update health');
+     check('Failed local preference initialization mounts only recovery chrome and never normal App or update health ACK');
     }else{
      await page.evaluate(()=>window.readSettings.resolve({'unreal-manager.language.v1':'en'}));
      if(kind==='render-failure'){

@@ -5,12 +5,12 @@ import {AppUpdateNotice,useAppUpdates} from './AppUpdateSettings';
 import {SettingsView,type SettingsCategory} from './SettingsView';
 import {formatEnginePhase,enginePercentText,engineProgressPercent,type EngineTransfer} from './EngineTransferCard';
 import { tr, getLocale } from './i18n';
-import metadata from '../package.json';
 import { AboutDialog } from './AboutDialog';
 import { useLanguage } from './i18n';
 import { EnginesView } from './EnginesView';
 import { UpdatesView } from './UpdatesView';
 import { PageActionsTarget } from './PageActions';
+import { WorkspaceHeader } from './WorkspaceHeader';
 import logo from './assets/um-logo.svg';
 import { AccountMenu } from './AccountMenu';
 import { PluginsView } from './PluginsView';
@@ -86,11 +86,7 @@ export default function App() {
         : vault.tileProgress ? `${vault.tileProgress.phase} · ${vault.tileProgress.percent}%`
         : vault.busy ? 'Операция с хранилищем…' : vault.queuedCount ? vault.queue.paused ? 'Очередь приостановлена' : 'Ожидает завершения текущей операции' : 'Нет активных загрузок';
     return <div className="app-shell">
-    <header className="workspace-topbar">
-      <button className="workspace-brand" onClick={() => setSection('home')} aria-label={tr("Unreal Manager — Главная")}><img className="workspace-logo" src={logo} alt={tr("")}/><span>{tr("Unreal Manager")}<small>{metadata.version}</small></span></button>
-      <nav className="workspace-nav" aria-label={tr("Основные разделы")}>{tr(nav.filter(item => ['engines', 'projects', 'library', 'plugins', 'updates'].includes(item.id)).map(item => { const I = item.icon; return <button key={item.id} onClick={() => setSection(item.id)} className={section === item.id ? 'active' : ''} aria-current={section === item.id ? 'page' : undefined}><I size={17}/><span>{tr(item.id === 'engines' ? 'Движки' : item.label)}</span>{tr(item.id === 'updates' && updateCount > 0 && <em className="nav-update-count">{tr(updateCount)}</em>)}</button>; }))}</nav>
-      <AccountMenu account={epic.account} busy={epic.accountBusy} onLogin={epic.openLogin} onLogout={epic.logout} onRedeem={() => setSection('redeem')} onAbout={() => setAbout(true)}/>
-    </header>
+    <WorkspaceHeader section={section} items={nav.filter(item => ['engines', 'projects', 'library', 'plugins', 'updates'].includes(item.id)).map(item => ({...item,label:item.id === 'engines' ? 'Движки' : item.label,badge:item.id === 'updates' ? updateCount : undefined}))} onNavigate={value => setSection(value as Section)} accountMenu={<AccountMenu account={epic.account} busy={epic.accountBusy} onLogin={epic.openLogin} onLogout={epic.logout} onRedeem={() => setSection('redeem')} onAbout={() => setAbout(true)}/>}/>
     <PageActionsTarget.Provider value={actionsTarget}><main className={`main workspace-main ${section === 'home' ? 'home-main' : ''}`}>
       {tr(section !== 'home' && <header className="workspace-heading"><h1>{tr(title(section))}</h1><div className="page-actions" ref={setActionsTarget}></div></header>)}
       <div className="workspace-page">      {tr(error ? <div role="alert" className="empty">{tr(error)}<button onClick={refresh}>{tr("Повторить")}</button></div> : section === 'home' && <HomeView downloaded={vault.items.length} engines={engines} projects={projects} onGo={setSection} onRemoved={path => setProjects(current => current.filter(p => p.path !== path))}/>)}      

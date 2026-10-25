@@ -20,6 +20,15 @@ from the resume list, and transfer controls at 1280/600 px. The auth-required
 regression covers explicit sign-in actions, all nine languages and preservation
 of mocked saved downloads; it does not verify a genuinely expired Epic session.
 
+`test-workspace-header.cjs` checks the actual integrated header, account menu,
+theme selector and shared light surfaces with synthetic window APIs. It covers
+both themes, all nine languages, responsive geometry, keyboard access, saved
+theme restoration and event-listener cleanup. Renderer zoom equivalents do not
+establish native Windows DPI, dragging, snap behavior or hardware GPU activity.
+`test-startup-window-failure.cjs` checks the actual startup error path, retry
+guard and normal close prompt using synthetic settings/window events. It never
+modifies an existing profile or demonstrates an actual application update.
+
 `test-project-discovery.cjs` mounts the actual Projects view, project-folder
 dialog and project tiles with a synthetic native provider. It checks saved folder
 choices, explicit refresh, single-job guards, cancellation with partial results,

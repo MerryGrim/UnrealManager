@@ -1,5 +1,15 @@
 # Change notes
 
+## 0.9.8
+
+- Combine the Unreal Manager brand, section navigation, theme switch, Epic
+  account menu and native window actions in one responsive application header.
+  Keep the existing Ask / Tray / Exit close behavior.
+- Add a complete light theme alongside the dark theme, including controls,
+  cards, tables, status messages and dialogs. Save the choice and expose it in
+  the header and Interface settings without adding a background service.
+- Keep window actions and retry available if loading preferences fails.
+
 ## 0.9.7
 
 - Enter one product key or import a UTF-8 TXT list in the application. Check the

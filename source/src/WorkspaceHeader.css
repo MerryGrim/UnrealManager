@@ -1,0 +1,36 @@
+/* The application header is also the native titlebar. Its free space handles dragging. */
+.workspace-topbar.unified-topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:24px;align-items:center;min-height:88px;padding:10px 8px 10px 18px;background:var(--chrome);color:var(--text);border-bottom:1px solid var(--border);user-select:none;flex-wrap:nowrap}
+.unified-topbar .unified-brand{min-width:0;gap:12px;border-radius:12px;outline-offset:5px;color:var(--text)}
+.unified-topbar .unified-brand:hover{background:transparent;color:var(--text)}
+.unified-topbar .unified-logo{width:54px;height:54px;flex-shrink:0;object-fit:contain}
+.unified-topbar .unified-brand-copy{display:flex;flex-direction:column;min-width:0;gap:5px}
+.unified-brand-copy b{font-size:18px;line-height:1.2;font-weight:650;white-space:nowrap}
+.unified-brand-copy .unified-version{font-size:10px;font-weight:500;color:var(--muted);margin-left:5px}
+.unified-topbar .unified-brand-copy small{font-size:12px;line-height:1.3;font-weight:400;color:var(--muted);margin:0;white-space:nowrap}
+.unified-topbar .unified-nav{order:initial;flex-basis:auto;gap:5px;align-self:stretch;align-items:center;min-width:0}
+.unified-topbar .unified-nav button{flex:0 1 auto;min-width:0;height:46px;gap:9px;padding:0 13px;border-radius:14px;font-size:13px;font-weight:600;background:transparent;color:var(--muted);border-color:transparent}
+.unified-topbar .unified-nav button svg{display:block;flex-shrink:0}
+.unified-topbar .unified-nav button:hover{background:var(--control-hover);color:var(--text)}
+.unified-topbar .unified-nav button.active{color:var(--selected-text);background:var(--selected-bg);border-color:var(--selected-border)}
+.unified-topbar .unified-nav button span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.unified-topbar .nav-update-count{background:var(--selected-bg);color:var(--selected-text);font-size:10px;flex-shrink:0}
+.unified-tools{display:flex;align-items:center;gap:16px;min-width:0}
+.unified-topbar .theme-toggle{width:40px;height:42px;justify-content:center;padding:0;border:1px solid transparent;background:transparent;color:var(--muted);border-radius:12px;flex-shrink:0}
+.unified-topbar .theme-toggle:hover{background:var(--control-hover);color:var(--text)}
+.unified-topbar .user-area{margin:0;min-width:0}
+.unified-topbar .user-trigger{max-width:220px;min-width:0;padding:5px 7px!important;border-radius:12px;color:var(--text)}
+.unified-topbar .user-trigger:hover{background:var(--control-hover);border-color:transparent}
+.unified-topbar .user-avatar{width:43px;height:43px;border:1px solid var(--border);border-radius:14px;background:var(--panel);color:var(--muted);font-size:17px}
+.unified-topbar .user-summary{max-width:140px;gap:4px}
+.unified-topbar .user-summary b{font-size:13px;font-weight:600}
+.unified-topbar .user-summary small{font-size:11px;color:var(--muted)}
+.unified-topbar .window-controls{display:flex;align-items:center;gap:1px;padding-left:15px;border-left:1px solid var(--border);flex-shrink:0}
+.unified-topbar .window-controls button{width:43px;height:43px;justify-content:center;padding:0;background:transparent;border:1px solid transparent;border-radius:10px;color:var(--muted)}
+.unified-topbar .window-controls button:hover{background:var(--control-hover);color:var(--text)}
+.unified-topbar .window-controls .window-close:hover{background:#c42b3a;color:#fff;border-color:#c42b3a}
+.window-control-error{position:absolute;right:12px;top:calc(100% + 8px);max-width:min(440px,calc(100vw - 24px));padding:12px;display:flex;align-items:center;gap:12px;border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text);font-size:13px;box-shadow:0 8px 24px #0003;user-select:text}
+.startup-failure{min-width:0;min-height:0;overflow:auto;padding:32px}.startup-failure>.empty{max-width:720px;margin:24px auto;background:var(--panel);border-color:var(--border);text-align:left;user-select:text}.startup-failure h1{font-size:20px;color:var(--text)}.startup-failure p{overflow-wrap:anywhere;white-space:pre-wrap;line-height:1.6}.startup-failure button{margin-top:12px}
+@media(max-width:1450px){.workspace-topbar.unified-topbar{gap:16px;padding-left:14px}.unified-topbar .unified-logo{width:46px;height:46px}.unified-brand-copy b{font-size:16px}.unified-topbar .unified-brand-copy small{font-size:11px}.unified-topbar .unified-nav button{padding:0 9px;font-size:12px;gap:7px}.unified-tools{gap:8px}.unified-topbar .user-summary{display:none}.unified-topbar .window-controls{padding-left:8px}}
+@media(max-width:1080px){.workspace-topbar.unified-topbar{grid-template-columns:minmax(0,1fr) auto;gap:8px 16px;padding:8px 8px 8px 14px;min-height:122px}.unified-topbar .unified-nav{grid-column:1/-1;grid-row:2;justify-content:center;align-self:auto;gap:7px}.unified-topbar .unified-nav button{flex:1;justify-content:center;height:41px;font-size:13px}.unified-topbar .user-summary{display:flex;max-width:120px}.unified-topbar .unified-logo{width:44px;height:44px}}
+@media(max-width:720px){.unified-topbar .user-summary{display:none}.unified-topbar .unified-nav{gap:3px}.unified-topbar .unified-nav button{padding:0 7px;gap:6px;font-size:12px}.unified-topbar .unified-brand{gap:9px}.unified-topbar .unified-brand-copy small{max-width:190px;overflow:hidden;text-overflow:ellipsis}.unified-topbar .unified-brand-copy .unified-version{display:none}.unified-topbar .window-controls{padding-left:6px}.unified-topbar .window-controls button{width:36px}.unified-tools{gap:4px}}
+@media(max-width:560px){.unified-topbar .unified-nav button:not(.active) span{display:none}.unified-topbar .unified-nav button{flex:1 1 0}.unified-topbar .unified-nav button.active{flex:2 1 0}.unified-topbar .unified-brand-copy small{display:none}.unified-topbar .unified-logo{width:36px;height:36px}.unified-brand-copy b{font-size:14px}.unified-topbar .user-trigger{gap:4px}.unified-topbar .user-avatar{width:34px;height:34px}.unified-topbar .theme-toggle{width:34px}}

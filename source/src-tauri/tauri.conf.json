@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Unreal Manager",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "identifier": "ru.unrealmanager.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -20,7 +20,7 @@
         "resizable": true,
         "dragDropEnabled": false,
         "fullscreen": false,
-        "decorations": true,
+        "decorations": false,
         "transparent": false,
         "backgroundColor": "#0f1115"
       }
