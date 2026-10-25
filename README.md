@@ -4,8 +4,8 @@ An independent, lightweight Unreal Engine manager for **Windows x64**.
 Manage engines, projects, Fab assets, Vault content and plugins in one desktop
 application, without a game storefront.
 
-**Version 0.9.7.** Download the installer or portable edition, or build from source.
-See the [0.9.7 change notes](source/CHANGELOG.md).
+**Version 0.9.8.** Download the installer or portable edition, or build from source.
+See the [0.9.8 change notes](source/CHANGELOG.md).
 
 [Website & screenshots](https://merrygrim.github.io/UnrealManager/) ·
 [Build instructions](source/README.md) · [Verification](verification/README.md) ·
@@ -25,6 +25,9 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 
 ## Features
 
+- Use one integrated header for navigation, account, theme and window controls,
+  keeping the existing native minimize/maximize/close and Ask/Tray/Exit policy.
+- Choose a persistent light or dark app theme from the header or Interface settings.
 - Discover installed Unreal Engine versions and local `.uproject` files.
 - Configure and remember project scan folders, then refresh them and their
   subfolders with progress and Stop. Discovered paths are retained without a
@@ -76,6 +79,8 @@ priority ordering, project copying, engine installation and Editor launch, and
 removal of the test installation. These checks cover specific builds and a tested
 Windows environment; clean-Windows setup and every Epic/Fab scenario remain
 outside that acceptance scope. Website screenshots use fictional demonstration data.
+Retained version 0.9.0 images show the earlier dark interface and do not depict the
+0.9.8 integrated header or light theme.
 Acceptance of the new batch-redemption workflow is recorded separately from those
 earlier account and transfer checks.
 GitHub application updates support installed and portable editions. **Settings → App updates** offers
@@ -94,11 +99,11 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
-## Download 0.9.7
+## Download 0.9.8
 
-[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.7/UnrealManager-0.9.7-Windows-x64-Setup.exe) ·
-[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.7/UnrealManager-0.9.7-Windows-x64-Portable.zip) ·
-[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.7)
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.8/UnrealManager-0.9.8-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.8/UnrealManager-0.9.8-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.8)
 
 The installer installs for the current user. For portable use, extract the ZIP to
 a writable directory and keep `portable.marker` beside `unreal-manager.exe`.
