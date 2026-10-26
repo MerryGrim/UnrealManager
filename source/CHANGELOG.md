@@ -1,5 +1,24 @@
 # Change notes
 
+## 0.9.10
+
+- Recognize complete Unreal projects from the selected download manifest rather
+  than relying only on the Fab catalogue type. A root `.uproject` with project
+  content opens the new-project flow; plugin examples remain plugins.
+- Apply the corrected type to prepared downloads, saved tasks and completed
+  Vault packages. Reuse a downloaded package rather than downloading it again.
+  Matching completed packages also correct library filtering and actions.
+- When an asset turns out to be a complete project, clear the old existing-project
+  destination and require an explicit new folder before previewing or installing.
+  Do not copy a full project into an earlier selected `.uproject` destination.
+- Preserve existing profiles, Epic sessions, downloads and user projects, with no
+  new runtime dependency, watcher, background process or rendering loop.
+
+Existing conflicting files remain blocked. Optional overwrite/replacement with
+explicit confirmation and a backup is planned for a later change and is not
+implemented in this release. Manifest and isolated filesystem/UI regression
+checks do not establish a new real-account download or installation acceptance.
+
 ## 0.9.9
 
 - Recognize Epic's `content_already_owned` response as a per-key failure, keep

@@ -10,7 +10,9 @@
     "Сначала нескачанные": "Not downloaded first",
     "Навигация библиотеки": "Library navigation",
     "Проверяем регистрацию…": "Checking registration…",
-    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Checking engine registration. Windows may request administrator permission if needed."
+    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Checking engine registration. Windows may request administrator permission if needed.",
+    "Тип материала уточнён по файлам. Выберите место установки заново.": "The content type was identified from its files. Choose the installation location again.",
+    "Это полный проект. Выберите новую папку для создания проекта.": "This is a complete project. Choose a new folder to create the project."
   },
   "de": {
     "Сортировка библиотеки": "Bibliothek sortieren",
@@ -23,7 +25,9 @@
     "Сначала нескачанные": "Nicht heruntergeladene zuerst",
     "Навигация библиотеки": "Bibliotheksnavigation",
     "Проверяем регистрацию…": "Registrierung wird geprüft…",
-    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Die Engine-Registrierung wird geprüft. Windows fordert bei Bedarf Administratorrechte an."
+    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Die Engine-Registrierung wird geprüft. Windows fordert bei Bedarf Administratorrechte an.",
+    "Тип материала уточнён по файлам. Выберите место установки заново.": "Der Materialtyp wurde anhand der Dateien erkannt. Wählen Sie den Installationsort erneut.",
+    "Это полный проект. Выберите новую папку для создания проекта.": "Dies ist ein vollständiges Projekt. Wählen Sie einen neuen Ordner zum Erstellen des Projekts."
   },
   "it": {
     "Сортировка библиотеки": "Ordina libreria",
@@ -36,7 +40,9 @@
     "Сначала нескачанные": "Prima gli elementi non scaricati",
     "Навигация библиотеки": "Navigazione della libreria",
     "Проверяем регистрацию…": "Verifica della registrazione…",
-    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Verifica della registrazione dei motori. Se necessario, Windows richiederà l’autorizzazione di amministratore."
+    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Verifica della registrazione dei motori. Se necessario, Windows richiederà l’autorizzazione di amministratore.",
+    "Тип материала уточнён по файлам. Выберите место установки заново.": "Il tipo di contenuto è stato identificato dai file. Scegli di nuovo la posizione di installazione.",
+    "Это полный проект. Выберите новую папку для создания проекта.": "Questo è un progetto completo. Scegli una nuova cartella in cui creare il progetto."
   },
   "es": {
     "Сортировка библиотеки": "Ordenar biblioteca",
@@ -49,7 +55,9 @@
     "Сначала нескачанные": "No descargados primero",
     "Навигация библиотеки": "Navegación de la biblioteca",
     "Проверяем регистрацию…": "Comprobando el registro…",
-    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Comprobando el registro de motores. Si es necesario, Windows solicitará permisos de administrador."
+    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Comprobando el registro de motores. Si es necesario, Windows solicitará permisos de administrador.",
+    "Тип материала уточнён по файлам. Выберите место установки заново.": "El tipo de contenido se ha identificado a partir de sus archivos. Vuelve a elegir la ubicación de instalación.",
+    "Это полный проект. Выберите новую папку для создания проекта.": "Este es un proyecto completo. Elige una carpeta nueva para crear el proyecto."
   },
   "fr": {
     "Сортировка библиотеки": "Trier la bibliothèque",
@@ -62,7 +70,9 @@
     "Сначала нескачанные": "Non téléchargés d’abord",
     "Навигация библиотеки": "Navigation de la bibliothèque",
     "Проверяем регистрацию…": "Vérification de l’enregistrement…",
-    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Vérification de l’enregistrement des moteurs. Windows peut demander une autorisation administrateur si nécessaire."
+    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Vérification de l’enregistrement des moteurs. Windows peut demander une autorisation administrateur si nécessaire.",
+    "Тип материала уточнён по файлам. Выберите место установки заново.": "Le type de contenu a été identifié à partir des fichiers. Choisissez à nouveau le dossier d’installation.",
+    "Это полный проект. Выберите новую папку для создания проекта.": "Il s’agit d’un projet complet. Choisissez un nouveau dossier pour créer le projet."
   },
   "zh": {
     "Сортировка библиотеки": "资源库排序",
@@ -75,7 +85,9 @@
     "Сначала нескачанные": "未下载优先",
     "Навигация библиотеки": "资源库导航",
     "Проверяем регистрацию…": "正在检查注册信息…",
-    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "正在检查引擎注册信息。必要时 Windows 会请求管理员授权。"
+    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "正在检查引擎注册信息。必要时 Windows 会请求管理员授权。",
+    "Тип материала уточнён по файлам. Выберите место установки заново.": "已根据文件识别内容类型。请重新选择安装位置。",
+    "Это полный проект. Выберите новую папку для создания проекта.": "这是一个完整项目。请选择新文件夹以创建项目。"
   },
   "ja": {
     "Сортировка библиотеки": "ライブラリの並べ替え",
@@ -88,7 +100,9 @@
     "Сначала нескачанные": "未ダウンロードを先に",
     "Навигация библиотеки": "ライブラリのナビゲーション",
     "Проверяем регистрацию…": "登録を確認しています…",
-    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "エンジンの登録を確認しています。必要に応じて Windows が管理者の許可を求めます。"
+    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "エンジンの登録を確認しています。必要に応じて Windows が管理者の許可を求めます。",
+    "Тип материала уточнён по файлам. Выберите место установки заново.": "ファイルからコンテンツの種類を判定しました。インストール先を選び直してください。",
+    "Это полный проект. Выберите новую папку для создания проекта.": "これは完全なプロジェクトです。作成先として新しいフォルダーを選択してください。"
   },
   "ko": {
     "Сортировка библиотеки": "라이브러리 정렬",
@@ -101,6 +115,8 @@
     "Сначала нескачанные": "다운로드하지 않은 항목 먼저",
     "Навигация библиотеки": "라이브러리 탐색",
     "Проверяем регистрацию…": "등록 확인 중…",
-    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "엔진 등록을 확인하고 있습니다. 필요한 경우 Windows에서 관리자 권한을 요청합니다."
+    "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "엔진 등록을 확인하고 있습니다. 필요한 경우 Windows에서 관리자 권한을 요청합니다.",
+    "Тип материала уточнён по файлам. Выберите место установки заново.": "파일을 통해 콘텐츠 유형을 확인했습니다. 설치 위치를 다시 선택하세요.",
+    "Это полный проект. Выберите новую папку для создания проекта.": "전체 프로젝트입니다. 프로젝트를 만들 새 폴더를 선택하세요."
   }
 }
