@@ -32,7 +32,9 @@ type Item = FabItem;
 type Library = {
     items: Item[];
     scope: string;
+    typeStats?: {total: number; done: number; unresolved: number; fetched?: number; cached?: number};
 };
+type LibraryProgress = {pages: number; items: number; phase?: 'waiting' | 'pages' | 'types'; done?: number; total?: number; unresolved?: number};
 const signedOut: Account = { signedIn: false, displayName: null };
 export { RedeemView } from './RedeemView';
 
@@ -177,18 +179,20 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
     catch {
         return 48;
     } });
-    const [progress, setProgress] = useState({ pages: 0, items: 0 });
+    const [progress, setProgress] = useState<LibraryProgress>({ pages: 0, items: 0 });
+    const [typeStats, setTypeStats] = useState<Library['typeStats']>();
     const [cachedAt, setCachedAt] = useState(0);
     const lastRequest = useRef<{
         account: string;
         revision: number;
         signal: number;
     } | null>(null);
-    useEffect(() => { setItems([]); setLoaded(false); setPage(0); setCachedAt(0); setTopic(''); }, [account.signedIn, account.displayName]);
+    useEffect(() => { setItems([]); setLoaded(false); setPage(0); setCachedAt(0); setTopic(''); setTypeStats(undefined); }, [account.signedIn, account.displayName]);
     useEffect(() => {
         let active = true;
         setError('');
         setProgress({ pages: 0, items: 0 });
+        setTypeStats(undefined);
         if (!account.signedIn) {
             setLoading(false);
             lastRequest.current = null;
@@ -215,16 +219,14 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
                         return;
                 }
             }
-            const onProgress = new Channel<{
-                pages: number;
-                items: number;
-            }>(value => { if (active)
+            const onProgress = new Channel<LibraryProgress>(value => { if (active)
                 setProgress(value); });
             const result = await invoke<Library>('fab_library', { onProgress });
             if (active) {
                 setItems(result.items.map(item => ({ ...item, coverRevision: Date.now() })));
                 setLoaded(true);
                 setCachedAt(Math.floor(Date.now() / 1000));
+                setTypeStats(result.typeStats);
             }
         })().catch(e => { if (active)
             setError(String(e)); }).finally(() => { if (active)
@@ -258,11 +260,12 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
     return <div className="content library-content">
     <div className="library-summary"><div><span className="muted">{tr(items.length)}{tr(" материалов")}{tr(cachedAt ? ` · Синхронизация: ${new Date(cachedAt * 1000).toLocaleString(getLocale())}` : '')}</span></div><PageActions><button disabled={loading} onClick={() => setRevision(r => r + 1)}><RefreshCw size={17}/>{tr(loading ? 'Синхронизация…' : 'Обновить библиотеку')}</button></PageActions></div>
     <label className="downloaded-filter"><input type="checkbox" checked={category === 'downloaded'} onChange={e => setCategory(e.target.checked ? 'downloaded' : 'all')}/>{tr("Показать только скачанное ")}<span>{tr("(")}{tr(downloadedIds.size)}{tr(")")}</span></label>
-    {tr(loading && <div className="library-loading" role="status"><RefreshCw className="loading-spinner" size={24}/><div><strong>{tr(loaded ? 'Обновляем список в фоне…' : 'Загружаем библиотеку…')}</strong><p>{tr(progress.pages ? `Получено материалов: ${progress.items} · Страниц: ${progress.pages}` : 'Проверяем локальный список и подключение…')}</p></div></div>)}
+    {tr(loading && <div className="library-loading" role="status" style={{minHeight: 128}}><RefreshCw className="loading-spinner" size={24}/><div style={{flex: 1, minWidth: 0}}><strong>{tr(progress.phase === 'waiting' ? 'Ожидаем предыдущую синхронизацию…' : progress.phase === 'types' ? 'Уточняем типы материалов…' : loaded ? 'Обновляем список в фоне…' : 'Загружаем библиотеку…')}</strong><p>{tr(progress.phase === 'waiting' ? '\u00a0' : progress.phase === 'types' ? `Проверено типов: ${progress.done || 0} / ${progress.total || 0}` : progress.pages ? `Получено материалов: ${progress.items} · Страниц: ${progress.pages}` : 'Проверяем локальный список и подключение…')}</p><progress aria-hidden={progress.phase === 'waiting'} aria-label={tr(progress.phase === 'types' ? 'Уточняем типы материалов…' : 'Загружаем библиотеку…')} max={Math.max(1, progress.total || 0)} value={progress.phase === 'types' && progress.total ? Math.min(progress.done || 0, progress.total) : undefined} style={{display: 'block', visibility: progress.phase === 'waiting' ? 'hidden' : undefined, width: '100%', height: 8, marginTop: 8}}/><small style={{minHeight: '1.5em'}} aria-hidden={progress.phase !== 'types' || !progress.unresolved}>{progress.phase === 'types' && !!progress.unresolved ? tr(`Не удалось уточнить: ${progress.unresolved}`) : '\u00a0'}</small></div></div>)}
     <div className="library-filters"><input aria-label={tr("Поиск в Fab")} placeholder={tr("Название или категория")} value={query} onChange={e => setQuery(e.target.value)}/><select aria-label={tr("Тип материала")} value={kind} onChange={e => setKind(e.target.value)}><option value="All">{tr("Все типы")}</option><option value="Asset">{tr("Ассеты")}</option><option value="Plugin">{tr("Плагины")}</option><option value="Project">{tr("Проекты")}</option></select><select aria-label={tr("Тематика")} value={topic} onChange={e=>setTopic(e.target.value)}><option value="">{tr("Все тематики")}</option>{topics.map(t=><option key={t.key} value={t.key}>{tr(t.label)}</option>)}</select><select aria-label={tr("Версия Unreal Engine")} value={version} onChange={e => setVersion(e.target.value)}><option value="All">{tr("Все версии UE")}</option>{tr(versions.map(v => <option key={v}>{tr(v)}</option>))}</select><select aria-label={tr("Сортировка библиотеки")} value={sort} onChange={e => { if (isLibrarySort(e.target.value)) { setSort(e.target.value); setPreference('um-library-sort', e.target.value); } }}>
         <option value="title-asc">{tr("Название: А–Я")}</option><option value="title-desc">{tr("Название: Я–А")}</option><option value="kind">{tr("Тип материала")}</option><option value="engine-desc">{tr("Версия UE: сначала новые")}</option><option value="engine-asc">{tr("Версия UE: сначала старые")}</option><option value="downloaded">{tr("Сначала скачанные")}</option><option value="not-downloaded">{tr("Сначала нескачанные")}</option>
     </select></div>
     <EpicAuthError error={error}/>
+    {!loading && !!typeStats?.unresolved && <p role="status" style={{color: 'var(--warning)'}}>{tr(`Не удалось уточнить типы материалов: ${typeStats.unresolved}. Повторите обновление библиотеки.`)}</p>}
     {tr(!loading && loaded && !filtered.length && <div className="empty">{tr(category === 'downloaded' ? 'В Vault пока нет материалов, соответствующих фильтрам.' : 'Материалы не найдены.')}</div>)}
     <div className="library-items"><div className="fab-grid">{tr(sorted.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map(item => <LibraryTile key={item.id} item={item} onOpen={onDownload} busy={downloadBusy} progress={downloadProgress?.id===item.id?downloadProgress:pendingProgress[item.id]||null} resumeId={pendingProgress[item.id]?.taskId} onResume={onResume} downloaded={downloadedIds.has(item.id)} onVaultChanged={onVaultChanged} packageIds={downloaded.filter(p => p.assetId === item.id || (!p.assetId && p.title === item.title && downloadedIds.has(item.id))).map(p => p.id)} packageId={downloaded.find(p => p.assetId === item.id || (!p.assetId && p.title === item.title && downloadedIds.has(item.id)))?.id}/>))}</div></div>
     {tr(loaded && <nav className="pagination library-pagination" aria-label={tr("Навигация библиотеки")}><span>{tr("Найдено: ")}{tr(filtered.length)}{tr(" · Страница ")}{tr(currentPage + 1)}{tr(" из ")}{tr(pages)}</span><div className="pagination-controls"><button disabled={!currentPage} onClick={() => setPage(p => Math.max(0, p - 1))}>{tr("Назад")}</button><button disabled={currentPage >= pages - 1} onClick={() => setPage(p => Math.min(pages - 1, p + 1))}>{tr("Далее")}</button></div><label className="page-size">{tr("На странице")}<select aria-label={tr("Материалов на странице")} value={pageSize} onChange={e => { const n = Number(e.target.value); if ([24, 48, 96, 192].includes(n)) { setPageSize(n); setPreference('um-library-page-size', String(n)); } }}>{tr([24, 48, 96, 192].map(n => <option key={n} value={n}>{tr(n)}</option>))}</select></label></nav>)}

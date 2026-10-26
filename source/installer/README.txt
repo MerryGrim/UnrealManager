@@ -1,4 +1,4 @@
-Unreal Manager 0.9.10 — Nyanma
+Unreal Manager 0.9.11 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
@@ -46,7 +46,20 @@ Unreal Engine, Epic Games and Fab belong to their owners.
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
-0.9.10
+0.9.11
+- Restore Fab CODE_PLUGIN entries and recognize complete projects before download
+  from Fab metadata and Epic package descriptions, including content outside
+  local Vault.
+- Cache verified type results and recheck new, changed or expired package records
+  during synchronization. This reads metadata and package descriptions without
+  downloading asset files or chunks.
+- Show type-checking progress and unresolved counts. A partial metadata failure
+  keeps the library and offers a retry instead of claiming every item is checked.
+- Keep the existing profile, Epic session, downloads and projects when updating
+  installed or portable copies, including a local 0.9.10 installation.
+- No new runtime dependency, permanent process, watcher or rendering loop is added.
+
+0.9.10 (unpublished candidate)
 - Complete Unreal projects are recognized from the selected package manifest.
   The corrected type is used for downloads, saved tasks and completed Vault
   packages. Matching saved packages are reused rather than downloaded again.
@@ -159,8 +172,8 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In 0.9.10, use Settings > App updates > Check for updates.
-Beta.7 and newer can receive 0.9.10 through the application updater. Stable
+In 0.9.11, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.11 through the application updater. Stable
 releases are available in both the stable and beta update channels.
 In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.

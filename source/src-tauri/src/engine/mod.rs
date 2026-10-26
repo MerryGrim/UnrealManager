@@ -90,6 +90,10 @@ struct Plan {
 fn io(e: std::io::Error) -> String {
     format!("Ошибка файловой системы: {e}")
 }
+pub(crate) fn package_content_kind(raw:&[u8])->Result<String,String>{
+    Ok(crate::content_kind::from_paths("Asset",manifest::package_filenames(raw)?))
+}
+
 pub(crate) fn parse(raw: &[u8]) -> Result<DownloadManifest, String> {
     manifest::tags(raw)?;
     let (app, build) = manifest::identity(raw)?;
