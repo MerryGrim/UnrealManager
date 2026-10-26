@@ -1,4 +1,4 @@
-Unreal Manager 0.9.8 — Nyanma
+Unreal Manager 0.9.9 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
@@ -46,7 +46,15 @@ Unreal Engine, Epic Games and Fab belong to their owners.
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
-0.9.8
+0.9.9
+- Epic content_already_owned responses mark the row as already owned instead
+  of stopping checks of the remaining keys. Only ready rows are activated after
+  explicit confirmation; uncertain activation results are not replayed.
+- Updates keep the existing installed profile or portable Data folder, Epic
+  session, saved tasks and projects. No new profile or sign-in is required by
+  this patch. Keep Data and portable.marker when replacing portable app files.
+
+0.9.8 (historical release)
 - One integrated header contains navigation, the Epic account, theme selection
   and native window actions. The existing Ask / Tray / Exit close choice remains.
 - A complete light theme is available alongside the dark theme. The selected
@@ -140,8 +148,8 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In 0.9.8, use Settings > App updates > Check for updates.
-Beta.7 and newer can receive 0.9.8 through the application updater. Stable
+In 0.9.9, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.9 through the application updater. Stable
 releases are available in both the stable and beta update channels.
 In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.

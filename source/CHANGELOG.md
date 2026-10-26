@@ -1,6 +1,6 @@
 # Change notes
 
-## Unreleased
+## 0.9.9
 
 - Recognize Epic's `content_already_owned` response as a per-key failure, keep
   checking the remaining list, and exclude products already owned from activation.
