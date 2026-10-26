@@ -100,6 +100,48 @@ async fn prepare_only_evaluates_and_never_locks_or_redeems() {
 }
 
 #[tokio::test]
+async fn owned_product_refusal_continues_checking_and_only_ready_key_is_activated() {
+    let eligible="SYNTHETIC-gamma-24680";
+    let mut d=draft(&[KEY,KEY2,eligible]);let cancel=AtomicBool::new(false);
+    let mut owned=rejected(Reason::AlreadyOwned);
+    owned.diagnostic=Some(serde_json::from_value(serde_json::json!({
+        "operation":"evaluate","stage":"resultShape","httpStatus":200,
+        "hasErrors":true,"serviceCode":"errors.com.epicgames.coderedemption.criteria.content_already_owned"
+    })).unwrap());
+    let mut prepare=Fake::new(vec![
+        ok(Operation::Evaluate,owned),
+        ok(Operation::Evaluate,rejected(Reason::AlreadyUsed)),
+        ok(Operation::Evaluate,reply(Some(product())))
+    ]);
+    let mut observed=Vec::new();
+    prepare_core(&mut d,&mut prepare,&cancel,"ru",Duration::ZERO,|s|observed.push(s.clone())).await;
+    prepare.done();assert_eq!(prepare.operations(),vec![Operation::Evaluate;3]);
+    assert_eq!(d.snapshot.phase,Phase::Ready);assert_eq!(d.evaluated_count,3);
+    assert_eq!(d.snapshot.items[0].status,Status::Failed);assert_eq!(d.snapshot.items[0].reason,Some(Reason::AlreadyOwned));
+    assert_eq!(d.snapshot.items[1].status,Status::Failed);assert_eq!(d.snapshot.items[1].reason,Some(Reason::AlreadyUsed));
+    assert_eq!(d.snapshot.items[2].status,Status::Ready);
+    assert!(d.previews[0].is_none()&&d.previews[1].is_none());
+    assert!(observed.iter().any(|s|s.items[2].status==Status::Checking));
+    assert!(!observed.iter().any(|s|s.phase==Phase::Stopped));
+    let owned_id=d.snapshot.items[0].id.clone();let eligible_id=d.snapshot.items[2].id.clone();
+    let visible=serde_json::to_string(&d.snapshot).unwrap();
+    for key in [KEY,KEY2,eligible] {assert!(!visible.contains(key));}
+    select_ready_rows(&mut d);
+    assert_eq!(d.snapshot.items.len(),1);assert_eq!(d.snapshot.items[0].id,eligible_id);
+    assert!(d.snapshot.items.iter().all(|item|item.id!=owned_id));
+    assert_eq!(d.keys[0].as_ref().unwrap().text(),eligible);
+    let mut activate=Fake::new(vec![
+        ok(Operation::Account,account(ACCOUNT)),ok(Operation::Lock,reply(Some(product()))),
+        ok(Operation::Account,account(ACCOUNT)),ok(Operation::Redeem,reply(None))
+    ]);
+    activate_core(&mut d,&mut activate,&cancel,"ru",Duration::ZERO,|_|{}).await;
+    activate.done();assert_eq!(d.snapshot.phase,Phase::Completed);
+    assert_eq!(d.snapshot.items[0].status,Status::Success);
+    assert!(activate.calls.iter().filter(|call|matches!(call.0,Operation::Lock|Operation::Redeem)).all(|call|call.1==eligible));
+    assert_eq!(activate.operations().iter().filter(|operation|**operation==Operation::Redeem).count(),1);
+}
+
+#[tokio::test]
 async fn eula_unknown_identity_and_key_echo_require_official_flow() {
     for p in [Product{eula_ids:vec!["must-accept".into()],..product()},Product{entitlement_name:String::new(),..product()},Product{title:format!("Echo {KEY}"),..product()}] {
         let mut d=draft(&[KEY]);let cancel=AtomicBool::new(false);let mut api=Fake::new(vec![ok(Operation::Evaluate,reply(Some(p)))]);

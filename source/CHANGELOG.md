@@ -1,5 +1,10 @@
 # Change notes
 
+## Unreleased
+
+- Recognize Epic's `content_already_owned` response as a per-key failure, keep
+  checking the remaining list, and exclude products already owned from activation.
+
 ## 0.9.8
 
 - Combine the Unreal Manager brand, section navigation, theme switch, Epic

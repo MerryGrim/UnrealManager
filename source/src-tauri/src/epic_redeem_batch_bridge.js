@@ -21,7 +21,7 @@
     if (/unauthoriz|authentication|token_verify|invalid_token|session_invalid|not_authenticated|(?:^|[._])auth(?:[._]|$)/i.test(raw)) return 'authRequired';
     if (/quota|throttl|rate_limit|too_many|max_attempt/i.test(raw) || (/redeem_attempt/i.test(raw) && /exceed|max|too_many|limit/i.test(raw))) return 'rateLimited';
     if (/(?:^|\.)(?:code_used|code_already_used|already_used|codeUse_already_used|code_use_already_used|already_redeemed)(?:$|\.)/i.test(raw)) return 'alreadyUsed';
-    if (/(?:^|\.)already_owned(?:$|\.)/i.test(raw)) return 'alreadyOwned';
+    if (/(?:^|\.)(?:content_already_owned|already_owned)(?:$|\.)/i.test(raw)) return 'alreadyOwned';
     if (/code_expired|code_use_expired/i.test(raw)) return 'expired';
     if (/code_not_found|invalid_code/i.test(raw)) return 'notFound';
     if (/region|country|geo_restricted/i.test(raw)) return 'regionRestricted';
