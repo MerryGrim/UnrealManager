@@ -3,7 +3,7 @@ const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypt
 const {spawnSync}=require('node:child_process');
 const selection=Object.freeze([
  'test-locale-catalogues.cjs','test-preferences.cjs','test-library-topics.cjs',
- 'test-vault-all-kinds.cjs','test-beta5.cjs','test-resume-forget.cjs',
+ 'test-vault-all-kinds.cjs','test-fab-project-kind.cjs','test-beta5.cjs','test-resume-forget.cjs',
  'test-engine-action-layout.cjs','test-beta4.cjs','test-engine-ui.cjs',
  'test-engine-recovery-progress.cjs','test-app-updates.cjs','test-app-startup-ready.cjs','test-startup-window-failure.cjs',
  'test-accessibility-matrix.cjs','test-workspace-header.cjs','test-epic-auth-required.cjs','test-project-discovery.cjs','test-redemption-batch.cjs','test-redemption-bridge.cjs',

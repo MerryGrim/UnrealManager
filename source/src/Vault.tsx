@@ -58,6 +58,7 @@ type Preview = {
     compatible: boolean;
 };
 const suggestedName = (title: string) => { const name = title.replace(/[^A-Za-z0-9_]/g, '').slice(0, 56); return /^[A-Za-z]/.test(name) ? name : `Project${name}`; };
+const correctedKindMessage = 'Тип материала уточнён по файлам. Выберите место установки заново.';
 const size = (n: number) => n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} ГБ` : `${(n / 1048576).toFixed(1)} МБ`;
 export function useVault(projects: UnrealProject[], onProjectsChanged: () => Promise<void> | void, engines: EngineInstall[] = [], onPlugins: () => void = () => { }, engineDownload?: {progress:EngineTransfer;onOpen:()=>void} | null) {
     const [updateRequest, setUpdateRequest] = useState<{
@@ -106,6 +107,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     const [artifact, setArtifact] = useState('');
     const [projectEngine, setProjectEngine] = useState('');
     const [plan, setPlan] = useState<VaultPackage | null>(null);
+    const preparedDraft = useRef<{assetId: string; artifact: string; plan: VaultPackage} | null>(null);
     const [manualBusy, setBusy] = useState(false);
     const busy = manualBusy || !!queue.activeId || !!engineDownload;
     const [progress, setProgress] = useState<Progress | null>(null);
@@ -132,6 +134,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     const [picking, setPicking] = useState(false);
     const discardPrepared = () => {
         draftGeneration.current++;
+        preparedDraft.current = null;
         if (!activeDownload && !queue.activeId) void invoke('vault_discard').catch(() => {});
         setPlan(null);
         setPreview(null);
@@ -225,7 +228,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     };
     const select = (item: FabItem, installNow = false, downloadOnly = false) => {
         if (activeDownload && activeDownload.item.id === item.id) {
-            setSelected(item);
+            setSelected(activeDownload.item);
             setInstallItem(null);
             const same = activeDownload.item.id === item.id;
             setProjectEngine(same ? activeDownload.projectEngine : '');
@@ -267,7 +270,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         report({ state: 'preparing', phase: 'Подготавливаем обновление…', percent: null });
         try {
             const next = await invoke<VaultPackage>('vault_prepare', { id: item.id, artifact: artifactId, engineVersion: engine });
-            setActiveDownload({ item, plan: next, artifact: JSON.stringify([artifactId, engine]), projectEngine: engine, target: '', projectName: '', mode: 'vault' });
+            setActiveDownload({ item: {...item, kind: next.kind}, plan: next, artifact: JSON.stringify([artifactId, engine]), projectEngine: engine, target: '', projectName: '', mode: 'vault' });
             const initial = { phase: 'Подключаемся к серверу…', done: 0, total: next.bytes, filesDone: 0, filesTotal: next.files, networkBytes: 0, bytesPerSecond: 0 };
             setProgress(initial);
             report({ state: 'downloading', phase: initial.phase, percent: 0 });
@@ -298,13 +301,27 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         const generation = draftGeneration.current;
         setBusy(true);
         setError('');
+        setMessage('');
         setPlan(null);
         try {
-            const next = await invoke<VaultPackage>('vault_prepare', { id: selected.id, artifact: chosenVersion.artifactId, engineVersion: chosenVersion.engine });
+            const retained = preparedDraft.current;
+            const next = retained?.assetId === selected.id && retained.artifact === artifact ? retained.plan : await invoke<VaultPackage>('vault_prepare', { id: selected.id, artifact: chosenVersion.artifactId, engineVersion: chosenVersion.engine });
             if (generation !== draftGeneration.current) {await invoke('vault_discard').catch(() => {}); return;}
+            preparedDraft.current = {assetId: selected.id, artifact, plan: next};
+            if (next.kind !== selected.kind) {
+                setSelected({...selected, kind: next.kind});
+                setTarget('');
+                setProjectName(suggestedName(next.title));
+                setPreview(null);
+                setAcceptVersion(false);
+                if (mode === 'install') {
+                    setMessage(correctedKindMessage);
+                    return;
+                }
+            }
             setPlan(next);
             if (mode === 'install') {
-                setPreview(await invoke<Preview>('vault_prepared_preview', { id: next.id, project: target, projectName: selected.kind === 'Project' ? projectName : null }));
+                setPreview(await invoke<Preview>('vault_prepared_preview', { id: next.id, project: target, projectName: next.kind === 'Project' ? projectName : null }));
             }
         }
         catch (e) {
@@ -328,7 +345,8 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     };
     const runDownload=async(context:{item:FabItem;plan:VaultPackage;artifact:string;projectEngine:string;target:string;projectName:string;mode:'vault'|'install'|null;updateId?:string})=>{
         if(transferLock.current)return;transferLock.current=true;
-        const {item:selected,plan,artifact,projectEngine,target,projectName,mode,updateId}=context;
+        const {plan,artifact,projectEngine,target,projectName,mode,updateId}=context;
+        const selected = {...context.item, kind: plan.kind};
         setActiveDownload({ item: selected, plan, artifact, projectEngine, target, projectName, mode });
         setInstalling(false);
         setBusy(true);
@@ -341,10 +359,15 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
             const downloaded = await invoke<VaultPackage>('vault_download', { id: plan.id, onProgress,intent:{mode:mode||'vault',project:target,projectName,engineVersion:projectEngine,updateId} });
             setHistory(current => recordDownload(current, downloaded));
             await refresh();
-            if (mode === 'install') {
+            if (mode === 'install' && downloaded.kind !== plan.kind) {
+                setSelected(null);
+                openInstall(downloaded);
+                setMessage(correctedKindMessage);
+            }
+            else if (mode === 'install') {
                 setInstalling(true);
                 setProgress({ phase: 'Проверяем файлы проекта', done: 0, total: 0, filesDone: 0, filesTotal: plan.files, networkBytes: 0, bytesPerSecond: 0,canPause:false });
-                const n = await invoke<number>('vault_install', { id: plan.id, project: target, projectName: selected.kind === 'Project' ? projectName : null, engineVersion: selected.kind === 'Project' ? projectEngine : null,onProgress });
+                const n = await invoke<number>('vault_install', { id: downloaded.id, project: target, projectName: downloaded.kind === 'Project' ? projectName : null, engineVersion: downloaded.kind === 'Project' ? projectEngine : null,onProgress });
                 await onProjectsChanged();
                 setMessage(`${plan.title} — добавлено файлов: ${n}. ${target}`);
             }
@@ -373,15 +396,26 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
             const prepared=await invoke<VaultPackage>('vault_resume_prepare',{id});
             const cached=await invoke<{items:FabItem[]}|null>('fab_cached_library').catch(()=>null);
             const item={...(cached?.items.find(i=>i.id===prepared.assetId)||{id:prepared.assetId||prepared.id,engineVersions:prepared.engines,categories:[],source:'Fab',versions:[]}),title:prepared.title,kind:prepared.kind};
-            const intent=pendingDownloads.find(t=>t.id===id)?.intent;
+            if (prepared.artifactId && !item.versions.some(version=>version.artifactId===prepared.artifactId && version.engines.includes(prepared.selectedEngine||''))) item.versions=[...item.versions,{artifactId:prepared.artifactId,engines:[prepared.selectedEngine||prepared.engines[0]],platforms:['Windows']}];
+            const task=pendingDownloads.find(t=>t.id===id);
+            const intent=task?.intent;
             context={item,plan:prepared,artifact:JSON.stringify([prepared.artifactId,prepared.selectedEngine]),projectEngine:intent?.engineVersion||prepared.selectedEngine||'',target:intent?.project||'',projectName:intent?.projectName||'',mode:intent?.mode||'vault',updateId:intent?.updateId};
+            if (intent?.mode==='install' && (task?.kind!==prepared.kind || (prepared.kind==='Project' && /\.uproject$/i.test(intent.project)))) {
+                draftGeneration.current++;
+                preparedDraft.current={assetId:item.id,artifact:context.artifact,plan:prepared};
+                setSelected(item);setInstallItem(null);setPlan(null);setPreview(null);setAcceptVersion(false);
+                setProjectEngine(context.projectEngine);setArtifact(context.artifact);setTarget('');setProjectName(suggestedName(item.title));setMode(prepared.kind==='Plugin'?'vault':'install');setMessage(correctedKindMessage);
+                context=null;
+                await refreshPending();
+                return;
+            }
             setPlan(prepared);setProjectEngine(context.projectEngine);setArtifact(context.artifact);setTarget(context.target);setProjectName(context.projectName);setMode(context.mode);
         }catch(e){setError(String(e));}finally{transferLock.current=false;setBusy(false);setRestoringDownload(false);}
         if(context)await runDownload(context);
     };
     const forgetDownload=async(id:string)=>{await invoke('vault_resume_forget',{id});await refreshPending();};
     useEffect(()=>{const handler=(event:Event)=>{void resumeDownload((event as CustomEvent<string>).detail);};window.addEventListener('um-resume-vault',handler);return()=>window.removeEventListener('um-resume-vault',handler);},[busy,pendingDownloads]);
-    const openInstall = (item: VaultPackage, destination?: 'project' | 'engine') => { setPluginChoice(item.kind === 'Plugin' && !destination); setPluginDestination(destination || 'project'); setInstallItem(item); setArtifact(''); setProjectEngine(''); setProjectName(suggestedName(item.title)); setTarget(''); setPreview(null); setAcceptVersion(false); setError(''); setMessage(''); };
+    const openInstall = (requested: VaultPackage, destination?: 'project' | 'engine') => { const current=items.find(current=>current.id===requested.id); const item=requested.kind==='Asset' && current && current.kind!=='Asset'?current:requested; setPluginChoice(item.kind === 'Plugin' && !destination); setPluginDestination(destination || 'project'); setInstallItem(item); setArtifact(''); setProjectEngine(''); setProjectName(suggestedName(item.title)); setTarget(''); setPreview(null); setAcceptVersion(false); setError(''); setMessage(''); };
     const inspect = async () => {
         if (!installItem)
             return;

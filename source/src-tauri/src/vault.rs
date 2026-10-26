@@ -14,6 +14,18 @@ struct Plan { info: Package, #[serde(default)] intent:Option<transfers::Intent>,
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct Package { #[serde(default)] artifact_id: String, #[serde(default)] selected_engine: String, #[serde(default)] build_version: String, #[serde(default)] source: String, #[serde(default)] asset_id: String, pub(crate) id: String, title: String, kind: String, engines: Vec<String>, bytes: u64, download_bytes: u64, files: usize, path: String, hashes: BTreeMap<String, String> }
+const PROJECT_DESTINATION_REQUIRED:&str="Это полный проект. Выберите новую папку для создания проекта.";
+fn normalize_package_kind(info:&mut Package) {
+    info.kind=crate::content_kind::from_paths(&info.kind,info.hashes.keys());
+}
+fn project_intent_needs_destination(info:&Package,intent:&transfers::Intent)->bool {
+    info.kind=="Project"&&intent.mode=="install"&&Path::new(&intent.project).extension().is_some_and(|extension|extension.eq_ignore_ascii_case("uproject"))
+}
+fn normalize_plan_kind(plan:&mut Plan)->bool {
+    let old=plan.info.kind.clone();normalize_package_kind(&mut plan.info);
+    let reset=plan.intent.as_ref().is_some_and(|intent|plan.info.kind=="Project"&&intent.mode=="install"&&(old!="Project"||project_intent_needs_destination(&plan.info,intent)));
+    if reset{plan.intent=None;}reset
+}
 #[derive(Clone, Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct Progress { pub(crate) phase: String, done: u64, total: u64, files_done: usize, files_total: usize, network_bytes: u64, bytes_per_second: u64, pub(crate) paused:bool, pub(crate) can_pause:bool }
@@ -89,7 +101,7 @@ async fn hash_download_file(state:&VaultState,path:&Path,mut progress:Progress)-
 }
 fn valid_hash(hash: &str) -> bool { hash.len() == 40 && hash.bytes().all(|c| c.is_ascii_hexdigit()) }
 const EPIC_CACHE_SOURCE:&str="Epic Games Launcher";
-fn same_cached_files(left:&Package,right:&Package)->bool{left.asset_id==right.asset_id&&left.kind==right.kind&&left.hashes==right.hashes}
+fn same_cached_files(left:&Package,right:&Package)->bool{left.asset_id==right.asset_id&&crate::content_kind::from_paths(&left.kind,left.hashes.keys())==crate::content_kind::from_paths(&right.kind,right.hashes.keys())&&left.hashes==right.hashes}
 fn normalized_engine(value:&str)->String{let value=value.trim();value.get(..3).filter(|p|p.eq_ignore_ascii_case("UE_")).map(|_|&value[3..]).unwrap_or(value).to_ascii_lowercase()}
 fn covers_requested_engines(cached:&Package,fresh:&Package)->bool{
     let declared:BTreeSet<_>=cached.engines.iter().map(|e|normalized_engine(e)).filter(|e|!e.is_empty()).collect();
@@ -132,7 +144,8 @@ fn make_plan(item: super::epic::LibraryItem, artifact: &str, manifest: DownloadM
     let fingerprint = serde_json::to_string(&hashes).map_err(|_| "Не удалось сравнить описание файлов")?;
     let id = digest(format!("{}\n{artifact}\n{}\n{fingerprint}", item.id, manifest.build_version_string).as_bytes());
     let engines = item.versions.iter().find(|v| v.artifact_id == artifact).map(|v| v.engines.clone()).unwrap_or_default();
-    Ok(Plan { intent:None, info: Package { artifact_id: artifact.into(), selected_engine: String::new(), build_version: manifest.build_version_string.clone(), source: String::new(), asset_id: item.id.clone(), path: crate::storage::vault().as_path().join(&id).to_string_lossy().into_owned(), id, title: item.title, kind: item.kind, engines,
+    let kind=crate::content_kind::from_paths(item.declared_kind(),hashes.keys());
+    Ok(Plan { intent:None, info: Package { artifact_id: artifact.into(), selected_engine: String::new(), build_version: manifest.build_version_string.clone(), source: String::new(), asset_id: item.id.clone(), path: crate::storage::vault().as_path().join(&id).to_string_lossy().into_owned(), id, title: item.title, kind, engines,
         bytes: manifest.total_size().try_into().map_err(|_| "Материал слишком велик")?, download_bytes: manifest.total_download_size().try_into().map_err(|_| "Материал слишком велик")?, files: files.len(), hashes }, files })
 }
 
@@ -153,6 +166,7 @@ async fn prepare_locked(app:&tauri::AppHandle,epic:&crate::epic::EpicState,id:&s
     }
     let mut plan = make_plan(item, &artifact, manifest)?;
     plan.info.selected_engine=engine_version.into();
+    super::epic::remember_library_kind(epic,&plan.info.asset_id,&plan.info.kind).await;
     Ok(select_prepared_cache(plan,&crate::storage::vault(),epic_index()?.items))
 }
 
@@ -181,7 +195,7 @@ pub async fn vault_download(app:tauri::AppHandle,state: tauri::State<'_, VaultSt
     let _update_operation=crate::app_updates::operation()?;
     if state.active.swap(true, Ordering::SeqCst) { return Err("Уже выполняется загрузка".into()); }
     let _busy = Busy(&state.active); state.cancel.store(false, Ordering::SeqCst);
-    if let Some(intent)=intent {if !matches!(intent.mode.as_str(),"vault"|"install")||intent.project.len()>2000||intent.project_name.len()>100||intent.engine_version.len()>100{return Err("Некорректное действие после загрузки".into());}let mut plan=state.plan.lock().map_err(|_|"Ошибка состояния")?;let prepared=plan.as_mut().filter(|p|p.info.id==id).ok_or("Подготовьте загрузку заново")?;prepared.intent=Some(intent);}
+    if let Some(intent)=intent {if !matches!(intent.mode.as_str(),"vault"|"install")||intent.project.len()>2000||intent.project_name.len()>100||intent.engine_version.len()>100{return Err("Некорректное действие после загрузки".into());}let mut plan=state.plan.lock().map_err(|_|"Ошибка состояния")?;let prepared=plan.as_mut().filter(|p|p.info.id==id).ok_or("Подготовьте загрузку заново")?;if project_intent_needs_destination(&prepared.info,&intent){return Err(PROJECT_DESTINATION_REQUIRED.into());}prepared.intent=Some(intent);}
     let result=download_locked(&state,&id,Some(on_progress)).await;
     if let Ok(package)=&result{crate::vault_queue::manual_download_completed(&app,package,&package.asset_id,&package.path);}
     let install_reserved=state.plan.lock().map(|p|p.as_ref().and_then(|p|p.intent.as_ref()).is_some_and(|i|i.mode=="install")).unwrap_or(true);
@@ -270,10 +284,11 @@ async fn download_locked_from(state:&VaultState,id:&str,on_progress:Option<tauri
 
 fn package(id: &str) -> Result<Package, String> {
     if !valid_hash(id) { return Err("Некорректный материал Vault".into()); }
-    if let Some(info)=epic_index()?.items.into_iter().find(|p|p.id==id) {
+    if let Some(mut info)=epic_index()?.items.into_iter().find(|p|p.id==id) {
         no_links(Path::new(&info.path))?;
         if !Path::new(&info.path).is_dir() {return Err("Папка Epic Vault недоступна. Выполните синхронизацию".into());}
         for (name,hash) in &info.hashes {relative(name)?;if !valid_hash(hash){return Err("Повреждён индекс Epic Vault".into());}}
+        normalize_package_kind(&mut info);
         return Ok(info);
     }
     package_at(&crate::storage::vault(),id)
@@ -287,6 +302,7 @@ fn package_at(vault:&Path,id:&str)->Result<Package,String>{
     if result.id != id { return Err("Некорректное описание Vault".into()); }
     result.path = root.to_string_lossy().into_owned();
     for (name, hash) in &result.hashes { relative(name)?; if !valid_hash(hash) { return Err("Повреждено описание Vault".into()); } }
+    normalize_package_kind(&mut result);
     Ok(result)
 }
 #[tauri::command]
@@ -297,6 +313,33 @@ pub fn vault_list() -> Result<Vec<Package>, String> {
     for entry in if crate::storage::vault().exists() {Some(fs::read_dir(crate::storage::vault()).map_err(io_error)?)}else{None}.into_iter().flatten() { let entry=entry.map_err(io_error)?; let id=entry.file_name().to_string_lossy().into_owned(); if valid_hash(&id) { results.push(package(&id)?); } }
     results.extend(epic_index()?.items.into_iter().filter(|p|Path::new(&p.path).is_dir()));
     results.sort_by_key(|p| p.title.to_lowercase()); Ok(results)
+}
+
+// One bounded, metadata-only pass for library reconciliation. Never walk asset
+// contents, request network data or rewrite an existing package/task record.
+pub(crate) fn known_content_kinds()->BTreeMap<String,String> {
+    fn add(known:&mut BTreeMap<String,String>,mut info:Package) {
+        if info.asset_id.is_empty()||info.asset_id.len()>256||info.hashes.is_empty()||info.files!=info.hashes.len()
+            ||info.hashes.iter().any(|(name,hash)|relative(name).is_err()||!valid_hash(hash)){return;}
+        normalize_package_kind(&mut info);
+        if !matches!(info.kind.as_str(),"Project"|"Plugin"){return;}
+        known.entry(info.asset_id).and_modify(|kind|{if info.kind=="Project"{*kind=info.kind.clone();}}).or_insert(info.kind);
+    }
+    let mut known=BTreeMap::new();let vault=crate::storage::vault();let mut budget=64u64*1024*1024;
+    if no_links(&vault).is_ok(){
+        for entry in fs::read_dir(&vault).into_iter().flatten().flatten().take(4096){
+            let id=entry.file_name().to_string_lossy().into_owned();if !valid_hash(&id){continue;}
+            let record=entry.path().join("package.um.json");if no_links(&record).is_err(){continue;}let Ok(size)=fs::metadata(&record).map(|m|m.len())else{continue};
+            if size>32*1024*1024||size>budget{continue;}budget-=size;
+            if let Ok(info)=package_at(&vault,&id){add(&mut known,info);}
+        }
+    }
+    let index=crate::storage::settings().join("epic-vault.json");
+    if no_links(&index).is_ok()&&fs::metadata(&index).is_ok_and(|m|m.len()<=32*1024*1024){
+        if let Ok(index)=epic_index(){for info in index.items.into_iter().take(4096){if Path::new(&info.path).is_dir(){add(&mut known,info);}}}
+    }
+    for info in transfers::known_packages().into_values(){add(&mut known,info);}
+    known
 }
 
 #[derive(Serialize)]
@@ -824,7 +867,9 @@ fn epic_index() -> Result<EpicVaultIndex,String> {
     let path=crate::storage::settings().join("epic-vault.json");
     if !path.exists() {return Ok(EpicVaultIndex::default());}
     let bytes=fs::read(path).map_err(io_error)?;
-    serde_json::from_slice(&bytes).map_err(|_| "Не удалось прочитать настройки Epic Vault".into())
+    let mut index:EpicVaultIndex=serde_json::from_slice(&bytes).map_err(|_| "Не удалось прочитать настройки Epic Vault")?;
+    for item in &mut index.items {normalize_package_kind(item);}
+    Ok(index)
 }
 fn scan_epic(directory:&str, mut progress:impl FnMut(usize,usize)) -> Result<EpicVaultIndex,String> {
     let root=PathBuf::from(directory); if !root.is_absolute() || !root.is_dir() {return Err("Укажите существующую папку VaultCache полным путём".into());} no_links(&root)?;
@@ -853,7 +898,8 @@ fn scan_epic(directory:&str, mut progress:impl FnMut(usize,usize)) -> Result<Epi
                 hashes.insert(file.filename.clone(),file.file_hash.to_ascii_lowercase());
             }
             if hashes.is_empty(){return Err("В материале нет файлов".into());}
-            let title=field("Vault.TitleText");let kind=match field("Vault.Type").as_str(){"Plugin"|"EnginePlugin"=>"Plugin","CompleteProject"|"Project"=>"Project",_=>if hashes.keys().any(|p|p.ends_with(".uplugin")){"Plugin"}else{"Asset"}};
+            let title=field("Vault.TitleText");let declared=match field("Vault.Type").to_ascii_lowercase().replace(['_',' '],"").as_str(){"plugin"|"engineplugin"=>"Plugin","completeproject"|"project"=>"Project",_=>"Asset"};
+            let kind=crate::content_kind::from_paths(declared,hashes.keys());
             Ok(Package {artifact_id:String::new(),selected_engine:String::new(),build_version:manifest.build_version_string.clone(),source:"Epic Games Launcher".into(),asset_id:field("CatalogItemId"),id:digest(format!("epic:{}",data.to_string_lossy().to_lowercase()).as_bytes()),title:if title.is_empty(){manifest.app_name_string.clone()}else{title},kind:kind.into(),engines:field("CompatibleApps").split(',').filter(|s|!s.is_empty()).map(str::to_owned).collect(),bytes:total,download_bytes:0,files:hashes.len(),path:data.to_string_lossy().into_owned(),hashes})
         })();
         match parsed {Ok(package)=>result.items.push(package),Err(error)=>result.warnings.push(format!("{}: {error}",entry.file_name().to_string_lossy()))}
@@ -871,7 +917,7 @@ pub async fn vault_sync_epic(state:tauri::State<'_,VaultState>,epic:tauri::State
     let mut result=tauri::async_runtime::spawn_blocking(move||scan_epic(&directory,|done,total|{let _=on_progress.send(EpicScanProgress{done,total});})).await.map_err(|_|"Проверка Vault прервана")??;
     let library=super::epic::library_snapshot(&epic).await;
     for item in &mut result.items {
-        if let Some(known)=library.iter().find(|i|i.id==item.asset_id) {item.kind=known.kind.clone();item.title=known.title.clone();}
+        if let Some(known)=library.iter().find(|i|i.id==item.asset_id) {item.kind=crate::content_kind::from_paths(known.declared_kind(),item.hashes.keys());item.title=known.title.clone();}
     }
     fs::create_dir_all(crate::storage::settings()).map_err(io_error)?;
     let path=crate::storage::settings().join("epic-vault.json");let temp=crate::storage::settings().join(format!("epic-{}.tmp",uuid::Uuid::new_v4()));
@@ -1019,6 +1065,11 @@ pub(crate) async fn queue_download(app:&tauri::AppHandle,epic:&crate::epic::Epic
    Plan{intent:None,files:BTreeMap::new(),info:Package{artifact_id:artifact.into(),selected_engine:selected.into(),build_version:"fixture-build".into(),source:String::new(),asset_id:"fixture-asset".into(),id:id.clone(),title:format!("Fresh {artifact}"),kind:"Asset".into(),engines:engines.iter().map(|v|(*v).into()).collect(),bytes:DATA.len() as u64,download_bytes:DATA.len() as u64,files:1,path:self.vault.join(id).to_string_lossy().into_owned(),hashes}}
   }
   fn own(&self,info:&Package){let root=Path::new(&info.path);assert!(root.starts_with(&self.root));fs::create_dir_all(root.join("Content")).unwrap();fs::write(root.join("Content/Demo.uasset"),DATA).unwrap();fs::write(root.join("package.um.json"),serde_json::to_vec_pretty(info).unwrap()).unwrap();}
+  fn project_plan(&self,kind:&str)->Plan{
+   let mut plan=self.plan("project-artifact",&["5.8"],"5.8");plan.info.kind=kind.into();plan.info.hashes=project_files().into_iter().map(|(name,bytes)|(name.into(),digest(bytes))).collect();plan.info.files=plan.info.hashes.len();plan.info.bytes=project_files().iter().map(|(_,bytes)|bytes.len()as u64).sum();
+   let fingerprint=serde_json::to_string(&plan.info.hashes).unwrap();plan.info.id=digest(format!("fixture-asset\nproject-artifact\nfixture-build\n{fingerprint}").as_bytes());plan.info.path=self.vault.join(&plan.info.id).to_string_lossy().into_owned();plan
+  }
+  fn own_project(&self,info:&Package){let root=Path::new(&info.path);assert!(root.starts_with(&self.root));for(name,bytes)in project_files(){let target=root.join(name);fs::create_dir_all(target.parent().unwrap()).unwrap();fs::write(target,bytes).unwrap();}fs::write(root.join("package.um.json"),serde_json::to_vec_pretty(info).unwrap()).unwrap();}
   fn external(&self,fresh:&Package,engines:&[&str])->Package{
    let mut p=fresh.clone();p.id=digest(uuid::Uuid::new_v4().as_bytes());p.source=EPIC_CACHE_SOURCE.into();p.path=self.root.join("EpicCache").join(&p.id).to_string_lossy().into_owned();p.artifact_id.clear();p.selected_engine.clear();p.title="Cached Epic title".into();p.engines=engines.iter().map(|e|(*e).into()).collect();fs::create_dir_all(Path::new(&p.path).join("Content")).unwrap();fs::write(Path::new(&p.path).join("Content/Demo.uasset"),DATA).unwrap();p
   }
@@ -1031,6 +1082,31 @@ pub(crate) async fn queue_download(app:&tauri::AppHandle,epic:&crate::epic::Epic
   fs::remove_dir_all(&self.root).unwrap();
   if let Ok(path)=std::env::var("UM_CACHE_TEST_PROVENANCE"){let _guard=PROVENANCE.lock().unwrap();let path=PathBuf::from(path);assert!(path.is_absolute());let mut file=OpenOptions::new().create(true).append(true).open(path).unwrap();writeln!(file,"{}",serde_json::json!({"pid":std::process::id(),"root":self.root,"files":files,"bytes":bytes,"removed":!self.root.exists(),"purpose":"synthetic cache metadata regression fixture"})).unwrap();}
  }}
+ fn project_files()->[(&'static str,&'static [u8]);3]{[("DMD_MSS.uproject",br#"{"FileVersion":3,"EngineAssociation":"5.8"}"#),("Config/DefaultEngine.ini",b"[/Script/EngineSettings.GameMapsSettings]"),("Content/MSS/Demo.uasset",DATA)]}
+ fn library_item(display_kind:&str,base_kind:&str)->crate::epic::LibraryItem{serde_json::from_value(serde_json::json!({"id":"fixture-asset","title":"Selected project","kind":display_kind,"catalogKind":base_kind,"engineVersions":["5.8"],"categories":[],"source":"Fixture","namespace":"fixture","versions":[{"artifactId":"project-artifact","engines":["5.8"],"platforms":["Windows"]}]})).unwrap()}
+ fn selected_manifest(paths:&[&str])->DownloadManifest{DownloadManifest{build_version_string:"fixture-build".into(),file_manifest_list:paths.iter().map(|name|FileManifestList{filename:(*name).into(),file_hash:digest(b""),file_chunk_parts:vec![]}).collect(),..DownloadManifest::default()}}
+ #[test]fn selected_manifest_promotes_generic_catalogue_without_changing_identity(){
+  let manifest=selected_manifest(&["DMD_MSS.uproject","Config/DefaultEngine.ini","Content/MSS/Demo.uasset"]);let plan=make_plan(library_item("Asset","Asset"),"project-artifact",manifest.clone()).unwrap();let declared=make_plan(library_item("Project","Project"),"project-artifact",manifest).unwrap();
+  assert_eq!(plan.info.kind,"Project");assert_eq!(plan.info.id,declared.info.id);assert_eq!(plan.info.hashes,declared.info.hashes);assert_eq!(plan.info.artifact_id,"project-artifact");assert_eq!(plan.info.build_version,"fixture-build");assert_eq!(plan.info.engines,vec!["5.8"]);assert_eq!(plan.info.files,3);
+ }
+ #[test]fn another_version_catalogue_hint_does_not_promote_content_only_selection(){
+  let plan=make_plan(library_item("Project","Asset"),"project-artifact",selected_manifest(&["Content/Only.uasset"])).unwrap();assert_eq!(plan.info.kind,"Asset");
+ }
+ #[test]fn old_downloaded_asset_record_is_project_on_read_without_rewriting_it(){
+  let f=Fixture::new();let old=f.project_plan("Asset");f.own_project(&old.info);let record=Path::new(&old.info.path).join("package.um.json");let before=fs::read(&record).unwrap();let loaded=package_at(&f.vault,&old.info.id).unwrap();
+  assert_eq!(loaded.kind,"Project");assert_eq!(loaded.id,old.info.id);assert_eq!(loaded.hashes,old.info.hashes);assert_eq!(fs::read(&record).unwrap(),before);
+  let destination=f.root.join("NewProject");let preview=preview(&loaded,&destination.to_string_lossy(),Some("NewProject")).unwrap();assert_eq!(preview.files,3);assert_eq!(preview.project_file,Some(destination.join("NewProject.uproject").to_string_lossy().into_owned()));assert!(!destination.exists());
+  let existing=f.root.join("Existing.uproject");fs::write(&existing,b"existing user project sentinel").unwrap();assert!(install_files(&loaded,&existing.to_string_lossy(),Some("NewProject")).unwrap_err().contains("ещё не существующий"));assert_eq!(fs::read(existing).unwrap(),b"existing user project sentinel");
+ }
+ #[tokio::test]async fn corrected_cached_type_reuses_verified_files_without_redownload(){
+  let f=Fixture::new();let old=f.project_plan("Asset");f.own_project(&old.info);let fresh=f.project_plan("Project");assert!(same_cached_files(&old.info,&fresh.info));let state=VaultState::default();*state.plan.lock().unwrap()=Some(fresh.clone());
+  let result=download_locked_from(&state,&fresh.info.id,None,&f.vault,&||Ok(vec![])).await.unwrap();assert_eq!(result.kind,"Project");assert_eq!(result.id,old.info.id);assert_eq!(result.artifact_id,"project-artifact");assert_eq!(result.selected_engine,"5.8");assert_eq!(result.hashes,old.info.hashes);let stored:Package=serde_json::from_slice(&fs::read(Path::new(&result.path).join("package.um.json")).unwrap()).unwrap();assert_eq!(stored.kind,"Project");
+  for(name,bytes)in project_files(){assert_eq!(fs::read(Path::new(&result.path).join(name)).unwrap(),bytes);}f.no_task_or_stage(&result.id);
+ }
+ #[test]fn project_install_intent_requires_new_folder_but_asset_install_is_unchanged(){
+  let f=Fixture::new();let mut plan=f.project_plan("Asset");let intent=transfers::Intent{mode:"install".into(),project:"X:/Fixture/Game.uproject".into(),project_name:"Game".into(),engine_version:"5.8".into(),update_id:None};plan.intent=Some(intent.clone());assert!(!project_intent_needs_destination(&plan.info,&intent));assert!(normalize_plan_kind(&mut plan));assert_eq!(plan.info.kind,"Project");assert!(plan.intent.is_none());assert!(project_intent_needs_destination(&plan.info,&intent));
+  let mut fresh=intent;fresh.project="X:/Fixture/NewProject".into();assert!(!project_intent_needs_destination(&plan.info,&fresh));plan.intent=Some(fresh);assert!(!normalize_plan_kind(&mut plan));assert!(plan.intent.is_some());
+ }
  async fn cached(f:&Fixture,plan:Plan,index:impl Fn()->Result<Vec<Package>,String>+Sync)->Result<Package,String>{let state=VaultState::default();let id=plan.info.id.clone();*state.plan.lock().unwrap()=Some(plan);download_locked_from(&state,&id,None,&f.vault,&index).await}
 
  #[tokio::test]async fn different_artifact_same_bytes_never_reuses_old_own_compatibility(){

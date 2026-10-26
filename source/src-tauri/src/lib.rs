@@ -1,5 +1,6 @@
 mod ui_locale;
 mod storage;
+mod content_kind;
 mod download;
 mod window_behavior;
 mod webview_policy;

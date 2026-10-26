@@ -144,6 +144,7 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
         id: string;
         assetId?: string;
         title: string;
+        kind?: string;
     }[];
 }) {
     const [items, setItems] = useState<Item[]>([]);
@@ -239,7 +240,14 @@ export function FabLibrary({ account, onLogin, onDownload, downloadBusy, downloa
     }, [items, downloaded]);
     const versions = useMemo(() => [...new Set(items.flatMap(i => i.engineVersions))].sort().reverse(), [items]);
     const topics=useMemo(()=>libraryTopics(items).sort((a,b)=>String(tr(a.label)).localeCompare(String(tr(b.label)),getLocale())),[items,getLocale()]);
-    const filtered = useMemo(() => items.filter(i => (category === 'all' || downloadedIds.has(i.id)) && (!topic || i.categories.some(c=>categoryKey(c)===topic)) && (kind === 'All' || i.kind === kind) && (version === 'All' || i.engineVersions.includes(version)) && `${i.title} ${i.categories.join(' ')}`.toLowerCase().includes(query.toLowerCase())), [items, query, kind, version, category, topic, downloadedIds]);
+    const effectiveItems = useMemo(() => items.map(item => {
+        // Only exact catalogue identities can supply a positive local correction.
+        // Mixed version kinds leave the catalogue unchanged; prepare resolves each version.
+        const kinds = new Set(downloaded.filter(pkg => pkg.assetId === item.id && ['Asset', 'Project', 'Plugin'].includes(pkg.kind || '')).map(pkg => pkg.kind));
+        const localKind = kinds.size === 1 ? [...kinds][0] : undefined;
+        return item.kind === 'Asset' && localKind && localKind !== 'Asset' ? {...item, kind: localKind} : item;
+    }), [items, downloaded]);
+    const filtered = useMemo(() => effectiveItems.filter(i => (category === 'all' || downloadedIds.has(i.id)) && (!topic || i.categories.some(c=>categoryKey(c)===topic)) && (kind === 'All' || i.kind === kind) && (version === 'All' || i.engineVersions.includes(version)) && `${i.title} ${i.categories.join(' ')}`.toLowerCase().includes(query.toLowerCase())), [effectiveItems, query, kind, version, category, topic, downloadedIds]);
     const locale = getLocale();
     const sorted = useMemo(() => sortLibraryItems(filtered, sort, locale, downloadedIds,
         kind => tr(kind === 'Asset' ? 'Ассеты' : kind === 'Plugin' ? 'Плагины' : kind === 'Project' ? 'Проекты' : kind)), [filtered, sort, locale, downloadedIds]);

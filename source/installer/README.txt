@@ -1,4 +1,4 @@
-Unreal Manager 0.9.9 — Nyanma
+Unreal Manager 0.9.10 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
@@ -46,7 +46,18 @@ Unreal Engine, Epic Games and Fab belong to their owners.
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
-0.9.9
+0.9.10
+- Complete Unreal projects are recognized from the selected package manifest.
+  The corrected type is used for downloads, saved tasks and completed Vault
+  packages. Matching saved packages are reused rather than downloaded again.
+- When a material is identified as a full project, an earlier existing-project
+  destination is cleared. Choose a new folder explicitly before creating it.
+- Conflicting files remain blocked. Optional overwrite/replacement with explicit
+  confirmation and a backup is planned for later and is not implemented here.
+- Updates preserve the existing profile, Epic session, downloads and projects.
+  No new runtime dependencies, background processes or rendering loops are added.
+
+0.9.9 (historical release)
 - Epic content_already_owned responses mark the row as already owned instead
   of stopping checks of the remaining keys. Only ready rows are activated after
   explicit confirmation; uncertain activation results are not replayed.
@@ -148,8 +159,8 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In 0.9.9, use Settings > App updates > Check for updates.
-Beta.7 and newer can receive 0.9.9 through the application updater. Stable
+In 0.9.10, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.10 through the application updater. Stable
 releases are available in both the stable and beta update channels.
 In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.

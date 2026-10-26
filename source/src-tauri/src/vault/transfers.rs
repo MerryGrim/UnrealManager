@@ -24,11 +24,38 @@ fn save_at(base:&Path,plan:&Plan)->Result<(),String>{
  let task=Task{id:plan.info.id.clone(),asset_id:plan.info.asset_id.clone(),title:plan.info.title.clone(),kind:plan.info.kind.clone(),selected_engine:plan.info.selected_engine.clone(),path:plan.info.path.clone(),phase:"Готова к продолжению".into(),done:0,total:plan.info.bytes,files_done:0,files_total:plan.info.files,intent:plan.intent.clone()};
  crate::storage::atomic(&owned(base,&plan.info.id,"json")?,&serde_json::to_vec(&task).map_err(|e|e.to_string())?)
 }
-fn load_at(base:&Path,id:&str)->Result<Plan,String>{let plan:Plan=crate::engine::resume::read_compressed(&owned(base,id,"zlib")?)?;if plan.info.id!=id{return Err("Задача Vault не совпадает с записью".into());}Ok(plan)}
+fn load_at(base:&Path,id:&str)->Result<Plan,String>{let mut plan:Plan=crate::engine::resume::read_compressed(&owned(base,id,"zlib")?)?;if plan.info.id!=id{return Err("Задача Vault не совпадает с записью".into());}normalize_plan_kind(&mut plan);Ok(plan)}
+#[derive(Deserialize)]struct SavedPackageInfo{info:Package}
+// Decode only saved metadata with bounded total work. The potentially large
+// chunk map is skipped by serde; nothing is persisted during a library read.
+fn known_packages_at(base:&Path,vault:&Path)->BTreeMap<String,Package>{
+ let mut known=BTreeMap::new();if no_links(base).is_err(){return known;}
+ let mut expanded_budget=64u64*1024*1024;let mut compressed_budget=64u64*1024*1024;
+ for entry in fs::read_dir(base).into_iter().flatten().flatten().filter(|entry|entry.path().extension().is_some_and(|value|value=="zlib")).take(64){
+  if expanded_budget==0||compressed_budget==0{break;}
+  let Some(id)=entry.path().file_stem().and_then(|value|value.to_str()).map(str::to_owned)else{continue};
+  if !valid_hash(&id){continue;}let Ok(file)=owned(base,&id,"zlib")else{continue};
+  let Ok(size)=fs::metadata(&file).map(|value|value.len())else{continue};if size>16*1024*1024||size>compressed_budget{continue;}compressed_budget-=size;
+  let Ok(input)=File::open(&file)else{continue};let limit=expanded_budget.min(16*1024*1024);
+  let mut decoder=flate2::read::ZlibDecoder::new(input.take(size)).take(limit);
+  let parsed=serde_json::from_reader::<_,SavedPackageInfo>(&mut decoder);expanded_budget-=limit-decoder.limit();if decoder.limit()==0{continue;}
+  let Ok(mut record)=parsed else{continue};
+  if record.info.id!=id||Path::new(&record.info.path)!=vault.join(&id)||record.info.hashes.is_empty()||record.info.files!=record.info.hashes.len()
+   ||record.info.hashes.iter().any(|(name,hash)|relative(name).is_err()||!valid_hash(hash)){continue;}
+  normalize_package_kind(&mut record.info);known.insert(id,record.info);
+ }known
+}
+pub(super) fn known_packages()->BTreeMap<String,Package>{known_packages_at(&directory(),&crate::storage::vault())}
+fn repair_task_kind(task:&mut Task,info:&Package){
+ let old=task.kind.clone();task.kind=info.kind.clone();
+ if task.intent.as_ref().is_some_and(|intent|task.kind=="Project"&&intent.mode=="install"&&(old!="Project"||project_intent_needs_destination(info,intent))){
+  task.intent=None;task.phase=PROJECT_DESTINATION_REQUIRED.into();
+ }
+}
 #[tauri::command]
 pub fn vault_resume_tasks()->Vec<Task>{
- let base=directory();if no_links(&base).is_err(){return vec![];}
- fs::read_dir(&base).into_iter().flatten().flatten().filter_map(|e|{let p=e.path();if p.extension()?.to_str()?!="json"||no_links(&p).is_err(){return None;}let t:Task=serde_json::from_slice(&fs::read(&p).ok()?).ok()?;if p.file_stem()?.to_str()?!=t.id||!owned(&base,&t.id,"zlib").ok()?.is_file(){return None;}Some(t)}).collect()
+ let base=directory();if no_links(&base).is_err(){return vec![];}let known=known_packages();
+ fs::read_dir(&base).into_iter().flatten().flatten().filter_map(|e|{let p=e.path();if p.extension()?.to_str()?!="json"||no_links(&p).is_err()||fs::metadata(&p).ok()?.len()>1024*1024{return None;}let mut t:Task=serde_json::from_slice(&fs::read(&p).ok()?).ok()?;if p.file_stem()?.to_str()?!=t.id||!owned(&base,&t.id,"zlib").ok()?.is_file(){return None;}if let Some(info)=known.get(&t.id){repair_task_kind(&mut t,info);}Some(t)}).collect()
 }
 #[tauri::command]
 pub async fn vault_resume_prepare(state:tauri::State<'_,VaultState>,id:String)->Result<Package,String>{
@@ -194,6 +221,21 @@ pub(super) fn cleanup(stage:&Path,id:&str)->Result<(),String>{
   Plan{intent:Some(Intent{mode:"install".into(),project:"X:/Fixture/Game.uproject".into(),project_name:"Game".into(),engine_version:"5.8".into(),update_id:None}),info:Package{artifact_id:"artifact".into(),selected_engine:"5.8".into(),build_version:"build".into(),source:String::new(),asset_id:"asset-id".into(),id:id.clone(),title:"Material".into(),kind:"Asset".into(),engines:vec!["5.8".into()],bytes:14,download_bytes:4096,files:1,path:root.join(id).to_string_lossy().into_owned(),hashes:BTreeMap::from([(name.clone(),hash)])},files:BTreeMap::from([(name,file)])}
  }
  #[test]fn snapshot_survives_restart_with_exact_version_offsets_and_project_intent(){let base=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());let plan=fixture(&base);save_at(&base.join("tasks"),&plan).unwrap();let restored=load_at(&base.join("tasks"),&plan.info.id).unwrap();assert_eq!(restored.files,plan.files);assert_eq!(restored.info.selected_engine,"5.8");assert_eq!(restored.intent.unwrap().project,"X:/Fixture/Game.uproject");assert!(owned(&base,"../other","json").is_err());fs::remove_dir_all(base).unwrap();}
+ fn legacy_project_fixture(root:&Path)->Plan{
+  let mut plan=fixture(root);for name in ["DMD_MSS.uproject","Config/DefaultEngine.ini"]{let hash=digest(b"");plan.info.hashes.insert(name.into(),hash.clone());plan.files.insert(name.into(),FileManifestList{filename:name.into(),file_hash:hash,file_chunk_parts:vec![]});}plan.info.files=plan.files.len();plan
+ }
+ #[test]fn old_asset_resume_repairs_project_kind_and_discards_only_unsafe_memory_intent(){
+  let f=ChunkFixture::new();let base=f.root.join("tasks");let mut plan=legacy_project_fixture(&f.root);let existing=f.root.join("Existing.uproject");fs::write(&existing,b"existing user project").unwrap();plan.intent.as_mut().unwrap().project=existing.to_string_lossy().into_owned();save_at(&base,&plan).unwrap();
+  let compressed=fs::read(owned(&base,&plan.info.id,"zlib").unwrap()).unwrap();let json=fs::read(owned(&base,&plan.info.id,"json").unwrap()).unwrap();let loaded=load_at(&base,&plan.info.id).unwrap();assert_eq!(loaded.info.kind,"Project");assert!(loaded.intent.is_none());assert_eq!(loaded.files,plan.files);assert_eq!(loaded.info.id,plan.info.id);assert_eq!(loaded.info.artifact_id,plan.info.artifact_id);assert_eq!(loaded.info.selected_engine,"5.8");
+  let known=known_packages_at(&base,&f.root);assert_eq!(known.len(),1);assert_eq!(known[&plan.info.id].kind,"Project");let mut task:Task=serde_json::from_slice(&json).unwrap();repair_task_kind(&mut task,&known[&plan.info.id]);assert_eq!(task.kind,"Project");assert!(task.intent.is_none());assert_eq!(task.phase,PROJECT_DESTINATION_REQUIRED);
+  assert_eq!(fs::read(owned(&base,&plan.info.id,"zlib").unwrap()).unwrap(),compressed);assert_eq!(fs::read(owned(&base,&plan.info.id,"json").unwrap()).unwrap(),json);assert_eq!(fs::read(existing).unwrap(),b"existing user project");
+ }
+ #[test]fn project_resume_keeps_vault_only_and_explicit_new_project_destinations(){
+  let f=ChunkFixture::new();for vault_only in [true,false]{let base=f.root.join(if vault_only{"vault-only"}else{"new-project"});let mut plan=legacy_project_fixture(&f.root);if vault_only{plan.intent.as_mut().unwrap().mode="vault".into();}else{plan.info.kind="Project".into();plan.intent.as_mut().unwrap().project=f.root.join("NewProject").to_string_lossy().into_owned();}save_at(&base,&plan).unwrap();let loaded=load_at(&base,&plan.info.id).unwrap();assert_eq!(loaded.info.kind,"Project");assert_eq!(loaded.intent.as_ref().unwrap().mode,plan.intent.as_ref().unwrap().mode);assert_eq!(loaded.intent.as_ref().unwrap().project,plan.intent.as_ref().unwrap().project);}
+ }
+ #[test]fn known_saved_metadata_skips_corrupt_and_invalid_entries_without_mutating_them(){
+  let f=ChunkFixture::new();let base=f.root.join("tasks");let plan=legacy_project_fixture(&f.root);save_at(&base,&plan).unwrap();let broken_id=digest(b"broken saved plan");let broken=owned(&base,&broken_id,"zlib").unwrap();fs::write(&broken,b"not compressed metadata").unwrap();let mut invalid=legacy_project_fixture(&f.root);invalid.info.id=digest(b"invalid saved path");invalid.info.path=f.root.join(&invalid.info.id).to_string_lossy().into_owned();invalid.info.hashes.insert("../Other.uproject".into(),digest(b""));invalid.info.files=invalid.info.hashes.len();save_at(&base,&invalid).unwrap();let known=known_packages_at(&base,&f.root);assert_eq!(known.len(),1);assert_eq!(known[&plan.info.id].kind,"Project");assert_eq!(fs::read(broken).unwrap(),b"not compressed metadata");
+ }
  fn encoded(data:&[u8])->Vec<u8>{let mut raw=vec![0u8;62];raw[0..4].copy_from_slice(&2986228386u32.to_le_bytes());raw[4..8].copy_from_slice(&2u32.to_le_bytes());raw[8..12].copy_from_slice(&62u32.to_le_bytes());raw[12..16].copy_from_slice(&(data.len()as u32).to_le_bytes());raw[41..61].copy_from_slice(&Sha1::digest(data));raw[61]=2;raw.extend_from_slice(data);raw}
  #[tokio::test]async fn interrupted_http_block_resumes_with_range_and_is_reused_without_network(){
   use std::net::{TcpListener,TcpStream};use std::sync::{Arc,atomic::AtomicUsize};

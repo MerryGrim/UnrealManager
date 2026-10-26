@@ -1,10 +1,11 @@
 use egs_api::{EpicGames, api::types::account::UserData};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
+use std::{collections::{BTreeMap, BTreeSet}, fs, path::PathBuf, time::Duration};
 
 use tokio::sync::Mutex;
 
 pub(crate) const AUTH_REQUIRED: &str = "UM_EPIC_AUTH_REQUIRED";
+pub(crate) const LIBRARY_INFO_VERSION: u8 = 2;
 fn api_failure(error: egs_api::api::error::EpicAPIError, fallback: &str) -> String {
     match error {
         egs_api::api::error::EpicAPIError::HttpError { status, .. } if status == reqwest::StatusCode::UNAUTHORIZED => AUTH_REQUIRED.into(),
@@ -38,6 +39,8 @@ pub struct AccountStatus { signed_in: bool, display_name: Option<String> }
 #[serde(rename_all="camelCase")]
 pub struct LibraryItem {
     pub(crate) id: String, pub(crate) title: String, pub(crate) kind: String, engine_versions: Vec<String>,
+    #[serde(default)]
+    pub(crate) catalog_kind: String,
     categories: Vec<String>, source: String,
     namespace: String, pub(crate) versions: Vec<AssetVersion>,
     #[serde(default)]
@@ -50,6 +53,18 @@ pub struct LibraryItem {
     pub(crate) images: Vec<String>,
     #[serde(default)]
     pub(crate) listing_url: String,
+}
+impl LibraryItem {
+    pub(crate) fn declared_kind(&self) -> &str {
+        if matches!(self.catalog_kind.as_str(), "Asset" | "Project" | "Plugin") { &self.catalog_kind }
+        else if matches!(self.kind.as_str(), "Asset" | "Project" | "Plugin") { &self.kind }
+        else { "Asset" }
+    }
+    pub(crate) fn ensure_catalog_kind(&mut self) {
+        if !matches!(self.catalog_kind.as_str(), "Asset" | "Project" | "Plugin") {
+            self.catalog_kind = if matches!(self.kind.as_str(), "Asset" | "Project" | "Plugin") { self.kind.clone() } else { "Asset".into() };
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -185,6 +200,53 @@ pub async fn epic_logout(app: tauri::AppHandle, state: tauri::State<'_, EpicStat
     Ok(())
 }
 
+// Only the explicit distribution field is a catalogue type hint. Product names,
+// descriptions and broad categories must not turn an asset into a project.
+fn declared_library_kind(method: &str) -> &'static str {
+    if method.len() > 64 { return "Asset"; }
+    let compact: String = method.trim().to_ascii_lowercase().chars()
+        .filter(|c| !matches!(c, '_' | '-' | ' ')).collect();
+    match compact.as_str() {
+        "engineplugin" | "plugin" => "Plugin",
+        "completeproject" | "project" => "Project",
+        _ => "Asset",
+    }
+}
+pub(crate) fn apply_known_content_kinds(items: &mut [LibraryItem], known: &BTreeMap<String, String>) {
+    for item in items {
+        item.ensure_catalog_kind();
+        if item.kind == "Project" || item.kind == "Plugin" { continue; }
+        if let Some(kind) = known.get(&item.id).filter(|kind| matches!(kind.as_str(), "Project" | "Plugin")) {
+            item.kind.clone_from(kind);
+        }
+    }
+}
+async fn local_content_kinds() -> BTreeMap<String, String> {
+    // One bounded local metadata pass per library operation, not a request or
+    // manifest download for every catalogue item. No Epic/Vault state lock.
+    tauri::async_runtime::spawn_blocking(crate::vault::known_content_kinds).await.unwrap_or_default()
+}
+fn merge_content_kinds(known: &mut BTreeMap<String, String>, additional: BTreeMap<String, String>) {
+    for (id,kind) in additional {
+        if matches!(kind.as_str(),"Project"|"Plugin") && (kind=="Project" || !known.contains_key(&id)) {
+            known.insert(id,kind);
+        }
+    }
+}
+// Called only after the selected download manifest has been validated, outside
+// download_manifest_bound's session guard. It never creates a catalogue entry.
+pub(crate) async fn remember_library_kind(state: &EpicState, id: &str, kind: &str) {
+    if !matches!(kind,"Project"|"Plugin") { return; }
+    let _cache_guard=crate::storage::CACHE_ACCESS.read().await;
+    let mut session=state.0.lock().await;
+    let Some(item)=session.library.iter_mut().find(|item|item.id==id) else { return; };
+    item.ensure_catalog_kind();
+    if item.kind!="Project" && item.kind!="Plugin" { item.kind=kind.to_owned(); }
+    if let Some(account)=session.api.user_details().account_id {
+        // Classification caching is best effort and cannot fail a valid plan.
+        let _=super::fab_cache::record_manifest_kind(&account,&session.library,id,kind);
+    }
+}
 fn normalize(value: &serde_json::Value) -> Result<LibraryItem, String> {
     let id = value.get("assetId").and_then(|v| v.as_str()).ok_or("Fab вернул запись без assetId")?;
     let title = value.get("title").and_then(|v| v.as_str()).ok_or("Fab вернул запись без названия")?;
@@ -193,13 +255,12 @@ fn normalize(value: &serde_json::Value) -> Result<LibraryItem, String> {
         .filter_map(|v| v.as_str().map(str::to_string)).collect();
     let categories: Vec<String> = value["categories"].as_array().into_iter().flatten()
         .filter_map(|c| c["name"].as_str().or_else(|| c["id"].as_str()).map(str::to_string)).collect();
-    let method = value["distributionMethod"].as_str().unwrap_or("").to_lowercase();
-    let kind = if method.contains("plugin") { "Plugin" } else if method.contains("project") { "Project" } else { "Asset" };
-    Ok(LibraryItem { id: id.to_string(), title: title.to_string(), kind: kind.into(), engine_versions: versions.into_iter().collect(), categories,
+    let kind = declared_library_kind(value["distributionMethod"].as_str().unwrap_or(""));
+    Ok(LibraryItem { id: id.to_string(), title: title.to_string(), kind: kind.into(), catalog_kind: kind.into(), engine_versions: versions.into_iter().collect(), categories,
         source: value["source"].as_str().unwrap_or("Fab").to_string(),
         namespace: value["assetNamespace"].as_str().unwrap_or("").to_string(),
         description: value["description"].as_str().unwrap_or("").to_string(),
-        info_version: 1,
+        info_version: LIBRARY_INFO_VERSION,
         images: value["images"].as_array().into_iter().flatten().filter_map(|i|i["url"].as_str().map(str::to_owned)).collect(),
         listing_url: value["url"].as_str().unwrap_or("").to_string(),
         cover: value["images"].as_array().and_then(|images| images.iter().find(|i| i["type"].as_str().is_some_and(|t| t.to_lowercase().contains("thumbnail"))).or_else(|| images.first())).and_then(|i| i["url"].as_str()).map(str::to_string),
@@ -213,6 +274,7 @@ fn normalize(value: &serde_json::Value) -> Result<LibraryItem, String> {
 #[tauri::command]
 pub async fn fab_library(app: tauri::AppHandle, state: tauri::State<'_, EpicState>, on_progress: tauri::ipc::Channel<LibraryProgress>) -> Result<Library, String> {
     let _cache_guard=crate::storage::CACHE_ACCESS.read().await;
+    let mut known=local_content_kinds().await;
     let mut session = state.0.lock().await;
     if !ensure(&app, &mut session).await? { return Err("Сначала войдите в Epic Games".into()); }
     let details = session.api.user_details();
@@ -224,9 +286,11 @@ pub async fn fab_library(app: tauri::AppHandle, state: tauri::State<'_, EpicStat
         .user_agent(concat!("UnrealManager/",env!("CARGO_PKG_VERSION")))
         .build().map_err(|_| "Не удалось создать сетевое соединение")?;
     let endpoint = format!("https://www.fab.com/e/accounts/{account}/ue/library");
-    let library = fetch_library(&client, &endpoint, token, |pages, items| {
+    if let Ok(Some(cache))=super::fab_cache::read(account) { merge_content_kinds(&mut known,cache.manifest_kinds); }
+    let mut library = fetch_library(&client, &endpoint, token, |pages, items| {
         let _ = on_progress.send(LibraryProgress { pages, items });
     }).await?;
+    apply_known_content_kinds(&mut library.items,&known);
     // Cache failure must not discard a successfully synchronized library.
     let _ = super::fab_cache::save(account, &library.items);
     session.library = library.items.clone();
@@ -236,11 +300,12 @@ pub async fn fab_library(app: tauri::AppHandle, state: tauri::State<'_, EpicStat
 #[tauri::command]
 pub async fn fab_cached_library(app: tauri::AppHandle, state: tauri::State<'_, EpicState>) -> Result<Option<super::fab_cache::CachedLibrary>, String> {
     let _cache_guard=crate::storage::CACHE_ACCESS.read().await;
+    let known=local_content_kinds().await;
     let mut session=state.0.lock().await;
     if !ensure(&app,&mut session).await? { return Ok(None); }
     let account=session.api.user_details().account_id.ok_or("Нет аккаунта Epic")?;
-    let cache=super::fab_cache::read(&account)?;
-    if let Some(ref cache)=cache { session.library=cache.items.clone(); }
+    let mut cache=super::fab_cache::read(&account)?;
+    if let Some(ref mut cache)=cache { apply_known_content_kinds(&mut cache.items,&known); session.library=cache.items.clone(); }
     Ok(cache)
 }
 #[tauri::command]
@@ -508,6 +573,48 @@ mod tests {
         }
         assert!(normalize(&serde_json::json!({"error":"denied"})).is_err());
     }
+    #[test] fn catalogue_kind_uses_only_exact_distribution_aliases() {
+        for method in ["CompleteProject", "COMPLETE_PROJECT", "complete-project", " Complete Project ", "Project"] {
+            assert_eq!(declared_library_kind(method), "Project");
+        }
+        for method in ["ENGINE_PLUGIN", "Engine Plugin", "plugin"] {
+            assert_eq!(declared_library_kind(method), "Plugin");
+        }
+        for method in ["ASSET_PACK", "ADD_TO_PROJECT", "projectile", "plugin collection", "not_a_complete_project", "", "unknown"] {
+            assert_eq!(declared_library_kind(method), "Asset");
+        }
+        for distribution in [serde_json::Value::Null, serde_json::json!({"kind":"CompleteProject"}), serde_json::json!(42)] {
+            let item=normalize(&serde_json::json!({"assetId":"fixture","title":"Complete Project Plugin", "description":"Complete Project", "distributionMethod":distribution, "categories":[{"name":"Projects"}]})).unwrap();
+            assert_eq!(item.kind, "Asset");
+            assert_eq!(item.info_version, LIBRARY_INFO_VERSION);
+        }
+    }
+    #[test] fn known_local_kinds_promote_assets_without_demoting_declared_types() {
+        let fixture=|id:&str,method:&str|normalize(&serde_json::json!({"assetId":id,"title":"Synthetic item","distributionMethod":method})).unwrap();
+        let mut items=vec![fixture("project","ASSET_PACK"),fixture("plugin","Asset"),fixture("declaredPlugin","ENGINE_PLUGIN"),fixture("declaredProject","COMPLETE_PROJECT"),fixture("unknown","Asset")];
+        let known=BTreeMap::from([("project".into(),"Project".into()),("plugin".into(),"Plugin".into()),("declaredPlugin".into(),"Project".into()),("declaredProject".into(),"Plugin".into()),("unknown".into(),"Unexpected".into()),("missing".into(),"Project".into())]);
+        apply_known_content_kinds(&mut items,&known);
+        assert_eq!(items.iter().map(|item|item.kind.as_str()).collect::<Vec<_>>(),vec!["Project","Plugin","Plugin","Project","Asset"]);
+        assert_eq!(items.len(),5);assert!(items.iter().all(|item|item.title=="Synthetic item"));
+        assert_eq!(items[0].declared_kind(),"Asset");assert_eq!(items[1].declared_kind(),"Asset");
+    }
+    #[test] fn known_content_kind_merge_keeps_project_evidence_and_rejects_unknown_types() {
+        let mut known=BTreeMap::from([("project".into(),"Project".into()),("plugin".into(),"Plugin".into())]);
+        merge_content_kinds(&mut known,BTreeMap::from([("project".into(),"Plugin".into()),("plugin".into(),"Project".into()),("unknown".into(),"Unexpected".into())]));
+        assert_eq!(known,BTreeMap::from([("project".into(),"Project".into()),("plugin".into(),"Project".into())]));
+    }
+    #[tokio::test] async fn remembered_manifest_type_keeps_catalogue_base_and_never_adds_owned_items() {
+        let state=EpicState::default();
+        let fixture=|id:&str|normalize(&serde_json::json!({"assetId":id,"title":"Synthetic item","distributionMethod":"ASSET_PACK"})).unwrap();
+        {let mut session=state.0.lock().await;session.library=vec![fixture("selected"),fixture("other")];}
+        remember_library_kind(&state,"selected","Project").await;
+        remember_library_kind(&state,"other","Unexpected").await;
+        remember_library_kind(&state,"unowned","Plugin").await;
+        let session=state.0.lock().await;
+        assert_eq!(session.library.len(),2);assert_eq!(session.library[0].kind,"Project");
+        assert_eq!(session.library[0].declared_kind(),"Asset");assert_eq!(session.library[1].kind,"Asset");
+        assert!(!session.loaded);assert!(!session.remember);
+    }
     #[cfg(windows)]
     #[test] fn dpapi_roundtrip_and_corruption() {
         let source=b"synthetic-test-secret";
@@ -644,6 +751,6 @@ pub(crate) async fn fab_plugin_package(app:&tauri::AppHandle,state:&EpicState,ve
  let (raw,base,catalog_id)=engine_manifest(app,state,&artifact).await?;
  let mut manifest=crate::engine::parse(&raw)?;
  manifest.custom_fields.get_or_insert_with(Default::default).insert("SourceURL".into(),base.trim_end_matches('/').into());
- let item=LibraryItem{id:catalog_id.ok_or("Нет идентификатора Fab")?,title:"Fab UE Plugin".into(),kind:"Plugin".into(),engine_versions:vec![format!("UE_{version}")],categories:vec![],source:"Epic Games Launcher".into(),namespace:"ue".into(),versions:vec![AssetVersion{artifact_id:artifact,engines:vec![format!("UE_{version}")],platforms:vec!["Windows".into()]}],cover:None,description:String::new(),info_version:1,images:vec![],listing_url:String::new()};
+ let item=LibraryItem{id:catalog_id.ok_or("Нет идентификатора Fab")?,title:"Fab UE Plugin".into(),kind:"Plugin".into(),catalog_kind:"Plugin".into(),engine_versions:vec![format!("UE_{version}")],categories:vec![],source:"Epic Games Launcher".into(),namespace:"ue".into(),versions:vec![AssetVersion{artifact_id:artifact,engines:vec![format!("UE_{version}")],platforms:vec!["Windows".into()]}],cover:None,description:String::new(),info_version:LIBRARY_INFO_VERSION,images:vec![],listing_url:String::new()};
  Ok((item,manifest))
 }
