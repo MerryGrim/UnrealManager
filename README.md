@@ -4,8 +4,8 @@ An independent, lightweight Unreal Engine manager for **Windows x64**.
 Manage engines, projects, Fab assets, Vault content and plugins in one desktop
 application, without a game storefront.
 
-**Version 0.9.9.** Download the installer or portable edition, or build from source.
-See the [0.9.9 change notes](source/CHANGELOG.md).
+**Version 0.9.11.** Download the installer or portable edition, or build from source.
+See the [0.9.11 change notes](source/CHANGELOG.md).
 
 [Website & screenshots](https://merrygrim.github.io/UnrealManager/) ·
 [Build instructions](source/README.md) · [Verification](verification/README.md) ·
@@ -64,6 +64,16 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 - Sort the library locally by name in either direction, asset type, UE version
   newest/oldest, or downloaded/not downloaded first. Choose page size at the bottom.
 - Download and install assets, projects and plugins; inspect update conflicts.
+- Classify owned Unreal Engine content from Fab metadata and Epic package
+  descriptions before downloading,
+  including complete projects outside the local Vault and catalogue plugins.
+  Verified results are cached; new, changed or expired records are checked during
+  synchronization, with visible progress and a retry notice for unresolved types.
+  This stage reads metadata and package descriptions; asset files and chunks
+  are not downloaded.
+- Recognize complete projects from the selected package manifest, reuse matching
+  Vault downloads and create them in an explicitly chosen new folder. A corrected
+  project type clears an earlier existing-project destination before copying.
 - Pause downloads, resume through HTTP Range, and restore saved tasks after restart.
   Continuing a saved task is initiated by the user.
 - Queue asset downloads to Vault with one active transfer. Reorder waiting items
@@ -90,6 +100,9 @@ stable/beta channels, a startup check at most daily, manual checks, verified dow
 and apply with restart. No update service or permanent helper is installed.
 See [updater and release details](source/UPDATES.md).
 
+Version 0.9.11 retains conflict blocking. Optional overwrite/replacement with
+explicit confirmation and a backup is planned for a later update.
+
 ## Lightweight rendering
 
 The React/TypeScript interface and Rust backend are packaged with Tauri. All
@@ -101,11 +114,11 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
-## Download 0.9.9
+## Download 0.9.11
 
-[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.9/UnrealManager-0.9.9-Windows-x64-Setup.exe) ·
-[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.9/UnrealManager-0.9.9-Windows-x64-Portable.zip) ·
-[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.9)
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.11/UnrealManager-0.9.11-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.11/UnrealManager-0.9.11-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.11)
 
 The installer installs for the current user. For portable use, extract the ZIP to
 a writable directory and keep `portable.marker` beside `unreal-manager.exe`.

@@ -19,9 +19,9 @@ python -m http.server 4173 --bind 127.0.0.1 --directory docs
 
 Open `http://127.0.0.1:4173/`. Browser QA is covered by `verification/test-site.cjs` at repository root. Its requirements are development tools only.
 
-The page links to the Windows x64 installer and portable ZIP for `v0.9.9`, alongside release notes and SHA-256 checksums. Source and build instructions remain available as secondary actions. Publish the matching GitHub release assets before deploying a website revision with new download links.
+The page links to the Windows x64 installer and portable ZIP for `v0.9.11`, alongside release notes and SHA-256 checksums. Source and build instructions remain available as secondary actions. Publish the matching GitHub release assets before deploying a website revision with new download links.
 
-The page describes 0.9.9's sequential download-to-Vault queue, pending-item drag/keyboard priorities, explicit restart behavior, measured phase progress and optional Epic-registration warnings. Project copying remains a separate action. It also describes signed GitHub app updates for installed and portable copies, startup checks at most once daily, manual checks and a temporary apply helper. This website never performs an application update. Software-rendering configuration is distinguished from measured GPU activity. Demonstration screenshots are illustrative and do not establish clean-Windows compatibility or acceptance of every workflow.
+The page describes 0.9.11's sequential download-to-Vault queue, pending-item drag/keyboard priorities, explicit restart behavior, measured phase progress and optional Epic-registration warnings. Project copying remains a separate action. It also describes signed GitHub app updates for installed and portable copies, startup checks at most once daily, manual checks and a temporary apply helper. This website never performs an application update. Software-rendering configuration is distinguished from measured GPU activity. Demonstration screenshots are illustrative and do not establish clean-Windows compatibility or acceptance of every workflow.
 
 `verification/capture-public-screenshots.cjs` uses the real frontend with a fictional account, self-authored covers, synthetic `X:/Fixture/Demo` paths and simulated queue progress. It blocks external requests and never starts the native app. Its `--preview` flag writes fresh private preview images instead of website assets. The retained 0.9.0 gallery shows the earlier dark app appearance. The separate batch-redemption section uses fresh 0.9.8 renderer fixtures in dark and light themes; website theme controls do not alter screenshot pixels.
 
@@ -56,3 +56,29 @@ The application spaces ordinary requests by two seconds and uses client-chosen g
 The three new review, wait and result screenshots use the actual 0.9.8 React renderer with fictional account, product and key fixtures. They are illustrative UI evidence, not real-account activations, a new release build, clean-Windows acceptance or measured GPU activity. Their source hashes and capture scope are retained in the screenshot capture receipt. The four original 0.9.0 images keep their original provenance and separate gallery label.
 
 Version 0.9.9 fixes the `content_already_owned` batch-check response: products already present in the account are reported as already owned, checking continues through the remaining keys, and only ready rows enter the separately confirmed activation. Unknown results are not retried blindly. Installed and portable updates preserve the existing profile, sessions, tasks and user data; this patch does not require moving to a new profile or signing in again. These are source behavior descriptions, not a new real-account acceptance claim. The 0.9.8 batch screenshots and 0.9.0 gallery retain their actual capture versions.
+
+The unpublished 0.9.10 candidate recognizes complete projects from the selected package manifest and
+uses the corrected type for prepared downloads, saved tasks and completed Vault
+packages. Matching saved packages are reused. A correction to Project clears any
+previously selected existing-project destination and requires an explicit new
+folder before preview or installation. The library feature copy explains this in
+all nine site languages. Existing conflicting files remain blocked; optional
+overwrite/replacement with confirmation and a backup is a future change, not a
+0.9.10 feature. No new screenshots or real-account acceptance claims are added.
+
+Version 0.9.11 restores Fab's `CODE_PLUGIN` type and classifies owned Unreal Engine
+content from Fab UE-format metadata and Epic package descriptions before
+downloading, including
+projects outside local Vault storage. Verified results are cached by account and
+package version; synchronization rechecks new, changed or expired records with
+bounded requests for metadata and package descriptions. No asset files or
+chunks are fetched for this classification stage, and no permanent process is
+added.
+
+The site describes visible type-checking progress and unresolved counts in all
+nine languages. Partial failures keep the library and provide a retry notice;
+they are not described as verification of every owned item. A real-account
+metadata run found projects before download, but some lookups remained
+unresolved. This does not establish complete-content transfer, clean Windows,
+successful hosted CI lifecycle checks or readiness for 1.0. The retained
+0.9.8/0.9.0 screenshots keep their actual capture labels and pixels.
