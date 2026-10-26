@@ -6,17 +6,27 @@ base64-encoded 64-byte IEEE P1363 signature. The public verification key is
 compiled from `src-tauri/update-public-key.json`. There is no signing key,
 background update service or development runtime in the distributed app.
 
-In 0.9.10, open **Settings → App updates** to select the stable/beta channel,
+In 0.9.11, open **Settings → App updates** to select the stable/beta channel,
 check, download and apply an update. Beta.7 introduced the updater; beta.7 and
-newer can receive 0.9.10 without a separate manual installation. The stable
-0.9.10 release is available in both update channels. In beta.7, use
+newer can receive 0.9.11 without a separate manual installation. The stable
+0.9.11 release is available in both update channels. In beta.7, use
 **Settings → Unreal Manager updates → Check for updates**.
 Beta.6 requires one manual upgrade to beta.7 or newer.
 
-Version 0.9.10 recognizes full projects from the selected package manifest,
-reuses saved Vault packages and requires a fresh, explicitly selected destination
-if a previously labelled asset is a project. It does not overwrite conflicting
-files. Optional replacement with confirmation and a backup is a future change.
+Version 0.9.11 restores `CODE_PLUGIN` and classifies owned Unreal Engine content
+from Fab metadata and Epic package descriptions before downloading, rather than
+relying only on local Vault packages. Verified type results are cached;
+synchronization checks new, changed or expired records with visible progress.
+Failed metadata lookups retain the
+library and show an unresolved count with a retry notice. Type checks do not
+download asset files or chunks and add no permanent process.
+
+The unpublished 0.9.10 candidate's selected-manifest safeguards remain: saved
+Vault packages are reused, and a corrected full project requires a fresh,
+explicitly selected destination. Conflicting files are not overwritten.
+Optional replacement with confirmation and a backup remains future work.
+An existing local 0.9.10 installation can update normally to 0.9.11 while keeping
+its profile and session; a new profile or another manual sign-in is not required.
 
 Version 0.9.9 fixed batch key checks when Epic reports `content_already_owned`.
 That row is shown as already owned, checking continues, and explicit activation
@@ -61,7 +71,7 @@ Build the release EXE and Inno installer into a fresh staging directory, with
 the portable distribution in its `UnrealManager-Portable` subdirectory. Then:
 
 ```powershell
-.\PREPARE-UPDATE.ps1 -ReleaseDirectory '..\Releases\0.9.10\my-release'
+.\PREPARE-UPDATE.ps1 -ReleaseDirectory '..\Releases\0.9.11\my-release'
 ```
 
 Use `-PortableDirectory` for a different clean portable distribution folder,
@@ -73,7 +83,7 @@ failure; choose a new staging directory instead of replacing published files.
 Publish these assets together on the matching `v<version>` GitHub Release in
 `MerryGrim/UnrealManager`:
 
-0.9.10 is a normal non-prerelease SemVer version: use the stable manifest channel
+0.9.11 is a normal non-prerelease SemVer version: use the stable manifest channel
 and the existing signing key. Existing beta-channel preferences remain valid;
 that channel also includes stable releases. Both channels require a strictly
 newer version and the matching verified release assets before an update is offered.

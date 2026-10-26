@@ -47,7 +47,9 @@ pub fn read(account: &str) -> Result<Option<CachedLibrary>, String> {
     let path=library_path(account)?;
     let file=match fs::File::open(path) { Ok(f)=>f, Err(e) if e.kind()==std::io::ErrorKind::NotFound=>return Ok(None), Err(_)=>return Err("Не удалось прочитать кэш библиотеки".into()) };
     let mut bytes=Vec::new(); file.take(64*1024*1024).read_to_end(&mut bytes).map_err(|_| "Не удалось прочитать кэш")?;
-    Ok(decode(&bytes,now()))
+    let mut cache=decode(&bytes,now());
+    if let Some(cache)=cache.as_mut(){crate::fab_types::apply_cached(account,&mut cache.items);}
+    Ok(cache)
 }
 pub fn save(account: &str, items: &[LibraryItem]) -> Result<(), String> {
     let manifest_kinds=read(account).ok().flatten().map(|cache|cache.manifest_kinds).unwrap_or_default();
@@ -143,6 +145,13 @@ mod tests {
         assert!(migrated.stale);assert_eq!(migrated.cached_at,1000);
         assert_eq!(migrated.items[0].kind,"Project");assert_eq!(migrated.items[0].declared_kind(),"Project");
         assert!(migrated.manifest_kinds.is_empty());
+    }
+    #[test] fn version_two_plugin_regression_cache_is_stale_even_when_recent() {
+        let source=cache(vec![item("previously-misclassified-plugin","Asset",2)],1000);
+        let decoded=decode(&serde_json::to_vec(&source).unwrap(),1001).unwrap();
+        assert!(decoded.stale);assert_eq!(decoded.cached_at,1000);
+        assert_eq!(decoded.items[0].declared_kind(),"Asset");
+        assert_eq!(super::super::epic::LIBRARY_INFO_VERSION,3);
     }
     #[test] fn selected_manifest_kind_survives_cache_reload_without_changing_catalogue_kind() {
         let items=vec![item("selected","Asset",super::super::epic::LIBRARY_INFO_VERSION)];

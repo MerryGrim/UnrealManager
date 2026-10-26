@@ -1,6 +1,34 @@
 # Change notes
 
-## 0.9.10
+## 0.9.11
+
+- Restore Fab's exact `CODE_PLUGIN` catalogue type so plugins remain visible
+  after synchronization.
+- Resolve content types across the owned Unreal Engine library from Fab's
+  UE-format metadata and Epic package descriptions, including projects not yet
+  downloaded. Classification no longer depends only on local Vault packages.
+- Cache verified type results per account and package version. New, changed or
+  expired records are checked during synchronization with bounded concurrency.
+  These requests read metadata and package descriptions without downloading
+  asset files or chunks.
+- Show a separate type-checking stage with actual counters and progress. Partial
+  metadata failures retain the library and display an unresolved count and retry
+  message instead of presenting the result as a fully verified catalogue.
+- Preserve the existing profile, Epic session, downloads and projects when
+  updating either edition, including a local 0.9.10 installation. No new runtime
+  dependency, permanent process, watcher or rendering loop is added.
+
+Live metadata verification found complete projects before downloading, including
+projects outside the local Vault. Some metadata responses remained unresolved;
+this does not verify every owned item or establish a new full-content transfer,
+clean-Windows acceptance, successful CI lifecycle run or readiness for 1.0.
+Existing conflicting files remain blocked; optional overwrite/replacement with
+explicit confirmation and a backup is future work.
+
+## 0.9.10 (unpublished)
+
+This candidate was not published as a GitHub release. Its manifest safeguards
+are retained in 0.9.11, which also corrects library-wide type synchronization.
 
 - Recognize complete Unreal projects from the selected download manifest rather
   than relying only on the Fab catalogue type. A root `.uproject` with project

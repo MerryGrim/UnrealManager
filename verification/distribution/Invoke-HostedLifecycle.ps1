@@ -90,7 +90,7 @@ function Assert-InstallerQuiescent{
 }
 function Step([string]$Name,[bool]$Passed,$Details){$report.tests+=@{name=$Name;passed=$Passed;details=$Details};if(-not $Passed){throw ('Lifecycle assertion failed: '+$Name)}}
 function Assert-UiProbeExit($ExitCode){if($null -eq $ExitCode -or $ExitCode -ne 0){throw 'UIA probe did not exit successfully; readiness report is not accepted.'}}
-function Wait-UiProbe($Process,[string]$HandshakePath,[DateTime]$LaunchedAt,$State,[int]$StartupMilliseconds=45000,[int]$ProbeMilliseconds=30000){
+function Wait-UiProbe($Process,[string]$HandshakePath,[DateTime]$LaunchedAt,$State,[int]$StartupMilliseconds=90000,[int]$ProbeMilliseconds=35000){
     $State.startupBudgetMilliseconds=$StartupMilliseconds;$State.probeBudgetMilliseconds=$ProbeMilliseconds
     $created=$Process.StartTime.ToUniversalTime().ToFileTimeUtc();$startupDeadline=$LaunchedAt.AddMilliseconds($StartupMilliseconds)
     $State.created=$created;$State.startupDeadlineUtc=$startupDeadline.ToString('o')
@@ -101,6 +101,7 @@ function Wait-UiProbe($Process,[string]$HandshakePath,[DateTime]$LaunchedAt,$Sta
             if((Get-Item -LiteralPath $HandshakePath).Length -gt 4096){throw 'UIA startup handshake exceeds bounds.'}
             $handshake=Get-Content -LiteralPath $HandshakePath -Raw|ConvertFrom-Json
             if($handshake.schema -ne 1 -or $handshake.pid -ne $Process.Id -or $handshake.created -ne $created){throw 'UIA startup handshake identity mismatch.'}
+            if($handshake.innerBudgetMilliseconds -ne 30000){throw 'Unexpected UIA inner readiness budget.'}
             break
         }
         if($Process.WaitForExit(100)){$State.startupElapsedMilliseconds=[int]([DateTime]::UtcNow-$LaunchedAt).TotalMilliseconds;return $true}

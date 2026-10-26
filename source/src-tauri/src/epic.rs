@@ -5,7 +5,7 @@ use std::{collections::{BTreeMap, BTreeSet}, fs, path::PathBuf, time::Duration};
 use tokio::sync::Mutex;
 
 pub(crate) const AUTH_REQUIRED: &str = "UM_EPIC_AUTH_REQUIRED";
-pub(crate) const LIBRARY_INFO_VERSION: u8 = 2;
+pub(crate) const LIBRARY_INFO_VERSION: u8 = 3;
 fn api_failure(error: egs_api::api::error::EpicAPIError, fallback: &str) -> String {
     match error {
         egs_api::api::error::EpicAPIError::HttpError { status, .. } if status == reqwest::StatusCode::UNAUTHORIZED => AUTH_REQUIRED.into(),
@@ -26,6 +26,9 @@ pub(crate) fn reserve_web_flow()->Result<WebFlowGuard,String>{
 }
 
 pub struct EpicState(Mutex<Session>);
+// Keep a later ownership refresh queued until the earlier sync has saved its
+// result. Account access remains available during metadata classification.
+static LIBRARY_SYNC:Mutex<()>=Mutex::const_new(());
 struct Session { api: EpicGames, loaded: bool, remember: bool, library: Vec<LibraryItem> }
 impl Default for EpicState {
     fn default() -> Self { Self(Mutex::new(Session { api: EpicGames::new(), loaded: false, remember: false, library: Vec::new() })) }
@@ -42,7 +45,7 @@ pub struct LibraryItem {
     #[serde(default)]
     pub(crate) catalog_kind: String,
     categories: Vec<String>, source: String,
-    namespace: String, pub(crate) versions: Vec<AssetVersion>,
+    pub(crate) namespace: String, pub(crate) versions: Vec<AssetVersion>,
     #[serde(default)]
     cover: Option<String>,
     #[serde(default)]
@@ -71,7 +74,7 @@ impl LibraryItem {
 pub struct AssetVersion { pub(crate) artifact_id: String, pub(crate) engines: Vec<String>, pub(crate) platforms: Vec<String> }
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
-pub struct Library { items: Vec<LibraryItem>, scope: &'static str }
+pub struct Library { items: Vec<LibraryItem>, scope: &'static str, #[serde(skip_serializing_if="Option::is_none")] type_stats:Option<crate::fab_types::Stats> }
 
 fn secret_path(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(crate::storage::root().join("Account/epic-session.dpapi"))
@@ -207,7 +210,7 @@ fn declared_library_kind(method: &str) -> &'static str {
     let compact: String = method.trim().to_ascii_lowercase().chars()
         .filter(|c| !matches!(c, '_' | '-' | ' ')).collect();
     match compact.as_str() {
-        "engineplugin" | "plugin" => "Plugin",
+        "engineplugin" | "codeplugin" | "plugin" => "Plugin",
         "completeproject" | "project" => "Project",
         _ => "Asset",
     }
@@ -273,6 +276,13 @@ fn normalize(value: &serde_json::Value) -> Result<LibraryItem, String> {
 
 #[tauri::command]
 pub async fn fab_library(app: tauri::AppHandle, state: tauri::State<'_, EpicState>, on_progress: tauri::ipc::Channel<LibraryProgress>) -> Result<Library, String> {
+    let _sync_guard=match LIBRARY_SYNC.try_lock(){
+        Ok(guard)=>guard,
+        Err(_)=>{
+            let _=on_progress.send(LibraryProgress {pages:0,items:0,phase:Some("waiting"),done:None,total:None,unresolved:None});
+            LIBRARY_SYNC.lock().await
+        },
+    };
     let _cache_guard=crate::storage::CACHE_ACCESS.read().await;
     let mut known=local_content_kinds().await;
     let mut session = state.0.lock().await;
@@ -287,13 +297,25 @@ pub async fn fab_library(app: tauri::AppHandle, state: tauri::State<'_, EpicStat
         .build().map_err(|_| "Не удалось создать сетевое соединение")?;
     let endpoint = format!("https://www.fab.com/e/accounts/{account}/ue/library");
     if let Ok(Some(cache))=super::fab_cache::read(account) { merge_content_kinds(&mut known,cache.manifest_kinds); }
+    let mut page_count=0;
     let mut library = fetch_library(&client, &endpoint, token, |pages, items| {
-        let _ = on_progress.send(LibraryProgress { pages, items });
+        page_count=pages;
+        let _ = on_progress.send(LibraryProgress { pages, items,phase:Some("pages"),done:None,total:None,unresolved:None });
     }).await?;
+    // Type metadata uses the same account/token snapshot, without holding the
+    // account mutex through hundreds of bounded metadata requests.
+    drop(session);
+    let count=library.items.len();
+    let stats=crate::fab_types::enrich(&client,token,account,&mut library.items,|done,total,unresolved|{
+        let _=on_progress.send(LibraryProgress {pages:page_count,items:count,phase:Some("types"),done:Some(done),total:Some(total),unresolved:Some(unresolved)});
+    }).await;
     apply_known_content_kinds(&mut library.items,&known);
+    let mut session=state.0.lock().await;
+    if session.api.user_details().account_id.as_deref()!=Some(account) {return Err(AUTH_REQUIRED.into());}
     // Cache failure must not discard a successfully synchronized library.
     let _ = super::fab_cache::save(account, &library.items);
     session.library = library.items.clone();
+    library.type_stats=Some(stats);
     Ok(library)
 }
 
@@ -352,7 +374,7 @@ pub(crate) async fn download_manifest_bound(app: &tauri::AppHandle, state: &Epic
 }
 
 #[derive(Clone, Serialize)]
-pub struct LibraryProgress { pages: usize, items: usize }
+pub struct LibraryProgress { pages: usize, items: usize,#[serde(skip_serializing_if="Option::is_none")] phase:Option<&'static str>,#[serde(skip_serializing_if="Option::is_none")] done:Option<usize>,#[serde(skip_serializing_if="Option::is_none")] total:Option<usize>,#[serde(skip_serializing_if="Option::is_none")] unresolved:Option<usize> }
 
 async fn fetch_library(client: &reqwest::Client, endpoint: &str, token: &str, mut progress: impl FnMut(usize, usize)) -> Result<Library, String> {
     let mut cursor: Option<String> = None;
@@ -383,7 +405,7 @@ async fn fetch_library(client: &reqwest::Client, endpoint: &str, token: &str, mu
         };
         progress(page_index + 1, items.len());
         match &cursor {
-            None => { items.sort_by_key(|i| i.title.to_lowercase()); return Ok(Library { items, scope: "unreal-engine" }); }
+            None => { items.sort_by_key(|i| i.title.to_lowercase()); return Ok(Library { items, scope: "unreal-engine",type_stats:None }); }
             Some(c) if !seen_cursors.insert(c.clone()) => return Err("Fab повторил страницу. Частичный список не сохранён".into()),
             _ => (),
         }
@@ -391,6 +413,8 @@ async fn fetch_library(client: &reqwest::Client, endpoint: &str, token: &str, mu
     Err("Превышен предел страниц Fab. Частичный список не сохранён".into())
 }
 
+// Explicit diagnostic CLI only: inspect the library's public type metadata
+// without refreshing a token, writing caches, or creating any application UI.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,7 +601,7 @@ mod tests {
         for method in ["CompleteProject", "COMPLETE_PROJECT", "complete-project", " Complete Project ", "Project"] {
             assert_eq!(declared_library_kind(method), "Project");
         }
-        for method in ["ENGINE_PLUGIN", "Engine Plugin", "plugin"] {
+        for method in ["ENGINE_PLUGIN", "Engine Plugin", "CODE_PLUGIN", "Code Plugin", "plugin"] {
             assert_eq!(declared_library_kind(method), "Plugin");
         }
         for method in ["ASSET_PACK", "ADD_TO_PROJECT", "projectile", "plugin collection", "not_a_complete_project", "", "unknown"] {
@@ -588,6 +612,27 @@ mod tests {
             assert_eq!(item.kind, "Asset");
             assert_eq!(item.info_version, LIBRARY_INFO_VERSION);
         }
+    }
+    #[test] fn captured_fab_library_distribution_methods_keep_all_plugin_records() {
+        // Sanitized 2026-10-26 primary response: 20 pages, 1998 rows,
+        // 1993 unique items: 1440 ASSET_PACK, 549 CODE_PLUGIN, 4 COMPLETE_PROJECT.
+        for (method,kind,count) in [("ASSET_PACK","Asset",1440),("CODE_PLUGIN","Plugin",549),("COMPLETE_PROJECT","Project",4)] {
+            for index in 0..count {let item=normalize(&serde_json::json!({"assetId":format!("fixture-{method}-{index}"),"title":"Public metadata fixture","distributionMethod":method})).unwrap();assert_eq!(item.kind,kind);assert_eq!(item.declared_kind(),kind);}
+        }
+    }
+    #[test] fn verified_format_project_display_does_not_force_another_asset_artifact() {
+        let mut item=normalize(&serde_json::json!({"assetId":"captured-shape-fixture","title":"Project display","distributionMethod":"ASSET_PACK"})).unwrap();
+        item.kind="Project".into();
+        let restored:LibraryItem=serde_json::from_value(serde_json::to_value(item).unwrap()).unwrap();
+        assert_eq!(restored.kind,"Project");assert_eq!(restored.declared_kind(),"Asset");
+        assert_eq!(crate::content_kind::from_paths(restored.declared_kind(),["Content/only.uasset"]),"Asset");
+        assert_eq!(crate::content_kind::from_paths(restored.declared_kind(),["Example.uproject","Config/DefaultEngine.ini","Content/example.uasset"]),"Project");
+    }
+    #[test] fn type_progress_retains_page_counts_and_exposes_bounded_completion_fields() {
+        let value=serde_json::to_value(LibraryProgress {pages:20,items:1993,phase:Some("types"),done:Some(12),total:Some(1440),unresolved:Some(1)}).unwrap();
+        assert_eq!(value,serde_json::json!({"pages":20,"items":1993,"phase":"types","done":12,"total":1440,"unresolved":1}));
+        let pages=serde_json::to_value(LibraryProgress {pages:2,items:200,phase:Some("pages"),done:None,total:None,unresolved:None}).unwrap();
+        assert!(pages.get("done").is_none());assert_eq!(pages["items"],200);
     }
     #[test] fn known_local_kinds_promote_assets_without_demoting_declared_types() {
         let fixture=|id:&str,method:&str|normalize(&serde_json::json!({"assetId":id,"title":"Synthetic item","distributionMethod":method})).unwrap();

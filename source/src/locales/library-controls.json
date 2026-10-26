@@ -12,7 +12,12 @@
     "Проверяем регистрацию…": "Checking registration…",
     "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Checking engine registration. Windows may request administrator permission if needed.",
     "Тип материала уточнён по файлам. Выберите место установки заново.": "The content type was identified from its files. Choose the installation location again.",
-    "Это полный проект. Выберите новую папку для создания проекта.": "This is a complete project. Choose a new folder to create the project."
+    "Это полный проект. Выберите новую папку для создания проекта.": "This is a complete project. Choose a new folder to create the project.",
+    "Уточняем типы материалов…": "Identifying content types…",
+    "Проверено типов: {done} / {total}": "Types checked: {done} / {total}",
+    "Не удалось уточнить: {count}": "Could not identify: {count}",
+    "Не удалось уточнить типы материалов: {count}. Повторите обновление библиотеки.": "Could not identify the types of {count} items. Refresh the library to try again.",
+    "Ожидаем предыдущую синхронизацию…": "Waiting for the previous sync…"
   },
   "de": {
     "Сортировка библиотеки": "Bibliothek sortieren",
@@ -27,7 +32,12 @@
     "Проверяем регистрацию…": "Registrierung wird geprüft…",
     "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Die Engine-Registrierung wird geprüft. Windows fordert bei Bedarf Administratorrechte an.",
     "Тип материала уточнён по файлам. Выберите место установки заново.": "Der Materialtyp wurde anhand der Dateien erkannt. Wählen Sie den Installationsort erneut.",
-    "Это полный проект. Выберите новую папку для создания проекта.": "Dies ist ein vollständiges Projekt. Wählen Sie einen neuen Ordner zum Erstellen des Projekts."
+    "Это полный проект. Выберите новую папку для создания проекта.": "Dies ist ein vollständiges Projekt. Wählen Sie einen neuen Ordner zum Erstellen des Projekts.",
+    "Уточняем типы материалов…": "Materialtypen werden ermittelt…",
+    "Проверено типов: {done} / {total}": "Typen geprüft: {done} / {total}",
+    "Не удалось уточнить: {count}": "Nicht ermittelt: {count}",
+    "Не удалось уточнить типы материалов: {count}. Повторите обновление библиотеки.": "Die Typen von {count} Materialien konnten nicht ermittelt werden. Aktualisieren Sie die Bibliothek erneut.",
+    "Ожидаем предыдущую синхронизацию…": "Vorherige Synchronisierung wird abgewartet…"
   },
   "it": {
     "Сортировка библиотеки": "Ordina libreria",
@@ -42,7 +52,12 @@
     "Проверяем регистрацию…": "Verifica della registrazione…",
     "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Verifica della registrazione dei motori. Se necessario, Windows richiederà l’autorizzazione di amministratore.",
     "Тип материала уточнён по файлам. Выберите место установки заново.": "Il tipo di contenuto è stato identificato dai file. Scegli di nuovo la posizione di installazione.",
-    "Это полный проект. Выберите новую папку для создания проекта.": "Questo è un progetto completo. Scegli una nuova cartella in cui creare il progetto."
+    "Это полный проект. Выберите новую папку для создания проекта.": "Questo è un progetto completo. Scegli una nuova cartella in cui creare il progetto.",
+    "Уточняем типы материалов…": "Identificazione dei tipi di contenuto…",
+    "Проверено типов: {done} / {total}": "Tipi verificati: {done} / {total}",
+    "Не удалось уточнить: {count}": "Non identificati: {count}",
+    "Не удалось уточнить типы материалов: {count}. Повторите обновление библиотеки.": "Impossibile identificare il tipo di {count} elementi. Aggiorna di nuovo la libreria.",
+    "Ожидаем предыдущую синхронизацию…": "In attesa della sincronizzazione precedente…"
   },
   "es": {
     "Сортировка библиотеки": "Ordenar biblioteca",
@@ -57,7 +72,12 @@
     "Проверяем регистрацию…": "Comprobando el registro…",
     "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Comprobando el registro de motores. Si es necesario, Windows solicitará permisos de administrador.",
     "Тип материала уточнён по файлам. Выберите место установки заново.": "El tipo de contenido se ha identificado a partir de sus archivos. Vuelve a elegir la ubicación de instalación.",
-    "Это полный проект. Выберите новую папку для создания проекта.": "Este es un proyecto completo. Elige una carpeta nueva para crear el proyecto."
+    "Это полный проект. Выберите новую папку для создания проекта.": "Este es un proyecto completo. Elige una carpeta nueva para crear el proyecto.",
+    "Уточняем типы материалов…": "Identificando los tipos de contenido…",
+    "Проверено типов: {done} / {total}": "Tipos comprobados: {done} / {total}",
+    "Не удалось уточнить: {count}": "Sin identificar: {count}",
+    "Не удалось уточнить типы материалов: {count}. Повторите обновление библиотеки.": "No se pudo identificar el tipo de {count} elementos. Vuelve a actualizar la biblioteca.",
+    "Ожидаем предыдущую синхронизацию…": "Esperando a que termine la sincronización anterior…"
   },
   "fr": {
     "Сортировка библиотеки": "Trier la bibliothèque",
@@ -72,7 +92,12 @@
     "Проверяем регистрацию…": "Vérification de l’enregistrement…",
     "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "Vérification de l’enregistrement des moteurs. Windows peut demander une autorisation administrateur si nécessaire.",
     "Тип материала уточнён по файлам. Выберите место установки заново.": "Le type de contenu a été identifié à partir des fichiers. Choisissez à nouveau le dossier d’installation.",
-    "Это полный проект. Выберите новую папку для создания проекта.": "Il s’agit d’un projet complet. Choisissez un nouveau dossier pour créer le projet."
+    "Это полный проект. Выберите новую папку для создания проекта.": "Il s’agit d’un projet complet. Choisissez un nouveau dossier pour créer le projet.",
+    "Уточняем типы материалов…": "Identification des types de contenu…",
+    "Проверено типов: {done} / {total}": "Types vérifiés : {done} / {total}",
+    "Не удалось уточнить: {count}": "Non identifiés : {count}",
+    "Не удалось уточнить типы материалов: {count}. Повторите обновление библиотеки.": "Impossible d’identifier le type de {count} éléments. Actualisez à nouveau la bibliothèque.",
+    "Ожидаем предыдущую синхронизацию…": "En attente de la synchronisation précédente…"
   },
   "zh": {
     "Сортировка библиотеки": "资源库排序",
@@ -87,7 +112,12 @@
     "Проверяем регистрацию…": "正在检查注册信息…",
     "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "正在检查引擎注册信息。必要时 Windows 会请求管理员授权。",
     "Тип материала уточнён по файлам. Выберите место установки заново.": "已根据文件识别内容类型。请重新选择安装位置。",
-    "Это полный проект. Выберите новую папку для создания проекта.": "这是一个完整项目。请选择新文件夹以创建项目。"
+    "Это полный проект. Выберите новую папку для создания проекта.": "这是一个完整项目。请选择新文件夹以创建项目。",
+    "Уточняем типы материалов…": "正在识别内容类型…",
+    "Проверено типов: {done} / {total}": "已检查类型：{done} / {total}",
+    "Не удалось уточнить: {count}": "未能识别：{count}",
+    "Не удалось уточнить типы материалов: {count}. Повторите обновление библиотеки.": "无法识别 {count} 个项目的类型。请重新刷新库。",
+    "Ожидаем предыдущую синхронизацию…": "正在等待上一次同步完成…"
   },
   "ja": {
     "Сортировка библиотеки": "ライブラリの並べ替え",
@@ -102,7 +132,12 @@
     "Проверяем регистрацию…": "登録を確認しています…",
     "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "エンジンの登録を確認しています。必要に応じて Windows が管理者の許可を求めます。",
     "Тип материала уточнён по файлам. Выберите место установки заново.": "ファイルからコンテンツの種類を判定しました。インストール先を選び直してください。",
-    "Это полный проект. Выберите новую папку для создания проекта.": "これは完全なプロジェクトです。作成先として新しいフォルダーを選択してください。"
+    "Это полный проект. Выберите новую папку для создания проекта.": "これは完全なプロジェクトです。作成先として新しいフォルダーを選択してください。",
+    "Уточняем типы материалов…": "コンテンツの種類を確認しています…",
+    "Проверено типов: {done} / {total}": "確認済み：{done} / {total}",
+    "Не удалось уточнить: {count}": "確認できなかった項目：{count}",
+    "Не удалось уточнить типы материалов: {count}. Повторите обновление библиотеки.": "{count} 個の項目の種類を確認できませんでした。ライブラリを再度更新してください。",
+    "Ожидаем предыдущую синхронизацию…": "前の同期が完了するまで待機しています…"
   },
   "ko": {
     "Сортировка библиотеки": "라이브러리 정렬",
@@ -117,6 +152,11 @@
     "Проверяем регистрацию…": "등록 확인 중…",
     "Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.": "엔진 등록을 확인하고 있습니다. 필요한 경우 Windows에서 관리자 권한을 요청합니다.",
     "Тип материала уточнён по файлам. Выберите место установки заново.": "파일을 통해 콘텐츠 유형을 확인했습니다. 설치 위치를 다시 선택하세요.",
-    "Это полный проект. Выберите новую папку для создания проекта.": "전체 프로젝트입니다. 프로젝트를 만들 새 폴더를 선택하세요."
+    "Это полный проект. Выберите новую папку для создания проекта.": "전체 프로젝트입니다. 프로젝트를 만들 새 폴더를 선택하세요.",
+    "Уточняем типы материалов…": "콘텐츠 유형 확인 중…",
+    "Проверено типов: {done} / {total}": "유형 확인: {done} / {total}",
+    "Не удалось уточнить: {count}": "확인하지 못한 항목: {count}",
+    "Не удалось уточнить типы материалов: {count}. Повторите обновление библиотеки.": "항목 {count}개의 유형을 확인하지 못했습니다. 라이브러리를 다시 새로 고치세요.",
+    "Ожидаем предыдущую синхронизацию…": "이전 동기화가 끝나기를 기다리는 중…"
   }
 }
