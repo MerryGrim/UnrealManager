@@ -7,7 +7,7 @@ for(const lang of languages){assert.deepEqual(Object.keys(updateLocales[lang]).s
 console.log(languages.length+' languages × '+updateKeys.length+' update messages checked');
 
 const libraryLocales=JSON.parse(fs.readFileSync(root+'/src/locales/library-controls.json','utf8'));
-const libraryKeys=['Сортировка библиотеки','Название: А–Я','Название: Я–А','Тип материала','Версия UE: сначала новые','Версия UE: сначала старые','Сначала скачанные','Сначала нескачанные','Навигация библиотеки','Проверяем регистрацию…','Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.'];
+const libraryKeys=['Сортировка библиотеки','Название: А–Я','Название: Я–А','Тип материала','Версия UE: сначала новые','Версия UE: сначала старые','Сначала скачанные','Сначала нескачанные','Навигация библиотеки','Проверяем регистрацию…','Проверяем регистрацию движков. При необходимости Windows запросит разрешение администратора.','Тип материала уточнён по файлам. Выберите место установки заново.','Это полный проект. Выберите новую папку для создания проекта.'];
 assert.deepEqual(Object.keys(libraryLocales).sort(),[...languages].sort(),'exact non-Russian library locales');
 for(const lang of languages){
     assert.deepEqual(Object.keys(libraryLocales[lang]).sort(),[...libraryKeys].sort(),lang+': library message keys');
