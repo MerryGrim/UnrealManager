@@ -42,6 +42,7 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 - Open the key-redemption wizard from the account menu and choose one key, a
   TXT batch or the official Epic page. The wizard stays inside the existing app
   WebView; its header and actions remain visible while results scroll.
+  Single-key entry uses a true one-line field and rejects pasted or dropped lists.
 - Enter product keys in the app or import a TXT batch, preview products and the
   Epic account, then explicitly confirm redemption. The result list has exactly
   three columns: key suffix, product title, and status with a reason. Keys are
@@ -50,6 +51,10 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
   products already in the account do not stop the remaining checks; only ready
   rows are activated. A separate official
   Epic window remains available without copying keys into it.
+- Explicitly export already-used keys and keys for products already owned to a
+  local TXT you choose, with full keys, product names and separate reasons.
+  Owning a product does not prove that the key was used. Export does not add keys
+  to application settings or history.
 - Install, verify, modify or remove engines with component selection.
 - Check access rights before fresh engine installs, updates and resumes. A
   temporary headless UAC helper handles only the mandatory Epic registration

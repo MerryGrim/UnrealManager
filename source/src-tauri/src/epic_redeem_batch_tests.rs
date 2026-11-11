@@ -120,6 +120,7 @@ async fn owned_product_refusal_continues_checking_and_only_ready_key_is_activate
     assert_eq!(d.snapshot.items[0].status,Status::Failed);assert_eq!(d.snapshot.items[0].reason,Some(Reason::AlreadyOwned));
     assert_eq!(d.snapshot.items[1].status,Status::Failed);assert_eq!(d.snapshot.items[1].reason,Some(Reason::AlreadyUsed));
     assert_eq!(d.snapshot.items[2].status,Status::Ready);
+    assert_eq!(d.snapshot.rejected_count,Some(2),"Both already-owned and already-used rows remain available for opt-in export");
     assert!(d.previews[0].is_none()&&d.previews[1].is_none());
     assert!(observed.iter().any(|s|s.items[2].status==Status::Checking));
     assert!(!observed.iter().any(|s|s.phase==Phase::Stopped));
@@ -128,6 +129,7 @@ async fn owned_product_refusal_continues_checking_and_only_ready_key_is_activate
     for key in [KEY,KEY2,eligible] {assert!(!visible.contains(key));}
     select_ready_rows(&mut d);
     assert_eq!(d.snapshot.items.len(),1);assert_eq!(d.snapshot.items[0].id,eligible_id);
+    assert_eq!(d.snapshot.rejected_count,Some(2),"Selecting only activation-ready rows must retain rejected export availability");
     assert!(d.snapshot.items.iter().all(|item|item.id!=owned_id));
     assert_eq!(d.keys[0].as_ref().unwrap().text(),eligible);
     let mut activate=Fake::new(vec![

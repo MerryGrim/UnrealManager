@@ -184,6 +184,7 @@ pub async fn epic_complete_login(app: tauri::AppHandle, state: tauri::State<'_, 
     if !success { return Err("Epic не подтвердил вход. Повторите попытку".into()); }
     if remember { save(&app, &next)?; } else { forget(&app)?; }
     let display_name = next.api.user_details().display_name;
+    super::epic_redeem_batch::clear_rejected_exports();
     *session = next;
     Ok(AccountStatus { signed_in: true, display_name })
 }
@@ -194,6 +195,7 @@ pub async fn epic_logout(app: tauri::AppHandle, state: tauri::State<'_, EpicStat
     let mut session = state.0.lock().await;
     if super::epic_redeem::is_open(){return Err("Сначала закройте окно Epic Games".into());}
     forget(&app)?;
+    super::epic_redeem_batch::clear_rejected_exports();
     let mut old = std::mem::replace(&mut session.api, EpicGames::new());
     session.loaded = true; session.remember = false;
     session.library.clear();
@@ -730,6 +732,13 @@ pub(crate) async fn web_account_binding(app:&tauri::AppHandle,state:&EpicState)-
     let id=details.account_id.ok_or(AUTH_REQUIRED)?;
     if id.len()!=32 || !id.bytes().all(|b|b.is_ascii_hexdigit()){return Err(AUTH_REQUIRED.into());}
     Ok((id,details.display_name.unwrap_or_else(||"Epic Games".into())))
+}
+
+// Local rejected-key export must bind the current in-memory account without
+// refreshing a token, reading a saved session, or requesting anything from Epic.
+pub(crate) async fn cached_account_binding(state:&EpicState)->Option<String>{
+    let session=state.0.lock().await;
+    session.api.user_details().account_id.filter(|id|id.len()==32&&id.bytes().all(|byte|byte.is_ascii_hexdigit()))
 }
 
 pub(crate) async fn library_item(state: &EpicState, id: &str) -> Result<LibraryItem,String> {

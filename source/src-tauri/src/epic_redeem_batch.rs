@@ -1,9 +1,12 @@
 //! A bounded, explicit-confirmation redemption session. No key is serialized in
-//! snapshots, saved to storage, passed in a URL, or handed to the fallback page.
+//! snapshots, saved to application storage, passed in a URL, or handed to the
+//! fallback page. Only the explicit native rejected-key export writes a user file.
 use std::{future::Future, pin::Pin, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}}, time::Duration};
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 use tokio::sync::oneshot;
+#[path="epic_redeem_rejected.rs"]
+mod rejected_export;
 
 const INVALID: &str = "Некорректный список ключей.";
 const BUSY: &str = "Проверка ключей уже выполняется.";
@@ -36,7 +39,7 @@ enum PreparationStage { Account, Session, Connection, Keys }
 struct Item { id: String, index: usize, masked_key: String, status: Status, title: String, reason: Option<Reason>, #[serde(skip_serializing_if="Option::is_none")] diagnostic: Option<Diagnostic> }
 #[derive(Clone, Serialize)]
 #[serde(rename_all="camelCase")]
-pub(crate) struct Snapshot { batch_id: String, account_name: String, phase: Phase, items: Vec<Item>, #[serde(skip_serializing_if="Option::is_none")] expires_at: Option<u64>, #[serde(skip_serializing_if="Option::is_none")] wait_seconds: Option<u32>, #[serde(skip_serializing_if="Option::is_none")] wait_reason: Option<WaitReason>, #[serde(skip_serializing_if="Option::is_none")] preparation_stage:Option<PreparationStage> }
+pub(crate) struct Snapshot { batch_id: String, account_name: String, phase: Phase, items: Vec<Item>, #[serde(skip_serializing_if="Option::is_none")] expires_at: Option<u64>, #[serde(skip_serializing_if="Option::is_none")] wait_seconds: Option<u32>, #[serde(skip_serializing_if="Option::is_none")] wait_reason: Option<WaitReason>, #[serde(skip_serializing_if="Option::is_none")] preparation_stage:Option<PreparationStage>, #[serde(skip_serializing_if="Option::is_none")] rejected_count:Option<usize> }
 struct Secret(Vec<u8>);
 impl Secret { fn text(&self) -> &str { std::str::from_utf8(&self.0).expect("validated ASCII key") } }
 impl Drop for Secret { fn drop(&mut self) { self.0.fill(0); } }
@@ -78,7 +81,7 @@ trait Transport {
     fn request<'a>(&'a mut self, request: Request<'a>) -> Pin<Box<dyn Future<Output=Result<Reply,Reason>> + Send + 'a>>;
     fn diagnostic(&self)->Option<Diagnostic>{None}
 }
-struct Draft { snapshot: Snapshot, keys: Vec<Option<Secret>>, previews: Vec<Option<Product>>, account_id: String, last_evaluate:Option<tokio::time::Instant>, evaluated_count:usize }
+struct Draft { snapshot: Snapshot, keys: Vec<Option<Secret>>, previews: Vec<Option<Product>>, account_id: String, last_evaluate:Option<tokio::time::Instant>, evaluated_count:usize, rejected:rejected_export::Shared }
 #[derive(Clone, Copy)]
 struct PreparePolicy { budget:Duration, default_cooldown:Duration, server_second:Duration, max_cooldowns:usize, batch_size:usize, batch_pause:Duration }
 impl Default for PreparePolicy {fn default()->Self{Self{budget:Duration::from_secs(20*60),default_cooldown:Duration::from_secs(60),server_second:Duration::from_secs(1),max_cooldowns:10,batch_size:10,batch_pause:Duration::from_secs(60)}}}
@@ -117,7 +120,7 @@ fn input(keys: Vec<String>) -> Result<Draft,String> {
         items.push(Item { id:uuid::Uuid::new_v4().to_string(),index,masked_key:if valid {mask(value.text())} else {"****".into()},status:if valid&&!duplicate {Status::Pending}else{Status::Failed},title:String::new(),reason:if !valid {Some(Reason::InvalidInput)}else if duplicate {Some(Reason::Duplicate)}else{None},diagnostic:None });
         secrets.push(if valid&&!duplicate {Some(value)}else{None});
     }
-    let count=items.len(); Ok(Draft { snapshot:Snapshot {batch_id:uuid::Uuid::new_v4().to_string(),account_name:String::new(),phase:Phase::Preparing,items,expires_at:None,wait_seconds:None,wait_reason:None,preparation_stage:None},keys:secrets,previews:vec![None;count],account_id:String::new(),last_evaluate:None,evaluated_count:0 })
+    let count=items.len();let batch_id=uuid::Uuid::new_v4().to_string();let rejected=rejected_export::Cache::shared(&batch_id); Ok(Draft { snapshot:Snapshot {batch_id,account_name:String::new(),phase:Phase::Preparing,items,expires_at:None,wait_seconds:None,wait_reason:None,preparation_stage:None,rejected_count:None},keys:secrets,previews:vec![None;count],account_id:String::new(),last_evaluate:None,evaluated_count:0,rejected })
 }
 fn supported(p:&Product) -> bool { !p.namespace.is_empty() && (if p.entitlement_name_is_null {p.entitlement_name.is_empty()}else{!p.entitlement_name.is_empty()}) && !p.title.is_empty() && p.title.chars().count()<=240 && !p.title.chars().any(char::is_control) && p.eula_ids.is_empty() && [&p.namespace,&p.offer_id,&p.entitlement_name,&p.code_use_id].iter().all(|s|s.len()<=128 && !s.chars().any(char::is_control)) }
 fn same_product(a:&Product,b:&Product) -> bool {
@@ -142,8 +145,9 @@ fn redeem_refusal(reason:Option<Reason>)->Reason {
     match reason {Some(value @ (Reason::NotFound|Reason::AlreadyUsed|Reason::AlreadyOwned|Reason::Expired|Reason::RegionRestricted|Reason::AuthRequired))=>value,_=>Reason::Unknown}
 }
 fn failure(item:&mut Item,reason:Reason) { item.reason=Some(reason);item.status=if reason==Reason::Unknown {Status::Unknown}else if reason==Reason::RequiresOfficial {Status::RequiresOfficial}else{Status::Failed}; }
-fn stop(draft:&mut Draft,reason:Reason) { draft.snapshot.phase=Phase::Stopped;draft.snapshot.wait_seconds=Some(0);draft.snapshot.wait_reason=None;for item in &mut draft.snapshot.items {if matches!(item.status,Status::Pending|Status::Ready|Status::Checking) {item.status=Status::NotAttempted;item.reason=Some(reason);} } }
+fn stop(draft:&mut Draft,reason:Reason) {if matches!(reason,Reason::AccountChanged|Reason::AuthRequired){rejected_export::clear_draft(draft);} draft.snapshot.phase=Phase::Stopped;draft.snapshot.wait_seconds=Some(0);draft.snapshot.wait_reason=None;for item in &mut draft.snapshot.items {if matches!(item.status,Status::Pending|Status::Ready|Status::Checking) {item.status=Status::NotAttempted;item.reason=Some(reason);} } }
 fn abort_preparing(draft:&mut Draft,reason:Reason,cancel:&AtomicBool){
+    if matches!(reason,Reason::AccountChanged|Reason::AuthRequired){rejected_export::clear_draft(draft);}
     if cancel.load(Ordering::SeqCst)||reason==Reason::Cancelled{stop(draft,Reason::Cancelled);return;}
     draft.snapshot.wait_seconds=Some(0);draft.snapshot.wait_reason=None;
     for item in &mut draft.snapshot.items{if matches!(item.status,Status::Pending|Status::Checking){item.status=Status::NotAttempted;item.reason=Some(reason);}}
@@ -214,7 +218,7 @@ async fn prepare_core_with_policy(draft:&mut Draft,transport:&mut impl Transport
                     if let Some(p)=product{draft.snapshot.items[index].title=p.title.clone();draft.snapshot.items[index].status=Status::Ready;draft.snapshot.items[index].diagnostic=None;draft.previews[index]=Some(p);}
                     else{failure(&mut draft.snapshot.items[index],Reason::RequiresOfficial);abort_preparing(draft,Reason::RequiresOfficial,cancel);notify(&draft.snapshot);break 'rows;}
                 },
-                Ok(reply)=>{let reason=reply.reason.unwrap_or(Reason::Service);failure(&mut draft.snapshot.items[index],reason);if stops_batch(reason){abort_preparing(draft,reason,cancel);notify(&draft.snapshot);break 'rows;}},
+                Ok(reply)=>{let reason=reply.reason.unwrap_or(Reason::Service);failure(&mut draft.snapshot.items[index],reason);rejected_export::remember(draft,index,reason,reply.product.as_ref());if stops_batch(reason){abort_preparing(draft,reason,cancel);notify(&draft.snapshot);break 'rows;}},
                 Err(reason)=>{failure(&mut draft.snapshot.items[index],reason);abort_preparing(draft,reason,cancel);notify(&draft.snapshot);break 'rows;}
             }
             break;
@@ -277,7 +281,7 @@ async fn activate_core_with_policy(draft:&mut Draft,transport:&mut impl Transpor
         draft.snapshot.items[index].status=Status::Activating;draft.snapshot.items[index].reason=None;draft.snapshot.items[index].diagnostic=None;notify(&draft.snapshot);
         let preview=draft.previews[index].as_ref().expect("ready product").clone();
         let locked=key_request(draft,index,transport,Operation::Lock,"",locale,deadline).await;item_diagnostic(draft,index,transport,&locked);
-        let product=match locked{Ok(reply) if reply.ok=>reply.product,Ok(reply)=>{let reason=reply.reason.unwrap_or(Reason::Service);failure(&mut draft.snapshot.items[index],reason);if stops_batch(reason){stop(draft,reason);notify(&draft.snapshot);break;}processed+=1;notify(&draft.snapshot);if !activation_pause(draft,index,processed,delay,policy,cancel,deadline,&mut notify).await{break;}continue;},Err(reason)=>{failure(&mut draft.snapshot.items[index],reason);stop(draft,reason);notify(&draft.snapshot);break;}};
+        let product=match locked{Ok(reply) if reply.ok=>reply.product,Ok(reply)=>{let reason=reply.reason.unwrap_or(Reason::Service);failure(&mut draft.snapshot.items[index],reason);rejected_export::remember(draft,index,reason,reply.product.as_ref());if stops_batch(reason){stop(draft,reason);notify(&draft.snapshot);break;}processed+=1;notify(&draft.snapshot);if !activation_pause(draft,index,processed,delay,policy,cancel,deadline,&mut notify).await{break;}continue;},Err(reason)=>{failure(&mut draft.snapshot.items[index],reason);stop(draft,reason);notify(&draft.snapshot);break;}};
         if !product.as_ref().is_some_and(|p|supported(p)&&!p.code_use_id.is_empty()&&same_product(&preview,p)){if let Some(p)=product.as_ref(){if !p.code_use_id.is_empty(){let _=key_request(draft,index,transport,Operation::Unlock,&p.code_use_id,locale,deadline).await;}}failure(&mut draft.snapshot.items[index],Reason::RequiresOfficial);processed+=1;notify(&draft.snapshot);if !activation_pause(draft,index,processed,delay,policy,cancel,deadline,&mut notify).await{break;}continue;}
         let mut product=product.expect("validated lock product");draft.snapshot.items[index].diagnostic=None;
         if cancel.load(Ordering::SeqCst){let _=key_request(draft,index,transport,Operation::Unlock,&product.code_use_id,locale,deadline).await;draft.snapshot.items[index].status=Status::NotAttempted;draft.snapshot.items[index].reason=Some(Reason::Cancelled);stop(draft,Reason::Cancelled);notify(&draft.snapshot);break;}
@@ -298,7 +302,7 @@ async fn activate_core_with_policy(draft:&mut Draft,transport:&mut impl Transpor
                     }}
                     failure(&mut draft.snapshot.items[index],Reason::Unknown);stop(draft,Reason::Unknown);notify(&draft.snapshot);break 'rows;
                 },
-                Ok(reply)=>{let reason=redeem_refusal(reply.reason);failure(&mut draft.snapshot.items[index],reason);if reason==Reason::Unknown{stop(draft,reason);notify(&draft.snapshot);break 'rows;}let _=key_request(draft,index,transport,Operation::Unlock,&product.code_use_id,locale,deadline).await;if stops_batch(reason){stop(draft,reason);notify(&draft.snapshot);break 'rows;}break;},
+                Ok(reply)=>{let reason=redeem_refusal(reply.reason);failure(&mut draft.snapshot.items[index],reason);rejected_export::remember(draft,index,reason,reply.product.as_ref());if reason==Reason::Unknown{stop(draft,reason);notify(&draft.snapshot);break 'rows;}let _=key_request(draft,index,transport,Operation::Unlock,&product.code_use_id,locale,deadline).await;if stops_batch(reason){stop(draft,reason);notify(&draft.snapshot);break 'rows;}break;},
                 Err(_)=>{failure(&mut draft.snapshot.items[index],Reason::Unknown);stop(draft,Reason::Unknown);notify(&draft.snapshot);break 'rows;}
             }
         }
@@ -336,26 +340,28 @@ impl Transport for Bridge {
 
 struct Batch { draft:Draft, bridge:Bridge, _flow:super::epic::WebFlowGuard, _operation:crate::app_updates::Operation, _expiry:oneshot::Sender<()>, channel:tauri::ipc::Channel<Snapshot> }
 struct Current {id:String,cancel:Arc<AtomicBool>,phase:Phase}
-#[derive(Default)]struct Registry {current:Option<Current>,ready:Option<Batch>}
+#[derive(Default)]struct Registry {current:Option<Current>,ready:Option<Batch>,rejected:Option<rejected_export::Shared>}
 fn registry()->&'static Mutex<Registry>{static STORE:OnceLock<Mutex<Registry>>=OnceLock::new();STORE.get_or_init(||Mutex::new(Registry::default()))}
 struct Lease {id:String,retained:bool}
 impl Drop for Lease {fn drop(&mut self){if !self.retained {finish(&self.id);}}}
 fn finish(id:&str){if let Ok(mut state)=registry().lock(){if state.current.as_ref().is_some_and(|v|v.id==id){state.current=None;ACTIVE.store(false,Ordering::SeqCst);}}}
 fn phase(id:&str,value:Phase){if let Ok(mut state)=registry().lock(){if let Some(current)=state.current.as_mut().filter(|v|v.id==id){current.phase=value;}}}
-fn begin(id:&str)->Result<(Lease,Arc<AtomicBool>),String>{let mut state=registry().lock().map_err(|_|BUSY)?;if state.current.is_some(){return Err(BUSY.into());}let cancel=Arc::new(AtomicBool::new(false));state.current=Some(Current{id:id.into(),cancel:cancel.clone(),phase:Phase::Preparing});ACTIVE.store(true,Ordering::SeqCst);Ok((Lease{id:id.into(),retained:false},cancel))}
+fn begin(id:&str,rejected:rejected_export::Shared)->Result<(Lease,Arc<AtomicBool>),String>{let mut state=registry().lock().map_err(|_|BUSY)?;if state.current.is_some(){return Err(BUSY.into());}rejected_export::replace_slot(&mut state.rejected,rejected);let cancel=Arc::new(AtomicBool::new(false));state.current=Some(Current{id:id.into(),cancel:cancel.clone(),phase:Phase::Preparing});ACTIVE.store(true,Ordering::SeqCst);Ok((Lease{id:id.into(),retained:false},cancel))}
 fn now()->u64{std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()}
-fn publish(channel:&tauri::ipc::Channel<Snapshot>,snapshot:&Snapshot){phase(&snapshot.batch_id,snapshot.phase);let _=channel.send(snapshot.clone());}
+fn publish(channel:&tauri::ipc::Channel<Snapshot>,snapshot:&Snapshot){phase(&snapshot.batch_id,snapshot.phase);let cache=registry().lock().ok().and_then(|store|store.rejected.clone());let mut outgoing=snapshot.clone();outgoing.rejected_count=None;if let Some(cache)=cache{if let Ok(mut cache)=cache.lock(){if cache.matches(&snapshot.batch_id){let count=cache.touch();outgoing.rejected_count=(count>0).then_some(count);}}}let _=channel.send(outgoing);}
+pub(crate) fn clear_rejected_exports(){if let Ok(mut store)=registry().lock(){rejected_export::clear_slot(&mut store.rejected);}}
 // Release a preview immediately instead of making normal shutdown wait for its
 // five-minute expiry. An in-flight request is allowed to report its one result;
 // the cancellation flag prevents dispatching the next request or key.
 pub(crate) fn stop_for_shutdown(){
+    clear_rejected_exports();
     let ready={let mut store=match registry().lock(){Ok(s)=>s,Err(_)=>return};if let Some(current)=store.current.as_ref(){current.cancel.store(true,Ordering::SeqCst);}store.ready.take()};
     if let Some(mut batch)=ready{let id=batch.draft.snapshot.batch_id.clone();stop(&mut batch.draft,Reason::Cancelled);publish(&batch.channel,&batch.draft.snapshot);drop(batch);finish(&id);}
 }
 
 #[tauri::command]
 pub(crate) async fn epic_redeem_batch_prepare(app:tauri::AppHandle,state:tauri::State<'_,super::epic::EpicState>,keys:Vec<String>,on_progress:tauri::ipc::Channel<Snapshot>)->Result<Snapshot,String>{
-    let mut draft=input(keys)?;if draft.keys.iter().all(Option::is_none){return Err(INVALID.into());}let id=draft.snapshot.batch_id.clone();let(mut lease,cancel)=begin(&id)?;let operation=crate::app_updates::operation()?;draft.snapshot.preparation_stage=Some(PreparationStage::Account);publish(&on_progress,&draft.snapshot);let flow=super::epic::reserve_web_flow()?;
+    let mut draft=input(keys)?;if draft.keys.iter().all(Option::is_none){return Err(INVALID.into());}let id=draft.snapshot.batch_id.clone();let(mut lease,cancel)=begin(&id,draft.rejected.clone())?;let operation=crate::app_updates::operation()?;draft.snapshot.preparation_stage=Some(PreparationStage::Account);publish(&on_progress,&draft.snapshot);let flow=super::epic::reserve_web_flow()?;
     let(account_id,account_name)=super::epic::web_account_binding(&app,&state).await?;draft.account_id=account_id;draft.snapshot.account_name=account_name;
     if cancel.load(Ordering::SeqCst){stop(&mut draft,Reason::Cancelled);publish(&on_progress,&draft.snapshot);return Ok(draft.snapshot);}
     draft.snapshot.preparation_stage=Some(PreparationStage::Session);publish(&on_progress,&draft.snapshot);
@@ -389,8 +395,12 @@ pub(crate) fn epic_redeem_batch_cancel(batch_id:String)->bool{
 }
 #[tauri::command]
 pub(crate) fn epic_redeem_batch_discard(batch_id:String)->Result<(),String>{
+    if let Ok(store)=registry().lock(){rejected_export::clear_batch(&store.rejected,&batch_id);}
     let ready={let mut store=registry().lock().map_err(|_|BUSY)?;if store.current.as_ref().is_some_and(|v|v.id==batch_id)&&store.ready.is_none(){return Err(RUNNING.into());}if store.ready.as_ref().is_some_and(|v|v.draft.snapshot.batch_id==batch_id){store.ready.take()}else{None}};let released=ready.is_some();drop(ready);if released{finish(&batch_id);}Ok(())
 }
+
+#[tauri::command]
+pub(crate) async fn epic_redeem_batch_export_rejected(app:tauri::AppHandle,state:tauri::State<'_,super::epic::EpicState>,batch_id:String)->Result<rejected_export::ExportResult,String>{rejected_export::export(app,&state,batch_id).await}
 
 #[cfg(test)]
 #[path="epic_redeem_batch_tests.rs"]

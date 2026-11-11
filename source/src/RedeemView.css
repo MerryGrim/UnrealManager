@@ -33,7 +33,8 @@
 .redemption-methods>button>svg{color:var(--accent);flex-shrink:0}
 .redemption-methods>button>strong{font-size:15px;line-height:1.4;overflow-wrap:anywhere}
 .redemption-methods>button>span{font-size:12px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}
-.redemption-wizard .redemption-single-key{min-height:70px;max-height:110px;resize:none}
+.redemption-wizard .redemption-single-key{display:block;width:100%;height:44px;min-height:44px;max-height:44px;padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);font:13px/1.6 Consolas,monospace}
+.redemption-wizard .redemption-single-key[aria-invalid=true]{border-color:var(--danger,#ce4040)}
 .redemption-wizard .redemption-batch{margin-top:0}
 .redemption-wizard .redemption-official{margin:0;padding:0;border:0}
 .redemption-wizard .redemption-inline-confirm>h3{margin:0 0 16px;font-size:17px}
@@ -42,5 +43,7 @@
 .redemption-wizard-footer button{min-height:40px;white-space:normal;border-radius:9px}
 .redemption-wizard button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .redemption-wizard-body .redemption-table-scroll{max-height:min(320px,36vh)}
+.redemption-export-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;min-height:44px;margin:6px 0;color:var(--muted);font-size:12px}
+.redemption-export-bar button{min-height:36px;white-space:normal;border-radius:9px}
 @media(max-width:650px){.redemption-methods{grid-template-columns:1fr}.redemption-methods>button{min-height:0;gap:8px;padding:16px}.redemption-wizard-backdrop .redemption-wizard[role=dialog]>.modal-head{padding:16px}.redemption-wizard>.redemption-steps{padding:0 16px 12px;gap:8px 12px}.redemption-wizard-body{padding:16px}.redemption-wizard-footer{padding:12px 16px}.redemption-wizard-footer>.redemption-actions{flex-wrap:wrap;flex-basis:100%}.redemption-wizard-footer>.redemption-actions>button{flex:1 1 120px}}
 @media(max-height:500px){.redemption-wizard-backdrop{padding:8px}.redemption-wizard-backdrop .redemption-wizard[role=dialog]>.modal-head{padding:12px 18px 8px}.redemption-wizard>.redemption-steps{padding-bottom:8px}.redemption-wizard-body{padding:12px 18px}.redemption-wizard-footer{padding:10px 18px}}

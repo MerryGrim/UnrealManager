@@ -1,5 +1,11 @@
 {
   "en": {
+    "Экспорт отклонённых": "Export excluded keys",
+    "Сохранение TXT…": "Saving TXT…",
+    "Не удалось сохранить TXT. Выберите другое место и повторите.": "Could not save the TXT file. Choose another location and try again.",
+    "Сохранено отклонённых ключей: {count}": "Excluded keys saved: {count}",
+    "Полные ключи и причины будут записаны только в выбранный TXT.": "Full keys and reasons will only be written to the TXT file you choose.",
+    "Экспорт недоступен. Проверьте ключи заново.": "Export is unavailable. Check the keys again.",
     "Активация ключей": "Redeem keys",
     "Выберите способ активации.": "Choose how to redeem your keys.",
     "Один ключ": "Single key",
@@ -102,6 +108,12 @@
     "Обрабатываем по 10 ключей. После паузы продолжим автоматически.": "We process keys in groups of 10. Processing continues automatically after the pause."
   },
   "de": {
+    "Экспорт отклонённых": "Ausgeschlossene Schlüssel exportieren",
+    "Сохранение TXT…": "TXT wird gespeichert…",
+    "Не удалось сохранить TXT. Выберите другое место и повторите.": "Die TXT-Datei konnte nicht gespeichert werden. Wählen Sie einen anderen Speicherort und versuchen Sie es erneut.",
+    "Сохранено отклонённых ключей: {count}": "Gespeicherte ausgeschlossene Schlüssel: {count}",
+    "Полные ключи и причины будут записаны только в выбранный TXT.": "Vollständige Schlüssel und Gründe werden nur in die von Ihnen gewählte TXT-Datei geschrieben.",
+    "Экспорт недоступен. Проверьте ключи заново.": "Der Export ist nicht verfügbar. Prüfen Sie die Schlüssel erneut.",
     "Активация ключей": "Schlüssel einlösen",
     "Выберите способ активации.": "Wählen Sie, wie Sie Ihre Schlüssel einlösen möchten.",
     "Один ключ": "Einzelner Schlüssel",
@@ -204,6 +216,12 @@
     "Обрабатываем по 10 ключей. После паузы продолжим автоматически.": "Wir verarbeiten Schlüssel in Gruppen von 10. Nach der Pause geht es automatisch weiter."
   },
   "it": {
+    "Экспорт отклонённых": "Esporta codici esclusi",
+    "Сохранение TXT…": "Salvataggio TXT…",
+    "Не удалось сохранить TXT. Выберите другое место и повторите.": "Impossibile salvare il file TXT. Scegli un'altra posizione e riprova.",
+    "Сохранено отклонённых ключей: {count}": "Codici esclusi salvati: {count}",
+    "Полные ключи и причины будут записаны только в выбранный TXT.": "I codici completi e i motivi verranno scritti solo nel file TXT che scegli.",
+    "Экспорт недоступен. Проверьте ключи заново.": "Esportazione non disponibile. Controlla nuovamente i codici.",
     "Активация ключей": "Riscatta codici",
     "Выберите способ активации.": "Scegli come riscattare i codici.",
     "Один ключ": "Codice singolo",
@@ -306,6 +324,12 @@
     "Обрабатываем по 10 ключей. После паузы продолжим автоматически.": "Elaboriamo le chiavi in gruppi di 10. Dopo la pausa, l’elaborazione riprende automaticamente."
   },
   "es": {
+    "Экспорт отклонённых": "Exportar claves excluidas",
+    "Сохранение TXT…": "Guardando TXT…",
+    "Не удалось сохранить TXT. Выберите другое место и повторите.": "No se pudo guardar el archivo TXT. Elige otra ubicación e inténtalo de nuevo.",
+    "Сохранено отклонённых ключей: {count}": "Claves excluidas guardadas: {count}",
+    "Полные ключи и причины будут записаны только в выбранный TXT.": "Las claves completas y los motivos solo se escribirán en el archivo TXT que elijas.",
+    "Экспорт недоступен. Проверьте ключи заново.": "La exportación no está disponible. Comprueba las claves de nuevo.",
     "Активация ключей": "Canjear claves",
     "Выберите способ активации.": "Elige cómo quieres canjear tus claves.",
     "Один ключ": "Una clave",
@@ -408,6 +432,12 @@
     "Обрабатываем по 10 ключей. После паузы продолжим автоматически.": "Procesamos las claves en grupos de 10. El proceso continúa automáticamente después de la pausa."
   },
   "fr": {
+    "Экспорт отклонённых": "Exporter les clés exclues",
+    "Сохранение TXT…": "Enregistrement du TXT…",
+    "Не удалось сохранить TXT. Выберите другое место и повторите.": "Impossible d’enregistrer le fichier TXT. Choisissez un autre emplacement et réessayez.",
+    "Сохранено отклонённых ключей: {count}": "Clés exclues enregistrées : {count}",
+    "Полные ключи и причины будут записаны только в выбранный TXT.": "Les clés complètes et les motifs seront écrits uniquement dans le fichier TXT de votre choix.",
+    "Экспорт недоступен. Проверьте ключи заново.": "L’exportation est indisponible. Vérifiez les clés à nouveau.",
     "Активация ключей": "Activer des clés",
     "Выберите способ активации.": "Choisissez comment activer vos clés.",
     "Один ключ": "Une seule clé",
@@ -510,6 +540,12 @@
     "Обрабатываем по 10 ключей. После паузы продолжим автоматически.": "Les clés sont traitées par groupes de 10. Le traitement reprend automatiquement après la pause."
   },
   "zh": {
+    "Экспорт отклонённых": "导出排除的密钥",
+    "Сохранение TXT…": "正在保存 TXT…",
+    "Не удалось сохранить TXT. Выберите другое место и повторите.": "无法保存 TXT 文件。请选择其他位置后重试。",
+    "Сохранено отклонённых ключей: {count}": "已保存排除的密钥：{count}",
+    "Полные ключи и причины будут записаны только в выбранный TXT.": "完整密钥和原因只会写入您选择的 TXT 文件。",
+    "Экспорт недоступен. Проверьте ключи заново.": "无法导出。请重新检查密钥。",
     "Активация ключей": "激活密钥",
     "Выберите способ активации.": "选择激活方式。",
     "Один ключ": "单个密钥",
@@ -612,6 +648,12 @@
     "Обрабатываем по 10 ключей. После паузы продолжим автоматически.": "我们每组处理 10 个密钥。暂停结束后将自动继续。"
   },
   "ja": {
+    "Экспорт отклонённых": "対象外のキーをエクスポート",
+    "Сохранение TXT…": "TXTを保存中…",
+    "Не удалось сохранить TXT. Выберите другое место и повторите.": "TXTファイルを保存できませんでした。別の保存先を選択して、もう一度お試しください。",
+    "Сохранено отклонённых ключей: {count}": "保存した対象外のキー：{count}",
+    "Полные ключи и причины будут записаны только в выбранный TXT.": "完全なキーと理由は、選択したTXTファイルにのみ書き込まれます。",
+    "Экспорт недоступен. Проверьте ключи заново.": "エクスポートできません。キーをもう一度確認してください。",
     "Активация ключей": "キーの有効化",
     "Выберите способ активации.": "有効化の方法を選択してください。",
     "Один ключ": "単一のキー",
@@ -714,6 +756,12 @@
     "Обрабатываем по 10 ключей. После паузы продолжим автоматически.": "キーを 10 個ずつ処理します。待機後に自動で続行します。"
   },
   "ko": {
+    "Экспорт отклонённых": "제외된 키 내보내기",
+    "Сохранение TXT…": "TXT 저장 중…",
+    "Не удалось сохранить TXT. Выберите другое место и повторите.": "TXT 파일을 저장하지 못했습니다. 다른 위치를 선택하고 다시 시도하세요.",
+    "Сохранено отклонённых ключей: {count}": "저장된 제외 키: {count}",
+    "Полные ключи и причины будут записаны только в выбранный TXT.": "전체 키와 사유는 선택한 TXT 파일에만 기록됩니다.",
+    "Экспорт недоступен. Проверьте ключи заново.": "내보낼 수 없습니다. 키를 다시 확인하세요.",
     "Активация ключей": "키 활성화",
     "Выберите способ активации.": "활성화 방법을 선택하세요.",
     "Один ключ": "단일 키",

@@ -96,3 +96,12 @@ The retained 0.9.8 batch and 0.9.0 gallery screenshots keep their actual version
 and pixels; they do not depict the new wizard or establish real-account, clean
 Windows or measured physical GPU acceptance for 0.9.12. Website checks apply to
 the static nine-language/two-theme page and its download links only.
+
+
+The 0.9.12 single-key mode uses a true one-line field and rejects pasted or
+dropped lists rather than joining their lines. A separate explicit export
+saves already-used keys and keys for products already owned to a user-chosen
+local TXT, including full keys, product names and distinct reasons. An owned
+product does not prove that a key was used. Full keys are not returned to the
+web interface for this export, and application settings/history do not retain
+them. Export is an explicit local file operation, not part of activation.
