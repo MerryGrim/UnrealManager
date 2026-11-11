@@ -1,5 +1,25 @@
 # Change notes
 
+## 0.9.12
+
+- Center the main window once during startup. Restoring an existing window from
+  the tray keeps its current position.
+- Move key redemption from a full application page into a separate wizard dialog
+  opened from the account menu. Choose a single key, a batch/TXT list or the
+  official Epic page. The wizard uses the existing application WebView.
+- Keep the wizard header and actions visible while input and results scroll.
+  A single-key input rejects a list instead of silently combining its lines.
+- Retain product/account review, a separate explicit confirmation, activation of
+  ready rows only, native quota countdowns and guarded batch continuation. The
+  existing official Epic window remains available and receives no input keys
+  from the wizard automatically.
+- Preserve existing sessions, Vault data, saved tasks and projects. No runtime
+  dependency, permanent process or new WebView for the wizard UI is added;
+  software-rendering arguments remain configured before window creation.
+
+Validation for this version is recorded separately. The retained 0.9.8 and 0.9.0
+demonstration screenshots are not new wizard, real-account or GPU measurements.
+
 ## 0.9.11
 
 - Restore Fab's exact `CODE_PLUGIN` catalogue type so plugins remain visible

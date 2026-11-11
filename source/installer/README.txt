@@ -1,4 +1,4 @@
-Unreal Manager 0.9.11 — Nyanma
+Unreal Manager 0.9.12 — Nyanma
 https://github.com/MerryGrim
 
 Release information, downloads and signed application updates:
@@ -45,6 +45,17 @@ Unreal Engine, Epic Games and Fab belong to their owners.
 
 Installer tooling: Inno Setup 7.1.0, https://jrsoftware.org/isdl.php
 WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
+
+0.9.12
+- Center the main window on startup; restoring it from the tray keeps its position.
+- Open the key-redemption wizard from the account menu: one key, a batch/TXT list
+  or the official Epic page. The wizard stays in the existing application WebView
+  with visible header/actions and scrolling results.
+- Preserve product/account review, explicit confirmation, ready-only activation,
+  native quota countdowns and guarded continuation. The existing official Epic
+  window remains available; keys are not copied into it automatically.
+- Keep existing sessions, Vault data, saved tasks and projects. No new runtime
+  dependency, permanent process or extra wizard WebView is added.
 
 0.9.11
 - Restore Fab CODE_PLUGIN entries and recognize complete projects before download
@@ -172,8 +183,8 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - File backups support rollback if apply or native startup confirmation fails.
 - Public documentation and examples use generic or synthetic paths.
 
-In 0.9.11, use Settings > App updates > Check for updates.
-Beta.7 and newer can receive 0.9.11 through the application updater. Stable
+In 0.9.12, use Settings > App updates > Check for updates.
+Beta.7 and newer can receive 0.9.12 through the application updater. Stable
 releases are available in both the stable and beta update channels.
 In beta.7, use Settings > Unreal Manager updates > Check for updates.
 Beta.6 needs one manual upgrade to beta.7 or newer to receive this updater.
