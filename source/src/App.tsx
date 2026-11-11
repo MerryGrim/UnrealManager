@@ -19,9 +19,9 @@ import { ProjectsView } from './ProjectsView';
 import { useVault } from './Vault';
 import { useCallback, useEffect, useState } from 'react';
 import { useEpic, FabLibrary, RedeemView } from './EpicLibrary';
-import { Boxes, Download, FolderKanban, HardDrive, Home, Library, PackageOpen, PlugZap, RefreshCw, Rocket, Settings, Wrench } from 'lucide-react';
+import { Boxes, Download, FolderKanban, HardDrive, Home, Library, PlugZap, RefreshCw, Rocket, Settings, Wrench } from 'lucide-react';
 import { scanEngines, scanProjects, type EngineInstall, type UnrealProject } from './lib/backend';
-type Section = 'home' | 'engines' | 'projects' | 'library' | 'plugins' | 'updates' | 'downloads' | 'settings' | 'redeem';
+type Section = 'home' | 'engines' | 'projects' | 'library' | 'plugins' | 'updates' | 'downloads' | 'settings';
 const nav: {
     id: Section;
     label: string;
@@ -35,7 +35,6 @@ const nav: {
     { id: 'plugins', label: 'Плагины', icon: PlugZap },
     { id: 'updates', label: 'Обновления', icon: RefreshCw, badge: 0 },
     { id: 'downloads', label: 'Загрузки', icon: Download },
-    { id: 'redeem', label: 'Активировать ключ', icon: PackageOpen },
     { id: 'settings', label: 'Настройки', icon: Settings },
 ];
 export default function App() {
@@ -44,7 +43,9 @@ export default function App() {
     const appUpdates = useAppUpdates();
     const [about, setAbout] = useState(false);
     const epic = useEpic();
-    useEpicAuthLogin(epic.openLogin);
+    const [redeemOpen, setRedeemOpen] = useState(false);
+    const openLogin = () => { setRedeemOpen(false); epic.openLogin(); };
+    useEpicAuthLogin(openLogin);
     const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
     const [section, setSection] = useState<Section>('home');
     const [settingsCategory, setSettingsCategory] = useState<SettingsCategory>('interface');
@@ -86,7 +87,7 @@ export default function App() {
         : vault.tileProgress ? `${vault.tileProgress.phase} · ${vault.tileProgress.percent}%`
         : vault.busy ? 'Операция с хранилищем…' : vault.queuedCount ? vault.queue.paused ? 'Очередь приостановлена' : 'Ожидает завершения текущей операции' : 'Нет активных загрузок';
     return <div className="app-shell">
-    <WorkspaceHeader section={section} items={nav.filter(item => ['engines', 'projects', 'library', 'plugins', 'updates'].includes(item.id)).map(item => ({...item,label:item.id === 'engines' ? 'Движки' : item.label,badge:item.id === 'updates' ? updateCount : undefined}))} onNavigate={value => setSection(value as Section)} accountMenu={<AccountMenu account={epic.account} busy={epic.accountBusy} onLogin={epic.openLogin} onLogout={epic.logout} onRedeem={() => setSection('redeem')} onAbout={() => setAbout(true)}/>}/>
+    <WorkspaceHeader section={section} items={nav.filter(item => ['engines', 'projects', 'library', 'plugins', 'updates'].includes(item.id)).map(item => ({...item,label:item.id === 'engines' ? 'Движки' : item.label,badge:item.id === 'updates' ? updateCount : undefined}))} onNavigate={value => setSection(value as Section)} accountMenu={<AccountMenu account={epic.account} busy={epic.accountBusy} onLogin={openLogin} onLogout={epic.logout} onRedeem={() => setRedeemOpen(true)} onAbout={() => setAbout(true)}/>}/>
     <PageActionsTarget.Provider value={actionsTarget}><main className={`main workspace-main ${section === 'home' ? 'home-main' : ''}`}>
       {tr(section !== 'home' && <header className="workspace-heading"><h1>{tr(title(section))}</h1><div className="page-actions" ref={setActionsTarget}></div></header>)}
       <div className="workspace-page">      {tr(error ? <div role="alert" className="empty">{tr(error)}<button onClick={refresh}>{tr("Повторить")}</button></div> : section === 'home' && <HomeView downloaded={vault.items.length} engines={engines} projects={projects} onGo={setSection} onRemoved={path => setProjects(current => current.filter(p => p.path !== path))}/>)}      
@@ -97,16 +98,16 @@ export default function App() {
       <PageActionsTarget.Provider value={section === 'updates' ? actionsTarget : null}><div className="library-view" hidden={section !== 'updates'}><UpdatesView transfers={vault.updateTransfers} items={vault.items} account={epic.account} busy={vault.busy} onDownload={vault.openUpdate} onProjectUpdate={vault.openProjectUpdate} onCount={setUpdateCount}/></div></PageActionsTarget.Provider>
       {section === 'downloads' && vault.view}
       {section === 'settings' && <SettingsView category={settingsCategory} onCategoryChange={setSettingsCategory} appUpdates={appUpdates} vaultBusy={vault.busy||!!engineProgress} onVaultChanged={vault.refresh} epicVaultSettings={vault.epicSettings}/>}
-      <div className="library-view" hidden={section !== 'redeem'}><RedeemView active={section === 'redeem'} account={epic.account} onActivated={() => setLibraryRefresh(n => n + 1)} onLibrary={() => { setSection('library'); setLibraryRefresh(n => n + 1); }}/></div>
       </div>
     </main></PageActionsTarget.Provider>
     <footer className="workspace-footer"><button className={section === 'downloads' ? 'active' : ''} aria-current={section === 'downloads' ? 'page' : undefined} onClick={() => setSection('downloads')}><Download size={16}/>{tr(downloadPhase)}{vault.queuedCount>0&&<> · {tr('В очереди')}: {vault.queuedCount}</>}</button><button className={section === 'settings' ? 'active' : ''} aria-current={section === 'settings' ? 'page' : undefined} onClick={() => setSection('settings')}><Settings size={16}/>{tr("Настройки")}</button></footer>
     {tr(epic.accountError && <div className="account-notice" role="alert">{isEpicAuthRequired(epic.accountError) ? <EpicAuthError error={epic.accountError}/> : tr(epic.accountError)}<span>{tr("Вход доступен в меню аккаунта справа сверху.")}</span></div>)}
     {section !== 'settings' && <AppUpdateNotice updates={appUpdates} onOpen={() => { setSettingsCategory('appupdates'); setSection('settings'); }}/>}
     <ClosePrompt/>{tr(epic.dialog)}{tr(vault.dialog)}{tr(about && <AboutDialog onClose={() => setAbout(false)}/>)}
+    <RedeemView active={redeemOpen} onClose={() => setRedeemOpen(false)} account={epic.account} onActivated={() => setLibraryRefresh(n => n + 1)} onLibrary={() => { setRedeemOpen(false); setSection('library'); setLibraryRefresh(n => n + 1); }}/>
   </div>;
 }
-function title(s: Section) { return ({ home: 'Главная', engines: 'Unreal Engine', projects: 'Проекты', library: 'Библиотека', plugins: 'Плагины', updates: 'Обновления', downloads: 'Загрузки', settings: 'Настройки', redeem: 'Активировать ключ' } as const)[s]; }
+function title(s: Section) { return ({ home: 'Главная', engines: 'Unreal Engine', projects: 'Проекты', library: 'Библиотека', plugins: 'Плагины', updates: 'Обновления', downloads: 'Загрузки', settings: 'Настройки' } as const)[s]; }
 function HomeView({ engines, projects, downloaded, onGo, onRemoved }: {
     downloaded: number;
     engines: EngineInstall[];

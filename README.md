@@ -4,8 +4,8 @@ An independent, lightweight Unreal Engine manager for **Windows x64**.
 Manage engines, projects, Fab assets, Vault content and plugins in one desktop
 application, without a game storefront.
 
-**Version 0.9.11.** Download the installer or portable edition, or build from source.
-See the [0.9.11 change notes](source/CHANGELOG.md).
+**Version 0.9.12.** Download the installer or portable edition, or build from source.
+See the [0.9.12 change notes](source/CHANGELOG.md).
 
 [Website & screenshots](https://merrygrim.github.io/UnrealManager/) ·
 [Build instructions](source/README.md) · [Verification](verification/README.md) ·
@@ -25,6 +25,8 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 
 ## Features
 
+- Open the main window centered on startup; restoring it from the tray keeps its current position.
+
 - Use one integrated header for navigation, account, theme and window controls,
   keeping the existing native minimize/maximize/close and Ask/Tray/Exit policy.
 - Choose a persistent light or dark app theme from the header or Interface settings.
@@ -37,6 +39,9 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 - Record projects successfully created through the app in any folder, without
   a background watcher. A list-update failure is reported without deleting the project.
 - Sign in through Epic's website and browse the Fab library.
+- Open the key-redemption wizard from the account menu and choose one key, a
+  TXT batch or the official Epic page. The wizard stays inside the existing app
+  WebView; its header and actions remain visible while results scroll.
 - Enter product keys in the app or import a TXT batch, preview products and the
   Epic account, then explicitly confirm redemption. The result list has exactly
   three columns: key suffix, product title, and status with a reason. Keys are
@@ -100,7 +105,7 @@ stable/beta channels, a startup check at most daily, manual checks, verified dow
 and apply with restart. No update service or permanent helper is installed.
 See [updater and release details](source/UPDATES.md).
 
-Version 0.9.11 retains conflict blocking. Optional overwrite/replacement with
+Version 0.9.12 retains conflict blocking. Optional overwrite/replacement with
 explicit confirmation and a backup is planned for a later update.
 
 ## Lightweight rendering
@@ -114,11 +119,11 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
-## Download 0.9.11
+## Download 0.9.12
 
-[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.11/UnrealManager-0.9.11-Windows-x64-Setup.exe) ·
-[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.11/UnrealManager-0.9.11-Windows-x64-Portable.zip) ·
-[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.11)
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.12/UnrealManager-0.9.12-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.12/UnrealManager-0.9.12-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.12)
 
 The installer installs for the current user. For portable use, extract the ZIP to
 a writable directory and keep `portable.marker` beside `unreal-manager.exe`.

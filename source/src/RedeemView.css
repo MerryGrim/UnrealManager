@@ -17,3 +17,30 @@
 :root[data-theme="light"] .redemption-row-failed td:last-child>strong{color:var(--danger)}
 :root[data-theme="light"] :is(.redemption-row-unknown td:last-child>strong,.native-redemption .redemption-warning){color:var(--warning)}
 :root[data-theme="light"] .redemption-input-form textarea[aria-invalid=true]{border-color:var(--danger)}
+
+/* One modal in the existing WebView; headings and actions stay outside its scroll area. */
+.redemption-wizard-backdrop{z-index:1100;padding:16px;overflow:hidden}
+.redemption-wizard-backdrop .redemption-wizard{width:min(940px,100%);height:min(720px,100%);max-height:100%;min-height:0;padding:0;margin:0;display:flex;flex-direction:column;overflow:hidden;background:var(--panel);border-color:var(--border);border-radius:18px}
+.redemption-wizard-backdrop .redemption-wizard[role=dialog]>.modal-head{position:relative;top:auto;margin:0;padding:20px 24px 14px;background:var(--panel);align-items:center;flex-shrink:0}
+.redemption-wizard>.redemption-steps{display:flex;flex-wrap:wrap;gap:8px 16px;list-style:none;margin:0;padding:0 24px 16px;font-size:12px;color:var(--muted);flex-shrink:0;border-bottom:1px solid var(--border)}
+.redemption-wizard-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:20px 24px;scrollbar-gutter:stable}
+.redemption-wizard-body>.native-redemption{width:100%;max-width:none;margin:0;padding:0!important;border:0;background:transparent;box-shadow:none}
+.redemption-wizard-body .redemption-input-form{margin-top:0}
+.redemption-wizard-body .redemption-input-form>label{margin-top:0}
+.redemption-wizard-body .redemption-intro{margin:0 0 16px;font-size:14px;color:var(--text)}
+.redemption-methods{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:20px}
+.redemption-methods>button{display:flex;flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:14px;min-width:0;min-height:190px;padding:20px;text-align:left;border-radius:12px;background:var(--panel2);color:var(--text)}
+.redemption-methods>button>svg{color:var(--accent);flex-shrink:0}
+.redemption-methods>button>strong{font-size:15px;line-height:1.4;overflow-wrap:anywhere}
+.redemption-methods>button>span{font-size:12px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}
+.redemption-wizard .redemption-single-key{min-height:70px;max-height:110px;resize:none}
+.redemption-wizard .redemption-batch{margin-top:0}
+.redemption-wizard .redemption-official{margin:0;padding:0;border:0}
+.redemption-wizard .redemption-inline-confirm>h3{margin:0 0 16px;font-size:17px}
+.redemption-wizard-footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;padding:16px 24px;border-top:1px solid var(--border);background:var(--panel);flex-shrink:0}
+.redemption-wizard-footer>.redemption-actions{margin:0;justify-content:flex-end;flex:1;min-width:0}
+.redemption-wizard-footer button{min-height:40px;white-space:normal;border-radius:9px}
+.redemption-wizard button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.redemption-wizard-body .redemption-table-scroll{max-height:min(320px,36vh)}
+@media(max-width:650px){.redemption-methods{grid-template-columns:1fr}.redemption-methods>button{min-height:0;gap:8px;padding:16px}.redemption-wizard-backdrop .redemption-wizard[role=dialog]>.modal-head{padding:16px}.redemption-wizard>.redemption-steps{padding:0 16px 12px;gap:8px 12px}.redemption-wizard-body{padding:16px}.redemption-wizard-footer{padding:12px 16px}.redemption-wizard-footer>.redemption-actions{flex-wrap:wrap;flex-basis:100%}.redemption-wizard-footer>.redemption-actions>button{flex:1 1 120px}}
+@media(max-height:500px){.redemption-wizard-backdrop{padding:8px}.redemption-wizard-backdrop .redemption-wizard[role=dialog]>.modal-head{padding:12px 18px 8px}.redemption-wizard>.redemption-steps{padding-bottom:8px}.redemption-wizard-body{padding:12px 18px}.redemption-wizard-footer{padding:10px 18px}}

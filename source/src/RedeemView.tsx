@@ -1,5 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
-import { CheckCircle2, ExternalLink, FileUp, KeyRound, RefreshCw, Square, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ExternalLink, FileUp, KeyRound, List, RefreshCw, Square, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { EpicAuthError, isEpicAuthRequired } from './EpicAuthError';
@@ -40,7 +40,8 @@ export type RedemptionSnapshot = {
 };
 type OfficialResult = { status: 'ready' | 'success' | 'failed' | 'unknown'; title: string; errorCode: string };
 type Work = 'prepare' | 'activate' | 'official' | 'discard' | null;
-type UiError = 'auth' | 'busy' | 'operation' | 'file' | 'invalidInput' | 'checkingBusy' | 'previewExpired' | 'activationBusy' | null;
+type UiError = 'auth' | 'busy' | 'operation' | 'file' | 'invalidInput' | 'checkingBusy' | 'previewExpired' | 'activationBusy' | 'singleKey' | null;
+type RedemptionMode = 'single' | 'batch' | 'official';
 
 const statusLabels: Record<RedemptionStatus, string> = {
     pending: 'В очереди', checking: 'Проверяем ключ…', ready: 'Готов к активации', activating: 'Активируем…',
@@ -60,6 +61,7 @@ const reasonLabels: Record<RedemptionReason, string> = {
     unknown: 'Не повторяйте активацию автоматически. Проверьте результат у Epic.', cancelled: 'Обработка остановлена пользователем.',
 };
 const errorLabels = {
+    singleKey: 'В этом режиме можно проверить только один ключ.',
     busy: 'Сначала закройте окно Epic Games.', operation: 'Не удалось выполнить операцию. Попробуйте позже или откройте официальный сайт Epic.',
     file: 'Не удалось прочитать TXT. Выберите другой файл.', invalidInput: 'Некорректный список ключей.', checkingBusy: 'Проверка ключей уже выполняется.',
     previewExpired: 'Подтверждение ключей устарело. Проверьте ключи заново.', activationBusy: 'Сначала остановите текущую активацию.',
@@ -113,13 +115,16 @@ const issueLabel = (issue: RedemptionBatchIssue) => {
     }
 };
 
-export function RedeemView({ account, active, onLibrary, onActivated }: {
+export function RedeemView({ account, active, onLibrary, onActivated, onClose }: {
     account: { signedIn: boolean; displayName: string | null };
     active: boolean;
     onLibrary: () => void;
     onActivated: () => void;
+    onClose?: () => void;
 }) {
     useLanguage();
+    const wizard = !!onClose;
+    const [mode, setMode] = useState<RedemptionMode | null>(wizard ? null : 'batch');
     const [draft, setDraft] = useState('');
     const [issues, setIssues] = useState<RedemptionBatchIssue[]>([]);
     const [snapshot, setSnapshot] = useState<RedemptionSnapshot | null>(null);
@@ -133,6 +138,7 @@ export function RedeemView({ account, active, onLibrary, onActivated }: {
     const [stoppedBeforeAcceptance, setStoppedBeforeAcceptance] = useState(false);
     const [preparationStage, setPreparationStage] = useState<RedemptionSnapshot['preparationStage']>();
     const field = useRef<HTMLTextAreaElement>(null), fileInput = useRef<HTMLInputElement>(null), heading = useRef<HTMLHeadingElement>(null);
+    const wizardHeading = useRef<HTMLHeadingElement>(null), confirmationInput = useRef<HTMLInputElement>(null);
     const mounted = useRef(true), lock = useRef(false), workRef = useRef<Work>(null), current = useRef<RedemptionSnapshot | null>(null);
     const sequence = useRef(0), importSequence = useRef(0), cancelWanted = useRef(false), cancelSent = useRef<string | null>(null), resetAfterWork = useRef(false);
     const activeProgressToken = useRef<number | null>(null);
@@ -182,14 +188,22 @@ export function RedeemView({ account, active, onLibrary, onActivated }: {
     useEffect(() => {
         const changedAccount = previousAccount.current !== accountIdentity;
         previousAccount.current = accountIdentity;
-        if (!active || changedAccount) privacyReset();
+        if (!active || changedAccount) {
+            privacyReset();
+            if (wizard) setMode(null);
+        }
     }, [active, accountIdentity]);
     useEffect(() => {
         if (active && snapshot) heading.current?.focus({ preventScroll: true });
     }, [active, snapshot?.batchId]);
     useEffect(() => {
         if (active && !snapshot && !work) field.current?.focus({ preventScroll: true });
-    }, [active, !!snapshot, work]);
+    }, [active, !!snapshot, work, mode]);
+    useEffect(() => {
+        if (!wizard || !active) return;
+        if (confirm) confirmationInput.current?.focus({ preventScroll: true });
+        else if (!mode || mode === 'official') wizardHeading.current?.focus({ preventScroll: true });
+    }, [wizard, active, mode, confirm]);
     useEffect(() => {
         mounted.current = true;
         return () => {
@@ -264,6 +278,11 @@ export function RedeemView({ account, active, onLibrary, onActivated }: {
         importSequence.current += 1;
         const parsed = parseRedemptionBatch(draft);
         if (!parsed.ok) { setIssues(parsed.issues); return; }
+        if (mode === 'single' && (parsed.keys.length !== 1 || parsed.duplicateLines.length !== 0)) {
+            for (const row of parsed.keys) row.key = '';
+            setError('singleKey');
+            return;
+        }
         lock.current = true;
         workRef.current = 'prepare';
         setWork('prepare'); setError(null); setIssues([]); setOfficial(null);
@@ -379,24 +398,61 @@ export function RedeemView({ account, active, onLibrary, onActivated }: {
         : snapshot?.phase === 'activating' || work === 'activate' ? 'Активируем ключи…'
         : snapshot?.phase === 'stopped' ? 'Обработка остановлена' : snapshot?.phase === 'completed' ? 'Обработка завершена' : 'Проверьте продукты перед активацией';
 
-    return <div className="content"><section className="redeem-panel native-redemption">
-        <h2>{tr('Активировать ключи')}</h2>
-        <p>{tr('Сначала проверьте продукты и аккаунт. Активация начнётся только после отдельного подтверждения.')}</p>
-        <ol className="redemption-steps" aria-label={tr('Этапы активации')}>
-            {['Ввод ключей', 'Проверка продуктов', 'Результаты'].map((label, index) => <li key={label} aria-current={(!snapshot ? 0 : snapshot.phase === 'completed' || snapshot.phase === 'stopped' ? 2 : 1) === index ? 'step' : undefined}><span aria-hidden="true">{index + 1}</span>{tr(label)}</li>)}
-        </ol>
-        {!snapshot && <form onSubmit={event => void prepare(event)} className="redemption-input-form">
-            <label htmlFor="redemption-keys">{tr('Ключи продуктов')}</label>
-            <textarea ref={field} id="redemption-keys" value={draft} onChange={event => { importSequence.current += 1; setDraft(event.target.value); setIssues([]); setError(null); setStoppedBeforeAcceptance(false); }} disabled={busy} rows={4} maxLength={REDEMPTION_BATCH_LIMITS.maxUtf8Bytes} autoComplete="off" autoCapitalize="off" spellCheck={false} aria-describedby="redemption-input-help" aria-invalid={issues.length > 0}/>
-            <p id="redemption-input-help" className="muted">{tr('Один ключ в строке. До 100 уникальных ключей; TXT до 64 КиБ. Пустые строки и повторы пропускаются.')}</p>
+    const closeWizard = () => { if (!lock.current) onClose?.(); };
+    const chooseAgain = async () => {
+        if (lock.current) return;
+        await startNew();
+        if (!current.current && !workRef.current) { setConfirm(false); setAcknowledged(false); setMode(null); }
+    };
+    const dismissConfirmation = () => { setConfirm(false); setAcknowledged(false); };
+    const inputActions = <>
+        {mode !== 'single' && <button type="button" disabled={busy} onClick={() => fileInput.current?.click()}><FileUp size={17}/>{tr('Импортировать TXT')}</button>}
+        <button className="primary" type="submit" form="redemption-input-form" disabled={busy || !draft.trim()}><KeyRound size={17}/>{tr('Далее — проверить продукты')}</button>
+    </>;
+    const batchActions = <>
+        <button type="button" disabled={busy} onClick={() => void startNew()}>{tr('Ввести другие ключи')}</button>
+        <button type="button" className="primary" disabled={busy || !!error || !snapshot?.accountName.trim() || snapshot.phase !== 'ready' || readyCount === 0 || unknown} onClick={() => { setAcknowledged(false); setConfirm(true); }}>{tr('Активировать готовые ключи')} ({number(readyCount)})</button>
+        <button type="button" disabled={busy} onClick={onLibrary}><RefreshCw size={17}/>{tr('Открыть и обновить библиотеку')}</button>
+    </>;
+    const officialAction = <button type="button" className={wizard ? 'primary' : undefined} disabled={busy} onClick={() => void openOfficial()}><ExternalLink size={17}/>{tr(work === 'official' ? 'Окно активации открыто' : 'Открыть окно активации')}</button>;
+    const stopAction = <button type="button" disabled={stopping} onClick={stop}><Square size={15}/>{tr('Остановить после текущего')}</button>;
+    const confirmationBody = <>
+        <p>{tr('Аккаунт Epic')}: <strong>{snapshot?.accountName}</strong></p>
+        <p>{tr('Готово к активации')}: <strong>{number(readyCount)}</strong></p>
+        <p>{tr('Будут активированы только готовые ключи. Действие нельзя отменить. Остановка не отменяет уже выполненную активацию.')}</p>
+        <label className="redemption-confirm-check"><input ref={confirmationInput} data-modal-initial-focus type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)}/><span>{tr('Подтверждаю аккаунт и выбранные продукты.')}</span></label>
+    </>;
+    const confirmationActions = <><button type="button" onClick={dismissConfirmation}>{tr('Назад')}</button><button type="button" className="primary" disabled={!acknowledged || busy} onClick={() => void activate()}><CheckCircle2 size={17}/>{tr('Активировать готовые ключи')} ({number(readyCount)})</button></>;
+    const stageLabels = mode === 'official' ? ['Способ активации', 'Официальная страница Epic'] : ['Способ активации', 'Ввод ключей', 'Проверка продуктов', 'Результаты'];
+    const stageIndex = !mode ? 0 : mode === 'official' ? 1 : !snapshot ? 1 : snapshot.phase === 'completed' || snapshot.phase === 'stopped' || snapshot.phase === 'activating' ? 3 : 2;
+    const steps = <ol className="redemption-steps" aria-label={tr('Этапы активации')}>
+        {(wizard ? stageLabels : ['Ввод ключей', 'Проверка продуктов', 'Результаты']).map((label, index) => <li key={label} aria-current={(wizard ? stageIndex : !snapshot ? 0 : snapshot.phase === 'completed' || snapshot.phase === 'stopped' ? 2 : 1) === index ? 'step' : undefined}><span aria-hidden="true">{index + 1}</span>{tr(label)}</li>)}
+    </ol>;
+    if (wizard && !active) return null; // Keep operation/channel ownership mounted; active=false runs the privacy reset.
+    const content = <section className="redeem-panel native-redemption">
+        {!wizard && <><h2>{tr('Активировать ключи')}</h2><p>{tr('Сначала проверьте продукты и аккаунт. Активация начнётся только после отдельного подтверждения.')}</p>{steps}</>}
+        {wizard && !mode && <>
+            <p className="redemption-intro">{tr('Выберите способ активации.')}</p>
+            {account.signedIn && <p className="redemption-account">{tr('Аккаунт Epic')}: <strong>{account.displayName || 'Epic Games'}</strong></p>}
+            <div className="redemption-methods">
+                <button type="button" data-mode="single" disabled={busy} onClick={() => setMode('single')}><KeyRound size={25} aria-hidden="true"/><strong>{tr('Один ключ')}</strong><span>{tr('Введите один ключ и проверьте продукт перед активацией.')}</span></button>
+                <button type="button" data-mode="batch" disabled={busy} onClick={() => setMode('batch')}><List size={25} aria-hidden="true"/><strong>{tr('Пакетная активация')}</strong><span>{tr('Вставьте список ключей или загрузите TXT.')}</span></button>
+                <button type="button" data-mode="official" disabled={busy} onClick={() => setMode('official')}><ExternalLink size={25} aria-hidden="true"/><strong>{tr('Официальная страница Epic')}</strong><span>{tr('Активируйте ключ вручную в отдельном окне Epic Games.')}</span></button>
+            </div>
+        </>}
+        {wizard && confirm && snapshot ? <div className="redemption-inline-confirm"><h3>{tr('Подтвердите активацию')}</h3>{confirmationBody}</div> : <>
+        {mode && mode !== 'official' && !snapshot && <form id="redemption-input-form" onSubmit={event => void prepare(event)} className="redemption-input-form">
+            <label htmlFor="redemption-keys">{tr(mode === 'single' ? 'Ключ продукта' : 'Ключи продуктов')}</label>
+            <textarea ref={field} id="redemption-keys" className={mode === 'single' ? 'redemption-single-key' : undefined} value={draft} onChange={event => { importSequence.current += 1; setDraft(event.target.value); setIssues([]); setError(null); setStoppedBeforeAcceptance(false); }} disabled={busy} rows={mode === 'single' ? 2 : 4} maxLength={REDEMPTION_BATCH_LIMITS.maxUtf8Bytes} autoComplete="off" autoCapitalize="off" spellCheck={false} aria-describedby="redemption-input-help" aria-invalid={issues.length > 0 || error === 'singleKey'}/>
+            <p id="redemption-input-help" className="muted">{tr(mode === 'single' ? 'Введите один ключ. Для нескольких ключей выберите пакетную активацию.' : 'Один ключ в строке. До 100 уникальных ключей; TXT до 64 КиБ. Пустые строки и повторы пропускаются.')}</p>
             <p className="muted">{tr('Ключи используются только для этой операции и не сохраняются в настройках или истории.')}</p>
-            <input ref={fileInput} className="redemption-file-input" type="file" accept=".txt,text/plain" onChange={event => void importFile(event)} disabled={busy} tabIndex={-1} aria-label={tr('Импортировать TXT')}/>
-            <div className="redemption-actions"><button type="button" disabled={busy} onClick={() => fileInput.current?.click()}><FileUp size={17}/>{tr('Импортировать TXT')}</button><button className="primary" type="submit" disabled={busy || !draft.trim()}><KeyRound size={17}/>{tr('Далее — проверить продукты')}</button></div>
+            {mode !== 'single' && <input ref={fileInput} className="redemption-file-input" type="file" accept=".txt,text/plain" onChange={event => void importFile(event)} disabled={busy} tabIndex={-1} aria-label={tr('Импортировать TXT')}/>}
+            {!wizard && <div className="redemption-actions">{inputActions}</div>}
         </form>}
         {!!issues.length && <ul className="redemption-errors error-text" role="alert">{issues.map((issue, index) => <li key={index}>{tr(issueLabel(issue))}</li>)}</ul>}
         {stoppedBeforeAcceptance && <p role="status">{tr('Обработка остановлена')}</p>}
         {(snapshot || busy && work !== 'official') && <div className="redemption-batch">
-            <div className="redemption-batch-heading"><h3 ref={heading} tabIndex={-1}>{tr(phaseLabel)}</h3>{busy && work !== 'discard' && work !== 'official' && <button type="button" disabled={stopping} onClick={stop}><Square size={15}/>{tr('Остановить после текущего')}</button>}</div>
+            <div className="redemption-batch-heading"><h3 ref={heading} tabIndex={-1}>{tr(phaseLabel)}</h3>{!wizard && busy && work !== 'discard' && work !== 'official' && stopAction}</div>
             <p className="redemption-wait redemption-wait-slot" role={snapshot?.waitSeconds ? 'status' : undefined} aria-live={snapshot?.waitSeconds ? 'polite' : undefined} aria-hidden={snapshot?.waitSeconds ? undefined : true}>{snapshot?.waitSeconds ? tr(snapshot.waitReason === 'batch' ? `Следующий пакет через ${number(snapshot.waitSeconds)} с` : snapshot.waitReason === 'beforeActivation' ? `Активация начнётся через ${number(snapshot.waitSeconds)} с` : activatingQuotaWait ? `Активация продолжится через ${number(snapshot.waitSeconds)} с` : quotaWait ? `Проверка продолжится через ${number(snapshot.waitSeconds)} с` : `Следующий ключ через ${number(snapshot.waitSeconds)} с`) : null}</p>
             {snapshot && <p className="redemption-account">{tr('Аккаунт Epic')}: <strong>{snapshot.accountName}</strong></p>}
             {snapshot && <div className="redemption-counts" role="status" aria-live="polite"><span>{tr(preparing ? 'Проверено' : 'Обработано')}: <b>{number(preparing ? checked : processed)}</b> / {number(items.length)}</span><span>{tr('Успешных активаций')}: <b>{number(successCount)}</b></span></div>}
@@ -404,14 +460,26 @@ export function RedeemView({ account, active, onLibrary, onActivated }: {
             {snapshot && <div className="redemption-table-scroll" tabIndex={0} role="region" aria-label={tr('Результаты проверки ключей')}><table className="redemption-table"><thead><tr><th scope="col">{tr('Ключ')}</th><th scope="col">{tr('Продукт')}</th><th scope="col">{tr('Статус')}</th></tr></thead><tbody>{items.map(item => <tr key={item.id} className={`redemption-row redemption-row-${item.status}`} aria-current={item.status === 'checking' || item.status === 'activating' ? 'true' : undefined}><td><code>{item.maskedKey}</code></td><td>{item.title || '—'}</td><td><strong>{tr(activatingQuotaWait && item.status === 'activating' && item.reason === 'rateLimited' ? 'Ожидаем продолжения активации' : quotaWait && item.status === 'checking' ? 'Ожидаем повторной проверки' : statusLabels[item.status])}</strong>{item.reason && <span>{tr(reasonLabels[item.reason] || reasonLabels.unknown)}</span>}<DiagnosticDetails value={item.diagnostic} maskedKey={item.maskedKey}/></td></tr>)}</tbody></table></div>}
             {partialPreview && <p className="redemption-warning" role="status">{tr('Проверена часть списка. Можно активировать готовые ключи; остальные не обработаны.')}</p>}
             {unknown && <p className="redemption-warning">{tr('Результат одной из активаций неизвестен. Автоматического повтора не будет. Проверьте результат у Epic.')}</p>}
-            {snapshot && <div className="redemption-actions"><button type="button" disabled={busy} onClick={() => void startNew()}>{tr('Ввести другие ключи')}</button><button type="button" className="primary" disabled={busy || !!error || !snapshot.accountName.trim() || snapshot.phase !== 'ready' || readyCount === 0 || unknown} onClick={() => { setAcknowledged(false); setConfirm(true); }}>{tr('Активировать готовые ключи')} ({number(readyCount)})</button><button type="button" disabled={busy} onClick={onLibrary}><RefreshCw size={17}/>{tr('Открыть и обновить библиотеку')}</button></div>}
+            {!wizard && snapshot && <div className="redemption-actions">{batchActions}</div>}
             {successCount > 0 && <p className="muted">{tr('Материалы Fab появятся после обновления библиотеки; игры в ней не отображаются.')}</p>}
         </div>}
+        {(!wizard || mode === 'official') && <aside className="redemption-official"><h3>{tr('Официальное окно Epic')}</h3><p>{tr('Если ключ требует дополнительных действий, откройте официальный сайт Epic. Ключи из этого списка туда не передаются.')}</p>{!wizard && officialAction}{work === 'official' && <p role="status">{tr('Ожидаем активацию в окне Epic…')}</p>}
+            {official && <div className={`redemption-result redemption-${official.status}`} role="status"><h3>{tr(official.status === 'success' ? 'Ключ успешно активирован' : official.status === 'failed' ? 'Активация не удалась' : official.status === 'ready' ? 'Ключ проверен — ожидаем подтверждения' : 'Результат активации не подтверждён')}</h3>{official.title && <p>{tr('Продукт:')} <strong>{official.title}</strong></p>}{official.status === 'ready' && <p>{tr('Ключ ещё не активирован. Завершите подтверждение в окне Epic.')}</p>}{official.status === 'unknown' && <p>{tr('Окно закрыто, связь прервана или ответ Epic не удалось распознать. Проверьте результат у Epic и обновите библиотеку.')}</p>}{official.status === 'failed' && <p>{tr(official.errorCode.endsWith('.code_used') ? 'Этот ключ уже использован.' : official.errorCode.includes('already') ? 'Этот ключ уже использован или продукт уже есть в аккаунте.' : official.errorCode.includes('invalid') ? 'Epic отклонил ключ. Проверьте введённые символы.' : 'Epic не подтвердил активацию. Точная причина показана в окне Epic.')}</p>}<button type="button" disabled={busy} onClick={onLibrary}>{tr('Открыть и обновить библиотеку')}</button></div>}
+        </aside>}
+        </>}
         {authRequired && <EpicAuthError error="UM_EPIC_AUTH_REQUIRED"/>}
         {error && error !== 'auth' && <p className="error-text" role="alert">{tr(errorLabels[error])}</p>}
-        <aside className="redemption-official"><h3>{tr('Официальное окно Epic')}</h3><p>{tr('Если ключ требует дополнительных действий, откройте официальный сайт Epic. Ключи из этого списка туда не передаются.')}</p><button type="button" disabled={busy} onClick={() => void openOfficial()}><ExternalLink size={17}/>{tr(busy && work === 'official' ? 'Окно активации открыто' : 'Открыть окно активации')}</button>{work === 'official' && <p role="status">{tr('Ожидаем активацию в окне Epic…')}</p>}
-            {official && <div className={`redemption-result redemption-${official.status}`} role="status"><h3>{tr(official.status === 'success' ? 'Ключ успешно активирован' : official.status === 'failed' ? 'Активация не удалась' : official.status === 'ready' ? 'Ключ проверен — ожидаем подтверждения' : 'Результат активации не подтверждён')}</h3>{official.title && <p>{tr('Продукт:')} <strong>{official.title}</strong></p>}{official.status === 'ready' && <p>{tr('Ключ ещё не активирован. Завершите подтверждение в окне Epic.')}</p>}{official.status === 'unknown' && <p>{tr('Окно закрыто, связь прервана или ответ Epic не удалось распознать. Проверьте результат у Epic и обновите библиотеку.')}</p>}{official.status === 'failed' && <p>{tr(official.errorCode.endsWith('.code_used') ? 'Этот ключ уже использован.' : official.errorCode.includes('already') ? 'Этот ключ уже использован или продукт уже есть в аккаунте.' : official.errorCode.includes('invalid') ? 'Epic отклонил ключ. Проверьте введённые символы.' : 'Epic не подтвердил активацию. Точная причина показана в окне Epic.')}</p>}<button type="button" disabled={busy} onClick={onLibrary}>{tr('Открыть и обновить библиотеку')}</button></div>}
-        </aside>
-        {confirm && snapshot && createPortal(<ModalFocusScope onClose={() => { setConfirm(false); setAcknowledged(false); }} className="modal-backdrop redemption-confirm-backdrop"><section className="login-dialog redemption-confirm" role="dialog" aria-modal="true" aria-labelledby="redemption-confirm-title"><div className="modal-head"><h2 id="redemption-confirm-title">{tr('Подтвердите активацию')}</h2><button type="button" className="icon" aria-label={tr('Закрыть')} onClick={() => { setConfirm(false); setAcknowledged(false); }}><X size={20}/></button></div><div className="redemption-confirm-body"><p>{tr('Аккаунт Epic')}: <strong>{snapshot.accountName}</strong></p><p>{tr('Готово к активации')}: <strong>{number(readyCount)}</strong></p><p>{tr('Будут активированы только готовые ключи. Действие нельзя отменить. Остановка не отменяет уже выполненную активацию.')}</p><label className="redemption-confirm-check"><input data-modal-initial-focus type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)}/><span>{tr('Подтверждаю аккаунт и выбранные продукты.')}</span></label></div><div className="dialog-actions"><button type="button" onClick={() => { setConfirm(false); setAcknowledged(false); }}>{tr('Назад')}</button><button type="button" className="primary" disabled={!acknowledged || busy} onClick={() => void activate()}><CheckCircle2 size={17}/>{tr('Активировать готовые ключи')} ({number(readyCount)})</button></div></section></ModalFocusScope>, document.body)}
-    </section></div>;
+    </section>;
+    if (wizard) return createPortal(<ModalFocusScope onClose={() => { if (confirm) dismissConfirmation(); else closeWizard(); }} closeDisabled={busy} className="modal-backdrop redemption-wizard-backdrop">
+        <section className="login-dialog redemption-wizard" role="dialog" aria-modal="true" aria-labelledby="redemption-wizard-title" aria-busy={busy}>
+            <div className="modal-head"><h2 ref={wizardHeading} tabIndex={-1} id="redemption-wizard-title">{tr('Активация ключей')}</h2><button type="button" className="icon" disabled={busy} aria-label={tr('Закрыть мастер')} onClick={closeWizard}><X size={20}/></button></div>
+            {steps}
+            <div className="redemption-wizard-body">{content}</div>
+            <footer className="redemption-wizard-footer">{confirm ? confirmationActions : <>
+                {mode ? <button type="button" disabled={busy} onClick={() => void chooseAgain()}><ArrowLeft size={17}/>{tr('Другой способ')}</button> : <button type="button" disabled={busy} onClick={closeWizard}>{tr('Закрыть')}</button>}
+                <div className="redemption-actions">{busy ? work === 'official' ? officialAction : work !== 'discard' && stopAction : mode === 'official' ? officialAction : mode && (snapshot ? batchActions : inputActions)}</div>
+            </>}</footer>
+        </section>
+    </ModalFocusScope>, document.body);
+    return <div className="content">{content}{confirm && snapshot && createPortal(<ModalFocusScope onClose={dismissConfirmation} className="modal-backdrop redemption-confirm-backdrop"><section className="login-dialog redemption-confirm" role="dialog" aria-modal="true" aria-labelledby="redemption-confirm-title"><div className="modal-head"><h2 id="redemption-confirm-title">{tr('Подтвердите активацию')}</h2><button type="button" className="icon" aria-label={tr('Закрыть')} onClick={dismissConfirmation}><X size={20}/></button></div><div className="redemption-confirm-body">{confirmationBody}</div><div className="dialog-actions">{confirmationActions}</div></section></ModalFocusScope>, document.body)}</div>;
 }
