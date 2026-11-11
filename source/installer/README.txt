@@ -50,7 +50,12 @@ WebView2 distribution: https://learn.microsoft.com/microsoft-edge/webview2/conce
 - Center the main window on startup; restoring it from the tray keeps its position.
 - Open the key-redemption wizard from the account menu: one key, a batch/TXT list
   or the official Epic page. The wizard stays in the existing application WebView
-  with visible header/actions and scrolling results.
+  with visible header/actions and scrolling results. Single-key entry uses a
+  one-line field and rejects pasted or dropped lists.
+- Explicitly export already-used keys and keys for products already owned to a
+  local TXT you choose, with full keys, product names and separate reasons.
+  An owned product does not prove that the key was used. Export does not store
+  keys in application settings or history.
 - Preserve product/account review, explicit confirmation, ready-only activation,
   native quota countdowns and guarded continuation. The existing official Epic
   window remains available; keys are not copied into it automatically.

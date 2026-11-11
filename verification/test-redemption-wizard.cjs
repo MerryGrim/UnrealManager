@@ -21,6 +21,12 @@ async function fixtureInvoke(name,args={}){
  if(name==='epic_redeem_batch_prepare')return new Promise((resolve,reject)=>{if(window.pendingPrepare)throw Error('Duplicate synthetic preparation');const pending={keys:args.keys.slice(),channel:args.onProgress,resolve,reject};window.pendingPrepare=pending;window.prepareHistory.push(pending);});
  if(name==='epic_redeem_batch_activate')return new Promise((resolve,reject)=>{if(window.pendingActivate)throw Error('Duplicate synthetic activation');const pending={batchId:args.batchId,channel:args.onProgress,resolve,reject};window.pendingActivate=pending;window.activateHistory.push(pending);});
  if(name==='epic_redeem_batch_cancel')return true;
+ if(name==='epic_redeem_batch_export_rejected'){
+  const outcome=window.exportResponses.shift()||{saved:true,count:2};
+  if(outcome.pending)return new Promise((resolve,reject)=>{if(window.pendingExport)throw Error('Duplicate synthetic export');window.pendingExport={batchId:args.batchId,resolve,reject};});
+  if(outcome.error)throw Error(outcome.error);
+  return outcome;
+ }
  if(name==='epic_redeem_batch_discard'){
   if(window.holdDiscard)return new Promise(resolve=>{window.pendingDiscard=resolve;});
   return;
@@ -50,14 +56,14 @@ async function main(){
  assert(browserLaunchOptions.args.includes('--disable-gpu')&&browserLaunchOptions.args.includes('--disable-gpu-compositing'));
  const css=fs.readFileSync(path.join(root,'src/styles.css'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/RedeemView.css'),'utf8')+'\n.fixture-header{padding:12px;display:flex;justify-content:flex-end}.fixture-header .user-area{position:relative}';
  const browser=await playwright.chromium.launch(browserLaunchOptions);
- async function open({locale='ru',theme='dark',viewport={width:1280,height:800}}={}){
+ async function open({locale='ru',theme='dark',viewport={width:1280,height:800},exportResponses=[]}={}){
   const context=await browser.newContext({viewport,locale:'ru-RU',reducedMotion:'reduce'});
   await context.route('**/*',route=>{const url=route.request().url();if(url==='https://um-wizard.invalid/')return route.fulfill({contentType:'text/html',body:'<!doctype html><html><head><meta charset="utf-8"><style>'+css+'</style></head><body><div id="root"></div></body></html>'});if([...canaries].some(key=>url.includes(key)))report.secretLeakDetected=true;report.externalRequests.push({origin:new URL(url).origin});return route.abort();});
   const page=await context.newPage();
   page.on('console',message=>{if([...canaries].some(key=>message.text().includes(key)))report.secretLeakDetected=true;});
   page.on('pageerror',error=>report.errors.push(safe(error.message)));
   await page.goto('https://um-wizard.invalid/');
-  await page.evaluate(f=>{window.fixture=f;window.calls=[];window.unexpected=[];window.pendingPrepare=null;window.pendingActivate=null;window.pendingOfficial=null;window.pendingDiscard=null;window.prepareHistory=[];window.activateHistory=[];window.libraryCalls=0;window.activatedCalls=0;window.closeCalls=0;window.navigationCalls=0;window.loginCalls=0;localStorage.setItem('unreal-manager.theme.v1',f.theme);localStorage.setItem('unreal-manager.language.v1',f.locale);}, {locale,theme});
+  await page.evaluate(f=>{window.fixture=f;window.calls=[];window.unexpected=[];window.pendingPrepare=null;window.pendingActivate=null;window.pendingOfficial=null;window.pendingDiscard=null;window.pendingExport=null;window.exportResponses=f.exportResponses;window.prepareHistory=[];window.activateHistory=[];window.libraryCalls=0;window.activatedCalls=0;window.closeCalls=0;window.navigationCalls=0;window.loginCalls=0;localStorage.setItem('unreal-manager.theme.v1',f.theme);localStorage.setItem('unreal-manager.language.v1',f.locale);}, {locale,theme,exportResponses});
   await page.addScriptTag({content:built.outputFiles[0].text});await flush(page);return{page,context};
  }
  async function close(context,page){
@@ -72,12 +78,35 @@ async function main(){
  async function openWizard(page){await page.locator('.user-trigger').click();await page.getByRole('menuitem',{name:await page.evaluate(()=>window.translate('Активировать ключ')),exact:true}).click();await wizard(page).waitFor();await flush(page);}
  async function choose(page,mode){await methods(page).locator('button[data-mode="'+mode+'"]').click();await flush(page);}
  async function fill(page,keys=[keyA,keyB]){await page.locator('#redemption-keys').fill(keys.join('\n'));}
+ async function paste(page,text){
+  const prevented=await page.locator('#redemption-keys').evaluate((field,text)=>{
+   field.focus();field.setSelectionRange(0,field.value.length);
+   const clipboard=new DataTransfer();clipboard.setData('text/plain',text);
+   const event=new ClipboardEvent('paste',{clipboardData:clipboard,bubbles:true,cancelable:true});
+   field.dispatchEvent(event);
+   // Synthetic clipboard events have no default insertion. Emulate only an allowed browser edit;
+   // this never reads or overwrites the user's system clipboard.
+   if(!event.defaultPrevented)document.execCommand('insertText',false,text);
+   return event.defaultPrevented;
+  },text);await flush(page);return prevented;
+ }
  async function prepare(page,keys=[keyA,keyB]){await fill(page,keys);await page.locator('.redemption-wizard button[type=submit]').click();await page.waitForFunction(()=>!!window.pendingPrepare);}
  async function finishPrepare(page,value=snapshot()){await page.evaluate(value=>{const pending=window.pendingPrepare;window.pendingPrepare=null;pending.keys.fill('');pending.resolve(value);},value);await flush(page);}
  async function emitPrepare(page,value){await page.evaluate(value=>window.pendingPrepare.channel.onmessage(value),value);await flush(page);}
  async function finishActivate(page,value){await page.evaluate(value=>{const pending=window.pendingActivate;window.pendingActivate=null;pending.resolve(value);},value);await flush(page);}
  async function back(page){await page.locator('.redemption-wizard-footer').getByRole('button',{name:await page.evaluate(()=>window.translate('Другой способ')),exact:true}).click();await flush(page);}
  async function confirmation(page){await page.locator('.redemption-wizard-footer button.primary').click();await page.locator('.redemption-inline-confirm').waitFor();await flush(page);return page.locator('.redemption-inline-confirm');}
+ const exportButton=page=>page.locator('.redemption-export-bar button');
+ const rejectedPreview=(extra={})=>{
+  const value=snapshot([keyA,keyB,keyC],['failed','failed','ready'],'ready',{rejectedCount:2,...extra});
+  value.items[0].reason='alreadyUsed';value.items[1].reason='alreadyOwned';return value;
+ };
+ async function prepareRejected(page,extra={}){await choose(page,'batch');await prepare(page,[keyA,keyB,keyC]);await finishPrepare(page,rejectedPreview(extra));await exportButton(page).waitFor();}
+ async function exportReceipt(page,result){await page.evaluate(result=>{const pending=window.pendingExport;window.pendingExport=null;pending.resolve(result);},result);await flush(page);}
+ async function assertExportMetadata(page,expectedCalls){
+  const calls=await page.evaluate(()=>window.calls.filter(row=>row.name==='epic_redeem_batch_export_rejected'));
+  assert.equal(calls.length,expectedCalls);for(const call of calls){assert.deepEqual(call.argNames,['batchId']);assert.equal(call.batchId,batchId);assert.equal(call.keyCount,0);}
+ }
  async function geometry(page,details){
   const value=await wizard(page).evaluate(dialog=>{
    const box=node=>{if(!node)return null;const r=node.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,right:r.right,bottom:r.bottom};};
@@ -114,11 +143,17 @@ async function main(){
   }
   {
    const{page,context}=await open();await openWizard(page);await choose(page,'single');
-   assert.equal(await page.locator('#redemption-keys').evaluate(node=>node.tagName),'TEXTAREA');
-   for(const keys of [[keyA,keyB],[keyA,keyA]]){await fill(page,keys);await page.locator('.redemption-wizard button[type=submit]').click();await page.getByRole('alert').waitFor();assert.equal(await count(page,'epic_redeem_batch_prepare'),0);}
-   await prepare(page,[keyA]);assert.equal(await page.evaluate(()=>window.pendingPrepare.keys.length),1);await finishPrepare(page,snapshot([keyA]));
+   const field=page.locator('#redemption-keys');assert.equal(await field.evaluate(node=>node.tagName),'INPUT');assert.equal(await field.getAttribute('type'),'text');assert.equal(await page.locator('.redemption-input-form textarea').count(),0);
+   const initialBox=await field.boundingBox();assert(initialBox&&initialBox.height>=30&&initialBox.height<=56,'Single-key input must have one-line height');
+   await field.fill('A'.repeat(128));const longBox=await field.boundingBox();assert(longBox&&Math.abs(longBox.height-initialBox.height)<=1,'Long input changed the single-line field height');
+   for(const value of [keyA+'\n'+keyB,keyA+'\r\n'+keyB,keyA+'\r'+keyB,keyA+'\n'+keyA]){
+    await field.fill(keyC);assert.equal(await paste(page,value),true,'Multiline clipboard input must be rejected before browser insertion');await page.getByRole('alert').waitFor();assert.equal(await field.inputValue(),keyC,'Rejected paste altered the existing input');assert.equal(await count(page,'epic_redeem_batch_prepare'),0);
+   }
+   const dropped=await field.evaluate((field,text)=>{const data=new DataTransfer();data.setData('text/plain',text);const event=new DragEvent('drop',{dataTransfer:data,bubbles:true,cancelable:true});field.dispatchEvent(event);return event.defaultPrevented;},keyA+'\r\n'+keyB);await flush(page);assert.equal(dropped,true);assert.equal(await field.inputValue(),keyC,'Rejected multiline drop altered the input');
+   await field.fill('');await paste(page,keyA);assert.equal(await field.inputValue(),keyA);assert.equal(await count(page,'epic_redeem_batch_prepare'),0);await page.locator('.redemption-wizard button[type=submit]').click();await page.waitForFunction(()=>!!window.pendingPrepare);
+   assert.equal(await page.evaluate(()=>window.pendingPrepare.keys.length),1);assert(await page.evaluate(key=>window.pendingPrepare.keys[0]===key,keyA),'Valid pasted key changed before native preparation');await finishPrepare(page,snapshot([keyA]));
    assert.equal(await page.locator('.redemption-table tbody tr').count(),1);assert.equal(await count(page,'epic_redeem_batch_activate'),0);
-   check('Single-key mode preserves paste text, rejects multiple physical key rows including duplicates without RPC, and prepares exactly one key without activation');await close(context,page);
+   check('Single-key mode is a fixed-height text input; multiline paste/drop is rejected before concatenation without RPC, and one valid paste waits for explicit preparation without activation');await close(context,page);
   }
   {
    const{page,context}=await open();await openWizard(page);await choose(page,'batch');
@@ -186,6 +221,77 @@ async function main(){
    await page.evaluate(()=>{window.pendingOfficial.channel.onmessage({status:'success',title:'Synthetic official product',errorCode:''});window.pendingOfficial.resolve();window.pendingOfficial=null;});await flush(page);
    assert.equal(await page.evaluate(()=>window.activatedCalls),1);assert.equal(await count(page,'epic_redeem_batch_prepare'),0);assert.equal(await count(page,'epic_redeem_batch_activate'),0);assert(!(await closeButton(page).isDisabled()));
    check('Official route uses only the existing Epic-window command, waits for its completion and never forwards wizard keys to batch activation');await close(context,page);
+  }
+  {
+   const{page,context}=await open({exportResponses:[{pending:true}]});await openWizard(page);await prepareRejected(page);
+   assert.equal(await page.locator('.redemption-row-failed').count(),2);assert((await exportButton(page).innerText()).includes('(2)'));
+   await exportButton(page).evaluate(button=>{button.click();button.click();});await page.waitForFunction(()=>!!window.pendingExport);await flush(page);
+   await assertExportMetadata(page,1);assert(await closeButton(page).isDisabled());assert(await exportButton(page).isDisabled());
+   assert.equal(await page.getByRole('button',{name:await page.evaluate(()=>window.translate('Остановить после текущего')),exact:true}).count(),0);
+   await page.keyboard.press('Escape');assert.equal(await wizard(page).count(),1);assert.equal(await page.evaluate(()=>window.closeCalls),0);
+   assert.equal(await count(page,'epic_redeem_batch_prepare'),1);assert.equal(await count(page,'epic_redeem_batch_activate'),0);
+   await exportReceipt(page,{saved:true,count:2});await page.getByRole('status').filter({hasText:'Сохранено отклонённых ключей: 2'}).waitFor();
+   assert.equal(await page.evaluate(()=>window.activatedCalls),0);assert(!(await closeButton(page).isDisabled()));
+   await closeButton(page).click();await wizard(page).waitFor({state:'detached'});await openWizard(page);assert.equal(await page.locator('.redemption-export-bar').count(),0);
+   check('Export requests contain only batchId, duplicate clicks create one save operation, X/Escape wait without a false Stop, and a saved receipt is cleared on reopening');await close(context,page);
+  }
+  {
+   const outcomes=[{saved:false,count:0},{error:'Не удалось сохранить TXT. Выберите другое место и повторите.'},{saved:true,count:101},{saved:true,count:-1},{saved:true,count:1.5},{saved:true,count:0},{saved:'yes',count:2},{saved:true,count:2}];
+   const{page,context}=await open({exportResponses:outcomes});await openWizard(page);await prepareRejected(page);
+   for(let index=0;index<outcomes.length;index++){
+    await exportButton(page).click();await flush(page);await assertExportMetadata(page,index+1);
+    const statuses=page.locator('.redemption-export-bar [role=status]');
+    if(index<outcomes.length-1)assert.equal(await statuses.count(),0,'Cancelled, failed or malformed export claimed success');
+    else{await statuses.waitFor();assert((await statuses.innerText()).includes('2'));}
+    if(index>0&&index<outcomes.length-1)await page.getByRole('alert').filter({hasText:'Не удалось сохранить TXT.'}).waitFor();
+    assert.equal(await count(page,'epic_redeem_batch_prepare'),1);assert.equal(await count(page,'epic_redeem_batch_activate'),0);
+    assert.equal(await page.locator('.redemption-wizard-footer button.primary').isDisabled(),false,'File export outcome revoked an otherwise valid ready activation');
+   }
+   check('Cancelled save, filesystem refusal and malformed receipt counts never claim success; explicit retry reuses the same package without resending keys or activating');await close(context,page);
+  }
+  {
+   const{page,context}=await open();await openWizard(page);await prepareRejected(page);const confirm=await confirmation(page);await confirm.locator('input[type=checkbox]').check();
+   await wizard(page).locator('button.primary:visible').last().click();await page.waitForFunction(()=>!!window.pendingActivate);
+   assert.equal(await page.locator('.redemption-table tbody tr').count(),1);assert((await exportButton(page).innerText()).includes('(2)'));assert(await exportButton(page).isDisabled());
+   await finishActivate(page,snapshot([keyC],['success'],'completed',{rejectedCount:2}));assert((await exportButton(page).innerText()).includes('(2)'));
+   await exportButton(page).click();await flush(page);await assertExportMetadata(page,1);await page.locator('.redemption-export-bar [role=status]').waitFor();
+   assert.equal(await count(page,'epic_redeem_batch_activate'),1);assert.equal(await page.locator('.redemption-row-success').count(),1);assert.equal(await page.evaluate(()=>window.activatedCalls),1);
+   await close(context,page);
+   {
+    const{page,context}=await open({exportResponses:[{saved:true,count:2},{saved:false,count:0}]});await openWizard(page);await prepareRejected(page);const confirm=await confirmation(page);await confirm.locator('input[type=checkbox]').check();await wizard(page).locator('button.primary:visible').last().click();await page.waitForFunction(()=>!!window.pendingActivate);
+    await page.evaluate(()=>{const pending=window.pendingActivate;window.pendingActivate=null;pending.reject(Error('Synthetic activation RPC failure'));});await flush(page);
+    const originalFailure=page.getByRole('alert').filter({hasText:'Не удалось выполнить операцию.'});await originalFailure.waitFor();assert(await page.locator('.redemption-wizard-footer button.primary').isDisabled());
+    for(let index=0;index<2;index++){
+     await exportButton(page).click();await flush(page);await assertExportMetadata(page,index+1);assert(await originalFailure.isVisible(),'Saving/cancelling an export cleared the activation failure');assert(await page.locator('.redemption-wizard-footer button.primary').isDisabled(),'Export reauthorized the failed activation');
+    }
+    assert.equal(await count(page,'epic_redeem_batch_prepare'),1);assert.equal(await count(page,'epic_redeem_batch_activate'),1);assert.equal(await page.evaluate(()=>window.activatedCalls),0);await close(context,page);
+   }
+   check('Ready-only activation retains original rejected-count metadata for export; successful or cancelled exports preserve a prior activation failure and never reauthorize or replay it');
+  }
+  {
+   {
+    const{page,context}=await open({exportResponses:[{pending:true},{pending:true}]});await openWizard(page);const deadline=Math.floor(Date.now()/1000)+120;await prepareRejected(page,{expiresAt:deadline});
+    await exportButton(page).click();await page.waitForFunction(()=>!!window.pendingExport);
+    await page.evaluate(deadline=>{Date.now=()=>(deadline+1)*1000;},deadline);
+    const expired=rejectedPreview({expiresAt:undefined,rejectedCount:2});expired.phase='stopped';expired.items[2].status='notAttempted';expired.items[2].reason='previewExpired';
+    await page.evaluate(value=>window.prepareHistory[0].channel.onmessage(value),expired);await flush(page);
+    assert.equal(await exportButton(page).count(),1);assert(await exportButton(page).isDisabled());assert.equal(await page.locator('.redemption-row-ready').count(),0);
+    await exportReceipt(page,{saved:true,count:2});await page.locator('.redemption-export-bar [role=status]').waitFor();assert(await page.locator('.redemption-wizard-footer button.primary').isDisabled(),'Saving known rejects restored expired activation authorization');
+    // Native export cache has its own lazy 600-second TTL, independent of the expired activation preview.
+    // Its actual Instant-based enforcement is checked by native tests; this fixture verifies the error DTO path.
+    await exportButton(page).click();await page.waitForFunction(()=>!!window.pendingExport);await page.evaluate(deadline=>{Date.now=()=>(deadline+601)*1000;},deadline);
+    await page.evaluate(()=>{const pending=window.pendingExport;window.pendingExport=null;pending.reject(Error('Экспорт недоступен. Проверьте ключи заново.'));});await flush(page);
+    await page.getByRole('alert').filter({hasText:'Экспорт недоступен.'}).waitFor();assert.equal(await page.locator('.redemption-export-bar [role=status]').count(),0);
+    await page.evaluate(value=>window.prepareHistory[0].channel.onmessage(value),rejectedPreview());await flush(page);assert.equal(await page.locator('.redemption-row-ready').count(),0);assert(await page.locator('.redemption-wizard-footer button.primary').isDisabled());await page.getByRole('alert').filter({hasText:'Экспорт недоступен.'}).waitFor();
+    await assertExportMetadata(page,2);assert.equal(await count(page,'epic_redeem_batch_prepare'),1);assert.equal(await count(page,'epic_redeem_batch_activate'),0);await close(context,page);
+   }
+   {
+    const{page,context}=await open({exportResponses:[{pending:true}]});await openWizard(page);await prepareRejected(page);await exportButton(page).click();await page.waitForFunction(()=>!!window.pendingExport);
+    await page.evaluate(()=>window.changeAccount({signedIn:true,displayName:'Other Synthetic Account'}));await flush(page);await exportReceipt(page,{saved:true,count:2});
+    assert.equal(await page.locator('.redemption-export-bar [role=status]').count(),0);assert.equal(await page.locator('.redemption-table').count(),0);assert.equal(await count(page,'epic_redeem_batch_activate'),0);
+    await close(context,page);
+   }
+   check('Due preview expiry disables activation while known rejects remain exportable; later native cache-expiry errors and account changes never revive old activation authorization or keys');
   }
   {
    let fixtures=0;

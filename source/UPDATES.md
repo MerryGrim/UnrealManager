@@ -18,7 +18,14 @@ wizard within the existing application WebView: one key, a batch/TXT list or the
 official Epic page. Product/account review, explicit confirmation, ready-only
 activation and native pacing/recovery remain. The existing separate official
 Epic window and current session are reused. Installed and portable updates keep
-the same signing identity and preserve the existing data folders.
+the same signing identity and preserve the existing data folders. The single-key
+mode uses a one-line field and rejects pasted or dropped lists.
+
+The wizard can explicitly export already-used keys and keys for products already
+owned to a chosen local TXT, with full keys, product names and separate reasons.
+Owning the product does not prove that its key was used. Full keys stay in the
+native operation and are written only to the selected file for this export;
+settings and application history do not retain them.
 
 Version 0.9.11 restores `CODE_PLUGIN` and classifies owned Unreal Engine content
 from Fab metadata and Epic package descriptions before downloading, rather than

@@ -8,11 +8,16 @@
   opened from the account menu. Choose a single key, a batch/TXT list or the
   official Epic page. The wizard uses the existing application WebView.
 - Keep the wizard header and actions visible while input and results scroll.
-  A single-key input rejects a list instead of silently combining its lines.
+  Single-key entry is a true one-line input; pasted or dropped lists are rejected
+  instead of silently combining their lines.
 - Retain product/account review, a separate explicit confirmation, activation of
   ready rows only, native quota countdowns and guarded batch continuation. The
   existing official Epic window remains available and receives no input keys
   from the wizard automatically.
+- Add an explicit local TXT export for already-used keys and keys whose products
+  are already owned, including full keys, product names and distinct reasons.
+  Already owned does not prove that the key was used. Full keys are written only
+  to the file chosen by the user, without returning them to the web interface.
 - Preserve existing sessions, Vault data, saved tasks and projects. No runtime
   dependency, permanent process or new WebView for the wizard UI is added;
   software-rendering arguments remain configured before window creation.

@@ -1,5 +1,5 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
-import { ArrowLeft, CheckCircle2, ExternalLink, FileUp, KeyRound, List, RefreshCw, Square, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ExternalLink, FileDown, FileUp, KeyRound, List, RefreshCw, Square, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { EpicAuthError, isEpicAuthRequired } from './EpicAuthError';
@@ -37,10 +37,11 @@ export type RedemptionSnapshot = {
     waitSeconds?: number;
     waitReason?: 'pacing' | 'rateLimited' | 'batch' | 'beforeActivation';
     preparationStage?: 'account' | 'session' | 'connection' | 'keys';
+    rejectedCount?: number;
 };
 type OfficialResult = { status: 'ready' | 'success' | 'failed' | 'unknown'; title: string; errorCode: string };
-type Work = 'prepare' | 'activate' | 'official' | 'discard' | null;
-type UiError = 'auth' | 'busy' | 'operation' | 'file' | 'invalidInput' | 'checkingBusy' | 'previewExpired' | 'activationBusy' | 'singleKey' | null;
+type Work = 'prepare' | 'activate' | 'official' | 'discard' | 'export' | null;
+type UiError = 'auth' | 'busy' | 'operation' | 'file' | 'invalidInput' | 'checkingBusy' | 'previewExpired' | 'activationBusy' | 'singleKey' | 'export' | 'exportUnavailable' | null;
 type RedemptionMode = 'single' | 'batch' | 'official';
 
 const statusLabels: Record<RedemptionStatus, string> = {
@@ -61,6 +62,8 @@ const reasonLabels: Record<RedemptionReason, string> = {
     unknown: 'Не повторяйте активацию автоматически. Проверьте результат у Epic.', cancelled: 'Обработка остановлена пользователем.',
 };
 const errorLabels = {
+    export: 'Не удалось сохранить TXT. Выберите другое место и повторите.',
+    exportUnavailable: 'Экспорт недоступен. Проверьте ключи заново.',
     singleKey: 'В этом режиме можно проверить только один ключ.',
     busy: 'Сначала закройте окно Epic Games.', operation: 'Не удалось выполнить операцию. Попробуйте позже или откройте официальный сайт Epic.',
     file: 'Не удалось прочитать TXT. Выберите другой файл.', invalidInput: 'Некорректный список ключей.', checkingBusy: 'Проверка ключей уже выполняется.',
@@ -96,6 +99,7 @@ function validSnapshot(value: RedemptionSnapshot, expectedMasks: string[]): bool
         && (value.waitSeconds === undefined || Number.isInteger(value.waitSeconds) && value.waitSeconds >= 0 && value.waitSeconds <= 3600)
         && (value.waitReason === undefined || ['pacing', 'rateLimited', 'batch', 'beforeActivation'].includes(value.waitReason))
         && (value.preparationStage === undefined || Object.hasOwn(preparationLabels, value.preparationStage))
+        && (value.rejectedCount === undefined || Number.isInteger(value.rejectedCount) && value.rejectedCount >= 0 && value.rejectedCount <= REDEMPTION_BATCH_LIMITS.maxKeys)
         && Array.isArray(value.items) && value.items.length === expectedMasks.length && value.items.length <= REDEMPTION_BATCH_LIMITS.maxKeys
         && value.items.every(item => !!item && typeof item.id === 'string' && item.id.length > 0 && Number.isInteger(item.index)
             && item.index >= 0 && item.index < expectedMasks.length && item.maskedKey === expectedMasks[item.index]
@@ -134,10 +138,12 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
     const [confirm, setConfirm] = useState(false);
     const [acknowledged, setAcknowledged] = useState(false);
     const [official, setOfficial] = useState<OfficialResult | null>(null);
+    const [exportedCount, setExportedCount] = useState<number | null>(null);
+    const [exportError, setExportError] = useState<'export' | 'exportUnavailable' | null>(null);
     const [lastOperation, setLastOperation] = useState<'check' | 'activate'>('check');
     const [stoppedBeforeAcceptance, setStoppedBeforeAcceptance] = useState(false);
     const [preparationStage, setPreparationStage] = useState<RedemptionSnapshot['preparationStage']>();
-    const field = useRef<HTMLTextAreaElement>(null), fileInput = useRef<HTMLInputElement>(null), heading = useRef<HTMLHeadingElement>(null);
+    const field = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null), fileInput = useRef<HTMLInputElement>(null), heading = useRef<HTMLHeadingElement>(null);
     const wizardHeading = useRef<HTMLHeadingElement>(null), confirmationInput = useRef<HTMLInputElement>(null);
     const mounted = useRef(true), lock = useRef(false), workRef = useRef<Work>(null), current = useRef<RedemptionSnapshot | null>(null);
     const sequence = useRef(0), importSequence = useRef(0), cancelWanted = useRef(false), cancelSent = useRef<string | null>(null), resetAfterWork = useRef(false);
@@ -170,6 +176,8 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
         setAcknowledged(false);
         setSnapshot(null);
         setOfficial(null);
+        setExportedCount(null);
+        setExportError(null);
         setStoppedBeforeAcceptance(false);
         setPreparationStage(undefined);
         setError(null);
@@ -224,7 +232,7 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
             const expiresAt = previous?.expiresAt;
             // A stored prepare channel may emit its one-shot expiry after the RPC has completed.
             // Every other late event remains closed, including events before the actual deadline.
-            if (!mounted.current || resetAfterWork.current || workRef.current !== null || previous?.phase !== 'ready'
+            if (!mounted.current || resetAfterWork.current || workRef.current !== null && workRef.current !== 'export' || previous?.phase !== 'ready'
                 || typeof expiresAt !== 'number' || !Number.isSafeInteger(expiresAt) || expiresAt <= 0 || Date.now() / 1000 < expiresAt
                 || !validSnapshot(value, expectedMasks.current) || value.batchId !== previous.batchId || value.phase !== 'stopped'
                 || !value.items.some(item => item.reason === 'previewExpired')) return false;
@@ -285,7 +293,7 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
         }
         lock.current = true;
         workRef.current = 'prepare';
-        setWork('prepare'); setError(null); setIssues([]); setOfficial(null);
+        setWork('prepare'); setError(null); setIssues([]); setOfficial(null); setExportedCount(null); setExportError(null);
         setStoppedBeforeAcceptance(false);
         setPreparationStage(undefined);
         setLastOperation('check');
@@ -331,7 +339,7 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
         finally { notifyActivation(); await finishWork(); }
     };
     const stop = () => {
-        if (!lock.current || workRef.current === 'official' || stopping) return;
+        if (!lock.current || workRef.current === 'official' || workRef.current === 'export' || stopping) return;
         cancelWanted.current = true;
         setStopping(true);
         void sendCancel();
@@ -342,7 +350,7 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
         setPreparationStage(undefined);
         try {
             if (current.current) await discard(current.current.batchId);
-            current.current = null; sequence.current += 1; expectedMasks.current = []; nativeAccepted.current = false; clearDraft(); setSnapshot(null); setOfficial(null); setLastOperation('check'); setStoppedBeforeAcceptance(false);
+            current.current = null; sequence.current += 1; expectedMasks.current = []; nativeAccepted.current = false; clearDraft(); setSnapshot(null); setOfficial(null); setExportedCount(null); setExportError(null); setLastOperation('check'); setStoppedBeforeAcceptance(false);
         } catch (failure) { setError(classifyError(failure)); }
         finally { await finishWork(); }
     };
@@ -360,7 +368,7 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
     };
     const openOfficial = async () => {
         if (lock.current || !active) return;
-        lock.current = true; workRef.current = 'official'; setWork('official'); setError(null); setOfficial(null);
+        lock.current = true; workRef.current = 'official'; setWork('official'); setError(null); setOfficial(null); setExportedCount(null); setExportError(null);
         setPreparationStage(undefined);
         cancelWanted.current = false; cancelSent.current = null; resetAfterWork.current = false;
         let successful = false;
@@ -380,18 +388,31 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
         finally { await finishWork(); }
     };
 
+    const exportRejected = async () => {
+        const value = current.current;
+        if (lock.current || !active || !value || !value.rejectedCount) return;
+        lock.current = true; workRef.current = 'export'; setWork('export'); setExportError(null); setExportedCount(null);
+        try {
+            const result = await invoke<{ saved: boolean; count: number }>('epic_redeem_batch_export_rejected', { batchId: value.batchId });
+            if (!result || typeof result.saved !== 'boolean' || !Number.isInteger(result.count) || result.count < 0 || result.count > REDEMPTION_BATCH_LIMITS.maxKeys || result.saved && result.count === 0 || !result.saved && result.count !== 0) throw new Error(errorLabels.export);
+            if (mounted.current && !resetAfterWork.current && result.saved) setExportedCount(result.count);
+        } catch (failure) { if (mounted.current && !resetAfterWork.current) setExportError(classifyError(failure) === 'exportUnavailable' ? 'exportUnavailable' : 'export'); }
+        finally { await finishWork(); }
+    };
+
     const items = snapshot?.items ?? [];
     const preparing = lastOperation === 'check';
     const checked = items.filter(item => ['ready', 'success', 'failed', 'unknown', 'requiresOfficial'].includes(item.status)).length;
     const processed = items.filter(item => ['success', 'failed', 'unknown', 'requiresOfficial'].includes(item.status)).length;
     const successCount = items.filter(item => item.status === 'success').length;
     const readyCount = items.filter(item => item.status === 'ready').length;
+    const rejectedCount = snapshot?.rejectedCount ?? 0;
     const quotaWait = snapshot?.waitReason === 'rateLimited' && (snapshot.waitSeconds ?? 0) > 0;
     const activatingQuotaWait = quotaWait && (snapshot?.phase === 'activating' || work === 'activate');
     const partialPreview = snapshot?.phase === 'ready' && readyCount > 0 && items.some(item => item.status === 'notAttempted');
     const unknown = items.some(item => item.status === 'unknown');
     const authRequired = error === 'auth' || items.some(item => item.reason === 'authRequired');
-    const phaseLabel = error && !busy ? 'Операция не завершена.' : stopping ? 'Останавливаем после текущего ключа…' : work === 'official' ? 'Окно активации открыто'
+    const phaseLabel = error && !busy ? 'Операция не завершена.' : stopping ? 'Останавливаем после текущего ключа…' : work === 'export' ? 'Сохранение TXT…' : work === 'official' ? 'Окно активации открыто'
         : work === 'prepare' && preparationStage ? preparationLabels[preparationStage]
         : work === 'prepare' && !snapshot ? 'Подготавливаем проверку ключей…'
         : snapshot?.phase === 'preparing' ? 'Проверяем ключи…'
@@ -405,6 +426,17 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
         if (!current.current && !workRef.current) { setConfirm(false); setAcknowledged(false); setMode(null); }
     };
     const dismissConfirmation = () => { setConfirm(false); setAcknowledged(false); };
+    const editDraft = (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+        importSequence.current += 1;
+        setDraft(event.target.value); setIssues([]); setError(null); setStoppedBeforeAcceptance(false);
+    };
+    const guardSingleInsertion = (text: string, prevent: () => void) => {
+        if (/[\r\n]/.test(text)) { prevent(); setIssues([]); setError('singleKey'); return; }
+        const start = field.current?.selectionStart ?? draft.length, end = field.current?.selectionEnd ?? start;
+        if (draft.length - (end - start) + text.length > REDEMPTION_BATCH_LIMITS.maxKeyCharacters) {
+            prevent(); setError(null); setIssues([{ code: 'keyTooLong', line: 1, limit: REDEMPTION_BATCH_LIMITS.maxKeyCharacters }]);
+        }
+    };
     const inputActions = <>
         {mode !== 'single' && <button type="button" disabled={busy} onClick={() => fileInput.current?.click()}><FileUp size={17}/>{tr('Импортировать TXT')}</button>}
         <button className="primary" type="submit" form="redemption-input-form" disabled={busy || !draft.trim()}><KeyRound size={17}/>{tr('Далее — проверить продукты')}</button>
@@ -443,7 +475,9 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
         {wizard && confirm && snapshot ? <div className="redemption-inline-confirm"><h3>{tr('Подтвердите активацию')}</h3>{confirmationBody}</div> : <>
         {mode && mode !== 'official' && !snapshot && <form id="redemption-input-form" onSubmit={event => void prepare(event)} className="redemption-input-form">
             <label htmlFor="redemption-keys">{tr(mode === 'single' ? 'Ключ продукта' : 'Ключи продуктов')}</label>
-            <textarea ref={field} id="redemption-keys" className={mode === 'single' ? 'redemption-single-key' : undefined} value={draft} onChange={event => { importSequence.current += 1; setDraft(event.target.value); setIssues([]); setError(null); setStoppedBeforeAcceptance(false); }} disabled={busy} rows={mode === 'single' ? 2 : 4} maxLength={REDEMPTION_BATCH_LIMITS.maxUtf8Bytes} autoComplete="off" autoCapitalize="off" spellCheck={false} aria-describedby="redemption-input-help" aria-invalid={issues.length > 0 || error === 'singleKey'}/>
+            {mode === 'single'
+                ? <input ref={node => { field.current = node; }} type="text" id="redemption-keys" className="redemption-single-key" value={draft} onChange={editDraft} onPaste={event => guardSingleInsertion(event.clipboardData.getData('text/plain'), () => event.preventDefault())} onDragOver={event => event.preventDefault()} onDrop={event => { if (event.dataTransfer.files.length) { event.preventDefault(); setIssues([]); setError('singleKey'); } else guardSingleInsertion(event.dataTransfer.getData('text/plain'), () => event.preventDefault()); }} disabled={busy} maxLength={REDEMPTION_BATCH_LIMITS.maxKeyCharacters} autoComplete="off" autoCapitalize="off" spellCheck={false} aria-describedby="redemption-input-help" aria-invalid={issues.length > 0 || error === 'singleKey'}/>
+                : <textarea ref={node => { field.current = node; }} id="redemption-keys" value={draft} onChange={editDraft} disabled={busy} rows={4} maxLength={REDEMPTION_BATCH_LIMITS.maxUtf8Bytes} autoComplete="off" autoCapitalize="off" spellCheck={false} aria-describedby="redemption-input-help" aria-invalid={issues.length > 0}/>}
             <p id="redemption-input-help" className="muted">{tr(mode === 'single' ? 'Введите один ключ. Для нескольких ключей выберите пакетную активацию.' : 'Один ключ в строке. До 100 уникальных ключей; TXT до 64 КиБ. Пустые строки и повторы пропускаются.')}</p>
             <p className="muted">{tr('Ключи используются только для этой операции и не сохраняются в настройках или истории.')}</p>
             {mode !== 'single' && <input ref={fileInput} className="redemption-file-input" type="file" accept=".txt,text/plain" onChange={event => void importFile(event)} disabled={busy} tabIndex={-1} aria-label={tr('Импортировать TXT')}/>}
@@ -452,10 +486,11 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
         {!!issues.length && <ul className="redemption-errors error-text" role="alert">{issues.map((issue, index) => <li key={index}>{tr(issueLabel(issue))}</li>)}</ul>}
         {stoppedBeforeAcceptance && <p role="status">{tr('Обработка остановлена')}</p>}
         {(snapshot || busy && work !== 'official') && <div className="redemption-batch">
-            <div className="redemption-batch-heading"><h3 ref={heading} tabIndex={-1}>{tr(phaseLabel)}</h3>{!wizard && busy && work !== 'discard' && work !== 'official' && stopAction}</div>
+            <div className="redemption-batch-heading"><h3 ref={heading} tabIndex={-1}>{tr(phaseLabel)}</h3>{!wizard && busy && work !== 'discard' && work !== 'official' && work !== 'export' && stopAction}</div>
             <p className="redemption-wait redemption-wait-slot" role={snapshot?.waitSeconds ? 'status' : undefined} aria-live={snapshot?.waitSeconds ? 'polite' : undefined} aria-hidden={snapshot?.waitSeconds ? undefined : true}>{snapshot?.waitSeconds ? tr(snapshot.waitReason === 'batch' ? `Следующий пакет через ${number(snapshot.waitSeconds)} с` : snapshot.waitReason === 'beforeActivation' ? `Активация начнётся через ${number(snapshot.waitSeconds)} с` : activatingQuotaWait ? `Активация продолжится через ${number(snapshot.waitSeconds)} с` : quotaWait ? `Проверка продолжится через ${number(snapshot.waitSeconds)} с` : `Следующий ключ через ${number(snapshot.waitSeconds)} с`) : null}</p>
             {snapshot && <p className="redemption-account">{tr('Аккаунт Epic')}: <strong>{snapshot.accountName}</strong></p>}
             {snapshot && <div className="redemption-counts" role="status" aria-live="polite"><span>{tr(preparing ? 'Проверено' : 'Обработано')}: <b>{number(preparing ? checked : processed)}</b> / {number(items.length)}</span><span>{tr('Успешных активаций')}: <b>{number(successCount)}</b></span></div>}
+            {snapshot && <div className="redemption-export-bar">{rejectedCount > 0 && <button type="button" disabled={busy} onClick={() => void exportRejected()} title={tr('Полные ключи и причины будут записаны только в выбранный TXT.')}><FileDown size={17}/>{tr('Экспорт отклонённых')} ({number(rejectedCount)})</button>}{exportedCount !== null && <span role="status">{tr(`Сохранено отклонённых ключей: ${number(exportedCount)}`)}</span>}{exportError && <p className="error-text" role="alert">{tr(errorLabels[exportError])}</p>}</div>}
             {items.length >= 10 && <p className="muted redemption-batch-note">{tr('Обрабатываем по 10 ключей. После паузы продолжим автоматически.')}</p>}
             {snapshot && <div className="redemption-table-scroll" tabIndex={0} role="region" aria-label={tr('Результаты проверки ключей')}><table className="redemption-table"><thead><tr><th scope="col">{tr('Ключ')}</th><th scope="col">{tr('Продукт')}</th><th scope="col">{tr('Статус')}</th></tr></thead><tbody>{items.map(item => <tr key={item.id} className={`redemption-row redemption-row-${item.status}`} aria-current={item.status === 'checking' || item.status === 'activating' ? 'true' : undefined}><td><code>{item.maskedKey}</code></td><td>{item.title || '—'}</td><td><strong>{tr(activatingQuotaWait && item.status === 'activating' && item.reason === 'rateLimited' ? 'Ожидаем продолжения активации' : quotaWait && item.status === 'checking' ? 'Ожидаем повторной проверки' : statusLabels[item.status])}</strong>{item.reason && <span>{tr(reasonLabels[item.reason] || reasonLabels.unknown)}</span>}<DiagnosticDetails value={item.diagnostic} maskedKey={item.maskedKey}/></td></tr>)}</tbody></table></div>}
             {partialPreview && <p className="redemption-warning" role="status">{tr('Проверена часть списка. Можно активировать готовые ключи; остальные не обработаны.')}</p>}
@@ -477,7 +512,7 @@ export function RedeemView({ account, active, onLibrary, onActivated, onClose }:
             <div className="redemption-wizard-body">{content}</div>
             <footer className="redemption-wizard-footer">{confirm ? confirmationActions : <>
                 {mode ? <button type="button" disabled={busy} onClick={() => void chooseAgain()}><ArrowLeft size={17}/>{tr('Другой способ')}</button> : <button type="button" disabled={busy} onClick={closeWizard}>{tr('Закрыть')}</button>}
-                <div className="redemption-actions">{busy ? work === 'official' ? officialAction : work !== 'discard' && stopAction : mode === 'official' ? officialAction : mode && (snapshot ? batchActions : inputActions)}</div>
+                <div className="redemption-actions">{busy ? work === 'official' ? officialAction : work === 'export' ? <button type="button" disabled><FileDown size={17}/>{tr('Сохранение TXT…')}</button> : work !== 'discard' && stopAction : mode === 'official' ? officialAction : mode && (snapshot ? batchActions : inputActions)}</div>
             </>}</footer>
         </section>
     </ModalFocusScope>, document.body);
