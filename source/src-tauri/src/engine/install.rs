@@ -295,10 +295,15 @@ pub(super) fn stage_root(plan: &Plan) -> Result<PathBuf, String> {
     if stage.join("journal.json").is_file() {
         let journal: Journal = serde_json::from_slice(&fs::read(stage.join("journal.json")).map_err(io)?)
             .map_err(|_| "Не удалось прочитать журнал восстановления")?;
-        if journal.status == "complete" {
+        if matches!(journal.status.as_str(),"complete"|"rolledBack") {
             // Keep the previous rollback backup; each subsequent operation gets its own journal.
             stage = parent.join(format!(".um-engine-{}-{}", &fingerprint[..20], plan.info.id));
         }
+    }
+    // A fresh plan must never reuse saved decisions from a forgotten/cancelled
+    // task. Explicit resume uses resume_stage above and retains those decisions.
+    if stage.join("resume-operations.zlib").exists() {
+        stage=parent.join(format!(".um-engine-{}-{}",&fingerprint[..20],plan.info.id));
     }
     no_links(&stage)?;
     Ok(stage)
@@ -905,7 +910,7 @@ pub async fn engine_install(
                 .map(|g| plan.chunk_sizes.get(g).copied().unwrap_or(64 * 1024 * 1024))
                 .sum::<u64>(),
         )
-        .saturating_add(if already_committed||applying{0}else{1024 * 1024 * 1024});
+        .saturating_add(if already_committed||applying{0}else{workspace_reserve(plan.info.verify,plan.raw.len(),remaining_bytes>0||!chunks.is_empty())});
     if free(&target(&plan.info.path)?)? < reserve {
         return Err(format!(
             "Недостаточно места: требуется до {:.1} ГБ",
@@ -1241,6 +1246,16 @@ pub(crate) fn idle(root:&Path) -> Result<(), String> {
 #[cfg(test)]
 mod transaction_tests {
     use super::*;
+    #[test]
+    fn fresh_verification_does_not_reuse_forgotten_task_decisions_but_resume_retains_them(){
+        let (base,_,mut plan,ops)=fixture();plan.info.id=uuid::Uuid::new_v4().to_string();plan.info.verify=true;
+        let old_stage=stage_root(&plan).unwrap();fs::create_dir_all(&old_stage).unwrap();
+        super::super::resume::save_operations(&old_stage,&ops).unwrap();
+        let fresh=stage_root(&plan).unwrap();assert_ne!(fresh,old_stage);
+        assert!(old_stage.join("resume-operations.zlib").is_file());
+        plan.resume_stage=Some(old_stage.clone());assert_eq!(stage_root(&plan).unwrap(),old_stage);
+        assert!(base.is_absolute());assert!(base.file_name().unwrap().to_string_lossy().starts_with("um-engine-transaction-"));no_links(&base).unwrap();fs::remove_dir_all(base).unwrap();
+    }
     struct MockIdleScope(Option<std::collections::VecDeque<Vec<MockEngineProcess>>>);
     impl MockIdleScope{fn new(snapshots:Vec<Vec<MockEngineProcess>>)->Self{Self(MOCK_IDLE_PROCESSES.with(|s|s.replace(Some(snapshots.into()))))}}
     impl Drop for MockIdleScope{fn drop(&mut self){MOCK_IDLE_PROCESSES.with(|s|{s.replace(self.0.take());});}}
@@ -1710,6 +1725,7 @@ mod transaction_tests {
             build: "5.8.3-3".into(),
             path: root.to_string_lossy().into_owned(),
             update: true,
+            verify: false,
             components: vec![],
             bytes: 3,
             download_bytes: 3,
@@ -1892,7 +1908,7 @@ pub(super) fn legacy_plan(path:&str)->Result<Plan,String>{
     let files:BTreeMap<_,_>=manifest.files().into_iter().filter(|(name,_)|tags.get(name).is_some_and(|t|t.is_empty()||t.iter().any(|t|selected.contains(t)))).collect();
     let bytes=files.values().map(|f|f.size() as u64).sum();
     let id=stage.file_name().and_then(|n|n.to_str()).and_then(|n|n.get(32..)).filter(|s|uuid::Uuid::parse_str(s).is_ok()).map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string());
-    let info=Preview{id,app_name:manifest.app_name_string.clone(),build:j.build,path:j.root.clone(),update:j.operations.iter().any(|o|o.old_hash.is_some()),components:selected.into_iter().map(|tag|Component{label:tag.clone(),tag,bytes:0,selected:true}).collect(),bytes,download_bytes:0,changed:0,added:0,removed:0,required_bytes:0,free_bytes:free(&root)?,conflicts:vec![]};
+    let info=Preview{id,app_name:manifest.app_name_string.clone(),build:j.build,path:j.root.clone(),update:j.operations.iter().any(|o|o.old_hash.is_some()),verify:false,components:selected.into_iter().map(|tag|Component{label:tag.clone(),tag,bytes:0,selected:true}).collect(),bytes,download_bytes:0,changed:0,added:0,removed:0,required_bytes:0,free_bytes:free(&root)?,conflicts:vec![]};
     let plan=Plan{resume_stage:Some(stage.clone()),catalog_item_id:None,remove_unselected:false,source_base,info,raw,files,old:BTreeMap::new(),item:j.item.as_ref().filter(|(_,before,_)|!before.is_null()).map(|(p,b,_)|(p.clone(),b.clone())),chunk_sizes:manifest.chunk_filesize_list.into_iter().map(|(g,n)|(g,n as u64)).collect(),tags};
     super::resume::validate_stage(&plan,&stage)?;Ok(plan)
 }
@@ -1905,8 +1921,9 @@ pub fn engine_pending() -> Vec<Pending> {
             .filter_map(|(_, v)| v["InstallLocation"].as_str().map(PathBuf::from)),
     );
     for parent in crate::common_engine_roots() {
-        if let Ok(entries) = fs::read_dir(parent) {
-            roots.extend(entries.flatten().map(|e| e.path()));
+        roots.push(parent.clone());
+        if let Ok(entries) = fs::read_dir(&parent) {
+            roots.extend(entries.take(512).flatten().map(|e| e.path()));
         }
     }
     let mut seen = BTreeSet::new();

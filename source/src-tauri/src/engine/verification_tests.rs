@@ -88,7 +88,7 @@ impl Fixture {
             old: BTreeMap::new(), item: None, chunk_sizes: BTreeMap::new(), tags: BTreeMap::new(),
             info: Preview {
                 id: self.id.clone(), app_name: "UE_SYNTHETIC".into(), build: "synthetic-1".into(),
-                path: self.root().to_string_lossy().into_owned(), update: true,
+                path: self.root().to_string_lossy().into_owned(), update: true, verify:false,
                 components: Vec::<Component>::new(), bytes: 0, download_bytes: 0,
                 changed: 0, added: 0, removed: 0, required_bytes: 0, free_bytes: 0, conflicts: vec![],
             },
@@ -189,6 +189,39 @@ fn unchanged_manifest_hash_case_does_not_trigger_file_reads() {
         let mut events=vec![];assert!(operations(&p,&AtomicBool::new(false),workers,|s|events.push(s)).unwrap().is_empty());
         let last=events.last().unwrap();assert_eq!((last.done,last.total,last.processed_bytes),(1,1,0));
     }
+}
+
+#[test]
+fn adopted_same_build_hashes_existing_files_reuses_matches_and_adds_only_missing_components(){
+    let f=Fixture::new();let mut plan=f.plan();plan.info.verify=true;
+    for (name,data) in [("Engine/core",b"core".as_slice()),("Engine/editor",b"editor".as_slice()),("Engine/template",b"template".as_slice())] {
+        f.write(name,data);plan.files.insert(name.into(),manifest_file(name,data));
+    }
+    plan.files.insert("Engine/optional".into(),manifest_file("Engine/optional",b"optional"));
+    f.write("Engine/Plugins/Private/User.uplugin",b"private plugin");
+    for workers in [1,2,4] {
+        let mut progress=vec![];let ops=operations(&plan,&AtomicBool::new(false),workers,|s|progress.push(s)).unwrap();
+        assert_eq!(ops.len(),1);assert_eq!(ops[0].name,"Engine/optional");assert!(ops[0].old_hash.is_none());
+        let final_event=progress.last().unwrap();assert_eq!((final_event.done,final_event.total,final_event.processed_bytes),(4,4,18));
+        assert_eq!(fs::read(f.root().join("Engine/Plugins/Private/User.uplugin")).unwrap(),b"private plugin");
+        assert!(!f.root().join("Engine/optional").exists());
+    }
+}
+
+#[test]
+fn verification_never_trusts_unchanged_manifest_and_preserves_conflicting_bytes(){
+    let f=Fixture::new();let mut plan=f.plan();plan.info.verify=true;
+    for name in ["Engine/a","Engine/b","Engine/c","Engine/d"] {
+        f.write(name,b"expected");let file=manifest_file(name,b"expected");plan.files.insert(name.into(),file.clone());plan.old.insert(name.into(),file);
+    }
+    f.write("Engine/a",b"locally modified");
+    for workers in [1,2,4] {
+        let error=operations(&plan,&AtomicBool::new(false),workers,|_|{}).err().expect("Full verification must detect mismatches");
+        assert!(error.contains("Engine/a"));assert_eq!(fs::read(f.root().join("Engine/a")).unwrap(),b"locally modified");
+    }
+    plan.old.clear();
+    assert!(operations(&plan,&AtomicBool::new(false),4,|_|{}).is_err());
+    assert_eq!(fs::read(f.root().join("Engine/a")).unwrap(),b"locally modified");
 }
 
 #[test]

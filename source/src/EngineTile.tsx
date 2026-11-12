@@ -3,12 +3,13 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download } from 'lucide-react';
 import unrealMark from './assets/unreal-mark.svg';
-export function EngineTile({ version, installed, busy, active, onInstall }: {
+export function EngineTile({ version, installed, busy, active, onInstall, unverified = false }: {
     version: string;
     installed: boolean;
     busy: boolean;
     active: boolean;
     onInstall: () => void;
+    unverified?: boolean;
 }) {
     const [menu, setMenu] = useState<{
         x: number;
@@ -40,6 +41,7 @@ export function EngineTile({ version, installed, busy, active, onInstall }: {
         show(r.left + 12, r.top + 12);
     } }}>
    <img src={unrealMark} alt={tr("")} aria-hidden="true"/>
+   {unverified && <span className="engine-channel-unverified">{tr("Канал не подтверждён")}</span>}
    <span className="engine-tile-version">{tr(version)}</span><span className="engine-tile-caption">{tr("UNREAL ENGINE")}</span>
    {tr(installed && <span className="downloaded-badge">{tr("Установлен")}</span>)}
   </button>

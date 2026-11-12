@@ -17,6 +17,7 @@ mod prerequisites;
 mod scan_storage;
 mod access;
 pub mod resume;
+pub mod location;
 
 #[derive(Default)]
 pub struct EngineState {
@@ -34,8 +35,11 @@ pub struct EngineRelease {
     app_name: String,
     version: String,
     build: String,
+    #[serde(default="unknown_channel")]
+    channel: String,
     installed: Vec<Installed>,
 }
+fn unknown_channel()->String{"unknown".into()}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Installed {
@@ -60,6 +64,8 @@ pub struct Preview {
     build: String,
     path: String,
     update: bool,
+    #[serde(default)]
+    verify: bool,
     components: Vec<Component>,
     bytes: u64,
     download_bytes: u64,
@@ -146,6 +152,7 @@ fn items() -> Vec<(PathBuf, serde_json::Value)> {
         .collect()
 }
 fn version(root: &Path) -> Result<(String, String), String> {
+    no_links(&root.join("Engine/Build/Build.version"))?;
     let v: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("Engine/Build/Build.version")).map_err(io)?)
             .map_err(|_| "Не удалось прочитать версию движка")?;
@@ -190,11 +197,15 @@ pub async fn engine_catalog(
         cached_catalog(cache)
     } else {
         let mut fresh = Vec::new();
-        for a in crate::epic::engine_assets(&app, &epic).await? {
+        let assets=crate::epic::engine_assets(&app,&epic).await?;
+        let channels=crate::epic::engine_release_channels(&app,&epic,&assets).await;
+        for a in assets {
+            let channel=channels.get(&a.app_name).cloned().unwrap_or_else(||"unknown".into());
             fresh.push(EngineRelease {
                 version: a.app_name.trim_start_matches("UE_").into(),
                 app_name: a.app_name,
                 build: a.build_version,
+                channel,
                 installed: Vec::new(),
             });
         }
@@ -296,25 +307,19 @@ pub async fn engine_prepare(
             .is_some_and(|p| same_installation_path(p,&path))
     });
     let installed = root.join("Engine/Build/Build.version").is_file();
-    if installed != update {
-        return Err(if update {
-            "Установленный движок не найден. Повторите сканирование."
-        } else {
-            "Для новой установки выберите отдельную пустую папку."
-        }
-        .into());
+    if update && !installed {
+        return Err("Установленный движок не найден. Повторите сканирование.".into());
     }
-    if update {
+    if root.join(".um-engine-update.json").exists() {
+        return Err("Предыдущая установка не завершена. Сначала продолжите или восстановите её.".into());
+    }
+    if installed {
         let (v, _) = version(&root)?;
         if !v.starts_with(&format!("{}.", app_name.trim_start_matches("UE_"))) {
             return Err("Новая номерная версия устанавливается в отдельную папку".into());
         }
-        if item.as_ref().is_some_and(|(_, i)| i["AppName"] != app_name)
-            || item.is_none() && !root.join(".egstore/um-install.json").is_file()
-        {
-            return Err(
-                "Для обновления нужен исходный манифест установки Epic или Unreal Manager".into(),
-            );
+        if item.as_ref().is_some_and(|(_, i)| i["AppName"] != app_name) {
+            return Err("Папка зарегистрирована для другой версии движка".into());
         }
     } else if root.exists() && fs::read_dir(&root).map_err(io)?.next().is_some() {
         return Err("Для новой версии выберите пустую папку".into());
@@ -359,6 +364,31 @@ pub async fn engine_prepare(
 fn same_build(build: &str, version: &str, changelist: &str) -> bool {
     build.split_once('-').is_some_and(|(v, rest)| v == version && rest.split('+').next() == Some(changelist))
 }
+fn validate_installed_build(root:&Path,app_name:&str,build:&str)->Result<bool,String>{
+    let (installed,changelist)=version(root)?;
+    let current=semver::Version::parse(&installed).map_err(|_|"Некорректная версия движка")?;
+    let (release,rest)=build.split_once('-').ok_or("Некорректная сборка манифеста")?;
+    let latest=semver::Version::parse(release).map_err(|_|"Некорректная версия манифеста")?;
+    let latest_cl=rest.split('+').next().and_then(|s|s.parse::<u64>().ok()).ok_or("Некорректная сборка манифеста")?;
+    let current_cl=changelist.parse::<u64>().map_err(|_|"Некорректная сборка движка")?;
+    if format!("UE_{}.{}",current.major,current.minor)!=app_name || current.major!=latest.major || current.minor!=latest.minor {
+        return Err("Новая номерная версия устанавливается в отдельную папку".into());
+    }
+    if current>latest || (current==latest && current_cl>latest_cl) {
+        return Err("Установленная сборка новее доступной. Понижение версии запрещено.".into());
+    }
+    Ok(same_build(build,&installed,&changelist))
+}
+fn preview_build(build:&str)->bool{
+    let build=build.to_ascii_lowercase();["preview","earlyaccess","early-access","experimental","beta","alpha"].iter().any(|s|build.contains(s))
+}
+fn workspace_reserve(verify:bool,raw_size:usize,has_file_work:bool)->u64{
+    if verify && !has_file_work {
+        // A verification-only run needs durable task/manifest metadata, not a
+        // gigabyte of assembly space. Keep a bounded metadata allowance.
+        (raw_size as u64).saturating_mul(4).saturating_add(16*1024*1024)
+    }else{1024*1024*1024}
+}
 fn prepare(
     root: PathBuf,
     item: Option<(PathBuf, serde_json::Value)>,
@@ -372,16 +402,18 @@ fn prepare(
     if m.app_name_string != app_name || m.b_is_file_data {
         return Err("Неподходящий манифест движка".into());
     }
+    let installed=root.join("Engine/Build/Build.version").is_file();
+    let verify=if installed {validate_installed_build(&root,&app_name,&m.build_version_string)?}else{false};
+    if installed && item.as_ref().and_then(|(_,item)|item["AppVersionString"].as_str()).is_some_and(|build|preview_build(build)!=preview_build(&m.build_version_string)) {
+        return Err("Предварительная и стабильная сборки устанавливаются в отдельные папки".into());
+    }
     m.custom_fields
         .get_or_insert_with(Default::default)
         .insert("SourceURL".into(), base.trim_end_matches('/').into());
     let own = if root.join(".egstore/um-install.json").is_file() {
         let p = root.join(".egstore/um-install.json");
         no_links(&p)?;
-        Some(
-            serde_json::from_slice::<serde_json::Value>(&fs::read(p).map_err(io)?)
-                .map_err(|_| "Повреждена запись установки")?,
-        )
+        serde_json::from_slice::<serde_json::Value>(&fs::read(p).map_err(io)?).ok()
     } else {
         None
     };
@@ -390,19 +422,18 @@ fn prepare(
         .and_then(|(_, v)| v["CompleteManifestPath"].as_str())
         .or_else(|| own.as_ref().and_then(|v| v["manifest"].as_str()));
     let mut installed_tags = None;
-    let old = if let Some(p) = old_path {
+    // Launcher state may disappear with Windows while the engine remains on a
+    // different volume. Missing metadata is not evidence that its folder is empty.
+    let old_manifest=old_path.and_then(|p|{
         let p = PathBuf::from(p);
-        no_links(&p)?;
-        let bytes = fs::read(p).map_err(io)?;
-        let old = parse(&bytes)?;
+        no_links(&p).ok()?;
+        let bytes=fs::read(p).ok()?;
+        Some((parse(&bytes).ok()?,bytes))
+    });
+    let old = if let Some((old,bytes)) = old_manifest {
         if let Some((_, ref item)) = item {
-            installed_tags = Some(infer_components(
-                &old,
-                &manifest::tags(&bytes)?,
-                item["InstallSize"]
-                    .as_u64()
-                    .ok_or("Нет размера установки Epic")?,
-            )?);
+            let old_tags=manifest::tags(&bytes)?;
+            installed_tags=item["InstallSize"].as_u64().and_then(|size|infer_components(&old,&old_tags,size).ok());
         }
         if old.app_name_string != app_name {
             return Err("Исходный манифест другой версии".into());
@@ -410,11 +441,17 @@ fn prepare(
         if newer(&m.build_version_string, &old.build_version_string) {
             return Err("Установленная сборка новее доступной. Понижение версии запрещено.".into());
         }
+        if preview_build(&old.build_version_string)!=preview_build(&m.build_version_string) {
+            return Err("Предварительная и стабильная сборки устанавливаются в отдельные папки".into());
+        }
         old.file_manifest_list
             .into_iter()
             .map(|f| (f.filename.clone(), f))
             .collect()
     } else {
+        if installed && !verify {
+            return Err("Для обновления этой сборки нужен её исходный манифест. Подключите установленный движок отдельно или выберите папку с точно такой же доступной сборкой для проверки.".into());
+        }
         BTreeMap::<String, FileManifestList>::new()
     };
     let mut components: BTreeMap<String, Component> = BTreeMap::new();
@@ -465,10 +502,7 @@ fn prepare(
         for c in components.values_mut() {
             c.selected = selection.contains(&c.tag);
         }
-    } else if let Some(ref own) = own {
-        let saved = own["tags"]
-            .as_array()
-            .ok_or("Нет списка установленных компонентов")?;
+    } else if let Some(saved) = own.as_ref().and_then(|own|own["tags"].as_array()) {
         for c in components.values_mut() {
             c.selected = saved.iter().any(|t| t.as_str() == Some(&c.tag));
         }
@@ -476,7 +510,7 @@ fn prepare(
         for c in components.values_mut() {
             c.selected = tags.contains(&c.tag);
         }
-    } else if old.is_empty() {
+    } else {
         for c in components.values_mut() {
             c.selected = matches!(c.tag.as_str(), "engine_source" | "templates");
         }
@@ -498,7 +532,11 @@ fn prepare(
             continue;
         }
         let current = old.get(&name);
-        let different = current.is_none_or(|o| o.file_hash != f.file_hash) || !root.join(&name).is_file();
+        // During adoption every present file is read and compared before any
+        // writes. Unknown mismatches remain conflicts, not automatic overwrites;
+        // the preview therefore counts missing files as the required download.
+        let present=root.join(&name).is_file();
+        let different = !present || (!verify && current.is_none_or(|o| o.file_hash != f.file_hash));
         if different {
             if current.is_some() {
                 changed += 1
@@ -523,14 +561,15 @@ fn prepare(
         .filter(|n| !tags.contains_key(*n) && root.join(n).is_file())
         .count();
     let download_bytes = chunks.values().sum();
-    let required_bytes = bytes + download_bytes + 1024 * 1024 * 1024;
+    let required_bytes = bytes + download_bytes + workspace_reserve(verify,raw.len(),bytes>0||download_bytes>0);
     let free_bytes = free(&root)?;
     let info = Preview {
         id: uuid::Uuid::new_v4().to_string(),
         app_name,
         build: m.build_version_string,
         path: root.to_string_lossy().into_owned(),
-        update: !old.is_empty(),
+        update: installed,
+        verify,
         components: components.into_values().collect(),
         bytes,
         download_bytes,
@@ -569,7 +608,10 @@ pub fn engine_launch(path: String, state: tauri::State<'_, EngineState>) -> Resu
     if root.join(".um-engine-update.json").exists() {
         return Err("Предыдущее обновление не завершено. Сначала восстановите установку.".into());
     }
-    std::process::Command::new(root.join("Engine/Binaries/Win64/UnrealEditor.exe"))
+    let bin=root.join("Engine/Binaries/Win64");
+    let editor=[bin.join("UnrealEditor.exe"),bin.join("UE4Editor.exe")].into_iter().find(|p|p.is_file()).unwrap_or_else(||bin.join("UnrealEditor.exe"));
+    no_links(&editor)?;
+    std::process::Command::new(editor)
         .current_dir(root)
         .spawn()
         .map_err(io)?;
@@ -582,12 +624,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("um-catalog-test-{}", uuid::Uuid::new_v4()));
         let path = root.join("engines.json");
         assert!(super::cached_catalog(&path).is_empty());
-        let mut entries = vec![super::EngineRelease {app_name:"UE_5.8".into(),version:"5.8".into(),build:"5.8.3-1".into(),installed:vec![]}];
+        let mut entries = vec![super::EngineRelease {app_name:"UE_5.8".into(),version:"5.8".into(),build:"5.8.3-1".into(),channel:"stable".into(),installed:vec![]}];
         super::save_catalog(&path,&entries).unwrap();
         assert_eq!(super::cached_catalog(&path)[0].build,"5.8.3-1");
         entries[0].build="5.8.4-2".into();
         super::save_catalog(&path,&entries).unwrap();
         assert_eq!(super::cached_catalog(&path)[0].build,"5.8.4-2");
+        std::fs::write(&path,br#"[{"appName":"UE_5.8","version":"5.8","build":"5.8.3-1","installed":[]}]"#).unwrap();
+        assert_eq!(super::cached_catalog(&path)[0].channel,"unknown");
         std::fs::write(&path,b"broken cache").unwrap();
         assert!(super::cached_catalog(&path).is_empty());
         std::fs::remove_file(&path).unwrap();
@@ -599,6 +643,30 @@ mod tests {
         assert!(newer("5.8.1-56057345+++UE5", "5.8.3-58210709+++UE5"));
         assert!(!newer("5.8.3-58210709+++UE5", "5.8.3-58210709+++UE5"));
         assert!(!newer("unknown", "new"));
+    }
+    #[test]
+    fn existing_installation_accepts_exact_build_and_refuses_branch_changes_and_downgrades(){
+        let root=std::env::temp_dir().join(format!("um-engine-adoption-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("Engine/Build")).unwrap();
+        fs::write(root.join("Engine/Build/Build.version"),br#"{"MajorVersion":5,"MinorVersion":8,"PatchVersion":3,"Changelist":123}"#).unwrap();
+        assert!(validate_installed_build(&root,"UE_5.8","5.8.3-123+++UE5+Release-5.8").unwrap());
+        assert!(!validate_installed_build(&root,"UE_5.8","5.8.4-124+++UE5+Release-5.8").unwrap());
+        assert!(validate_installed_build(&root,"UE_5.7","5.7.9-124+++UE5+Release-5.7").is_err());
+        assert!(validate_installed_build(&root,"UE_5.8","5.8.2-124+++UE5+Release-5.8").is_err());
+        assert!(validate_installed_build(&root,"UE_5.8","5.8.3-122+++UE5+Release-5.8").is_err());
+        assert!(validate_installed_build(&root,"UE_5.8","invalid").is_err());
+        assert!(root.is_absolute());assert!(root.file_name().unwrap().to_string_lossy().starts_with("um-engine-adoption-"));no_links(&root).unwrap();fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn channel_identity_keeps_stable_and_previews_distinct(){
+        assert!(!preview_build("5.8.3-123+++UE5+Release-5.8"));
+        for build in ["5.9.0-123+++UE5+Preview-5.9","5.9.0-123-earlyaccess","5.9.0-beta.1"] {assert!(preview_build(build));}
+    }
+    #[test]
+    fn verification_only_reserves_metadata_instead_of_a_full_download_workspace(){
+        assert_eq!(workspace_reserve(true,1024,false),16*1024*1024+4096);
+        assert_eq!(workspace_reserve(true,1024,true),1024*1024*1024);
+        assert_eq!(workspace_reserve(false,1024,false),1024*1024*1024);
     }
 }
 

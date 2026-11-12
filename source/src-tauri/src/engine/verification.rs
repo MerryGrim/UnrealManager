@@ -32,13 +32,13 @@ fn jobs(plan:&Plan)->Vec<Job<'_>>{
     }
     jobs
 }
-fn inspect(job:Job<'_>,root:&Path,cancel:&AtomicBool,abort:&impl Fn()->bool,buffer:&mut[u8],mut read:impl FnMut(u64))->Result<Option<Operation>,Failure>{
+fn inspect(job:Job<'_>,root:&Path,verify:bool,cancel:&AtomicBool,abort:&impl Fn()->bool,buffer:&mut[u8],mut read:impl FnMut(u64))->Result<Option<Operation>,Failure>{
     stopped(cancel,abort)?;
     let name=job.name();let path=root.join(relative(name)?);
     if let Job::Wanted(_,new,Some(old))=job{
         // Existing delta-update policy: unchanged manifest entries need a fresh
         // file-presence check, not another full content hash.
-        if old.file_hash.eq_ignore_ascii_case(&new.file_hash)&&path.is_file(){return Ok(None);}
+        if !verify&&old.file_hash.eq_ignore_ascii_case(&new.file_hash)&&path.is_file(){return Ok(None);}
     }
     no_links(&path)?;
     // Direct open replaces exists()+open(); hash this already-checked path
@@ -75,13 +75,13 @@ fn operations_with_interval(plan:&Plan,cancel:&AtomicBool,workers:usize,interval
     let workers=match workers{2=>2,4=>4,_=>1}.min(jobs.len().max(1));
     let result=if workers==1{
         let mut buffer=vec![0u8;65536];let mut output=Vec::new();
-        (||{for &job in &jobs{reporter.current=Some(job.name());let result=inspect(job,&root,cancel,&||false,&mut buffer,|n|{reporter.bytes+=n;reporter.emit(false);});match result{Ok(Some(op))=>output.push(op),Ok(None)=>(),Err(Failure::Error(e))=>return Err(e),Err(Failure::Aborted)=>return Err("Проверка остановлена".into())};reporter.done+=1;reporter.emit(false);}Ok(output)})()
+        (||{for &job in &jobs{reporter.current=Some(job.name());let result=inspect(job,&root,plan.info.verify,cancel,&||false,&mut buffer,|n|{reporter.bytes+=n;reporter.emit(false);});match result{Ok(Some(op))=>output.push(op),Ok(None)=>(),Err(Failure::Error(e))=>return Err(e),Err(Failure::Aborted)=>return Err("Проверка остановлена".into())};reporter.done+=1;reporter.emit(false);}Ok(output)})()
     }else{
-        parallel(&jobs,&root,cancel,workers,&mut reporter)
+        parallel(&jobs,&root,plan.info.verify,cancel,workers,&mut reporter)
     };
     if result.is_ok(){reporter.current=None;}reporter.emit(true);result
 }
-fn parallel<'a,F:FnMut(Snapshot)>(jobs:&[Job<'a>],root:&Path,cancel:&AtomicBool,workers:usize,reporter:&mut Reporter<'a,F>)->Result<Vec<Operation>,String>{
+fn parallel<'a,F:FnMut(Snapshot)>(jobs:&[Job<'a>],root:&Path,verify:bool,cancel:&AtomicBool,workers:usize,reporter:&mut Reporter<'a,F>)->Result<Vec<Operation>,String>{
     std::thread::scope(|scope|{
         let (job_send,job_receive)=mpsc::channel::<usize>();let job_receive=Arc::new(Mutex::new(job_receive));
         let (result_send,result_receive)=mpsc::channel();
@@ -94,7 +94,7 @@ fn parallel<'a,F:FnMut(Snapshot)>(jobs:&[Job<'a>],root:&Path,cancel:&AtomicBool,
                 let index=match receiver.lock(){Ok(r)=>match r.recv(){Ok(i)=>i,Err(_)=>break},Err(_)=>break};
                 if stop.load(Ordering::SeqCst)||index>first_error.load(Ordering::SeqCst){break;}
                 if let Ok(mut slot)=current[worker].lock(){*slot=Some(index);}
-                let result=inspect(jobs[index],root,cancel,&||stop.load(Ordering::SeqCst)||index>first_error.load(Ordering::SeqCst),&mut buffer,|n|{bytes.fetch_add(n,Ordering::SeqCst);});
+                let result=inspect(jobs[index],root,verify,cancel,&||stop.load(Ordering::SeqCst)||index>first_error.load(Ordering::SeqCst),&mut buffer,|n|{bytes.fetch_add(n,Ordering::SeqCst);});
                 if let Ok(mut slot)=current[worker].lock(){*slot=None;}
                 match result{Err(Failure::Aborted)=>break,Err(Failure::Error(e))=>{first_error.fetch_min(index,Ordering::SeqCst);if send.send((index,Err(e))).is_err(){break;}},Ok(op)=>if send.send((index,Ok(op))).is_err(){break;}}
             }}));

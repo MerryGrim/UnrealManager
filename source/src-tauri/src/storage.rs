@@ -155,7 +155,7 @@ pub struct StorageInfo {data_path:String,cache_path:String,settings_path:String,
 fn cache_files(base:&Path)->Result<Vec<PathBuf>,String> {
     crate::vault::no_links(base)?;
     let mut paths=Vec::new();
-    for name in ["libraries","covers","gallery","details","engines.json"] {
+    for name in ["libraries","covers","gallery","details","engines.json","engine-channels.json"] {
         let path=base.join(name);
         if !path.exists(){continue;}
         for entry in walkdir::WalkDir::new(&path).follow_links(false) {
@@ -224,9 +224,9 @@ pub async fn clear_cache()->Result<u64,String> {
     #[test] fn cache_clear_preserves_settings_vault_and_unknown_files(){
         let dir=std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         fs::create_dir_all(dir.join("Cache/covers")).unwrap();fs::create_dir_all(dir.join("Settings")).unwrap();fs::create_dir_all(dir.join("Vault")).unwrap();
-        fs::write(dir.join("Cache/covers/a.jpg"),b"cover").unwrap();fs::write(dir.join("Cache/engines.json"),b"[]").unwrap();
+        fs::write(dir.join("Cache/covers/a.jpg"),b"cover").unwrap();fs::write(dir.join("Cache/engines.json"),b"[]").unwrap();fs::write(dir.join("Cache/engine-channels.json"),b"{}").unwrap();
         for p in ["Settings/preferences.json","Vault/asset","Cache/unknown.txt"]{fs::write(dir.join(p),b"keep").unwrap();}
-        assert_eq!(clear_at(&dir.join("Cache")).unwrap(),7);assert_eq!(clear_at(&dir.join("Cache")).unwrap(),0);
+        assert_eq!(clear_at(&dir.join("Cache")).unwrap(),9);assert_eq!(clear_at(&dir.join("Cache")).unwrap(),0);
         for p in ["Settings/preferences.json","Vault/asset","Cache/unknown.txt"]{assert_eq!(fs::read(dir.join(p)).unwrap(),b"keep");}
         fs::remove_dir_all(dir).unwrap();
     }

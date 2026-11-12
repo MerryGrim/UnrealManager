@@ -19,6 +19,7 @@ type Installed = {
     updateAvailable: boolean;
 };
 type Release = {
+    channel?: 'stable' | 'preview' | 'unknown';
     appName: string;
     version: string;
     build: string;
@@ -36,6 +37,7 @@ type Preview = {
     build: string;
     path: string;
     update: boolean;
+    verify?: boolean;
     components: Component[];
     bytes: number;
     downloadBytes: number;
@@ -48,6 +50,9 @@ type Preview = {
 };
 type Progress = EngineProgress & {networkBytes:number;bytesPerSecond?:number};
 const size = (n: number) => `${(n / 1073741824).toLocaleString(getLocale(), { maximumFractionDigits: 1 })} ГБ`;
+export function isPreviewRelease(release: { appName: string; build: string; channel?: 'stable' | 'preview' | 'unknown' }): boolean {
+    return release.channel && release.channel !== 'unknown' ? release.channel === 'preview' : /(?:^|[^a-z])(?:preview|early[ _-]?access|alpha|beta|ea)(?:$|[^a-z])/i.test(release.appName + ' ' + release.build);
+}
 const compareVersions = (a: string, b: string) => b.localeCompare(a, 'en', { numeric: true });
 export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
     active?: boolean;
@@ -55,6 +60,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
     onRefresh: () => Promise<void>;
     onProgress: (progress: EngineTransfer | null) => void;
 }) {
+    const [channel, setChannel] = useState<'stable' | 'preview'>('stable');
     const [deletion, setDeletion] = useState<string | null>(null);
     const [pending, setPending] = useState<{
         path: string;
@@ -68,7 +74,8 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
     const [isModify, setIsModify] = useState(false);
     const [resuming,setResuming]=useState(false);
     const [recovering,setRecovering]=useState<string|null>(null);
-    const check = async () => { setChecking(true); setError(''); try {
+    const check = async (refreshLocal = true) => { setChecking(true); setError(''); try {
+        if (refreshLocal) await onRefresh();
         setPending(await invoke<{
             path: string;
             build: string;
@@ -87,10 +94,10 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
             setReleases(cached);
     }
     catch { } if (!cancelled)
-        await check(); })(); return () => { cancelled = true; }; }, []);
+        await check(false); })(); return () => { cancelled = true; }; }, []);
     const close = () => { visible.current = false; setOpen(false); if (!lock.current)
         void invoke('engine_discard'); };
-    const select = (release: Release, destination?: string, modify = false) => {
+    const select = (release: Release, destination?: string, modify = false, verify = false) => {
         if (lock.current)
             return;
         setResuming(false);
@@ -98,7 +105,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
         selectedComponents.current = undefined;
         setChoice(release);
         setPath(destination || '');
-        setIsUpdate(!!destination);
+        setIsUpdate(!!destination && !verify);
         setIsModify(modify);
         setPreview(null);
         setProgress(null);
@@ -121,6 +128,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
             if (visible.current) {
                 selectedComponents.current = prepared.components.filter(c => c.selected).map(c => c.tag);
                 setPreview(prepared);
+                setPath(prepared.path);
             } else
                 await invoke('engine_discard');
             setProgress(null);
@@ -146,7 +154,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
     }; try {
         setResult(await invoke<string>('engine_install', { id: preview.id, onProgress: channel }));
         await onRefresh();
-        await check();
+        await check(false);
     }
     catch (e) {
         setError(String(e));
@@ -175,7 +183,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
         setProgress(initial);onProgress({...initial,title:tr('Восстанавливаем исходные файлы'),bytesPerSecond:0});
         const channel=new Channel<Progress>();
         channel.onmessage=value=>{const current={...value,networkBytes:0,bytesPerSecond:0,canPause:false};setProgress(current);onProgress({...current,title:tr('Восстанавливаем исходные файлы')});};
-        try{await invoke('engine_recover',{path:destination,onProgress:channel});setResult('Изменения отменены');await onRefresh();await check();}
+        try{await invoke('engine_recover',{path:destination,onProgress:channel});setResult('Изменения отменены');await onRefresh();await check(false);}
         catch(error){setError(String(error));}
         finally{setBusy(false);lock.current=false;onProgress(null);}
     };
@@ -183,13 +191,28 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
     const browse = async () => { try {
         const folder = await invoke<string | null>('choose_project_location', { folder: true });
         if (folder && choice) {
-            setPath(`${folder.replace(/[\\/]$/, '')}\\UE_${choice.version}`);
+            setPath(await invoke<string>('engine_resolve_location', { path: folder, appName: choice.appName }));
             setPreview(null);
         }
     }
     catch (e) {
         setError(String(e));
     } };
+    const addExisting = async () => {
+        if (lock.current) return;
+        lock.current = true;
+        setBusy(true);
+        setError('');
+        try {
+            const folder = await invoke<string | null>('choose_project_location', { folder: true });
+            if (!folder) return;
+            await invoke('engine_adopt_location', { path: folder });
+            await onRefresh();
+            setTab('installed');
+            setReleases(await invoke<Release[]>('engine_catalog', { cachedOnly: true }));
+        } catch (e) { setError(String(e)); }
+        finally { lock.current = false; setBusy(false); }
+    };
     const launch = async (p: string) => { try {
         await invoke('engine_launch', { path: p });
     }
@@ -197,6 +220,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
         setError(String(e));
     } };
     const available = [...releases].sort((a, b) => compareVersions(a.build, b.build)).filter((r, i, all) => all.findIndex(x => x.appName === r.appName) === i);
+    const visibleReleases = available.filter(r => isPreviewRelease(r) === (channel === 'preview'));
     const installationStep = !!progress && progress.phase !== 'Определяем размер загрузки';
     const componentStep = !!preview && !result && !installationStep && (!isUpdate || isModify);
     const canReturnToLocation = !!preview && !busy && !resuming && !isUpdate && !installationStep && !result;
@@ -208,27 +232,28 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
         setError('');
     };
     const local = engines.map(e => ({ e, release: releases.find(r => r.installed.some(i => i.path.toLowerCase() === e.path.toLowerCase())) }));
-    return <div className="content engine-content"><div className="toolbar"><div className="tabs"><button className={tab === 'installed' ? 'selected' : ''} onClick={() => setTab('installed')}>{tr("Установленные")}</button><button className={tab === 'available' ? 'selected' : ''} onClick={() => setTab('available')}>{tr("Доступные")}</button></div><PageActions><button disabled={checking || busy} onClick={() => void check()}><RefreshCw size={17} className={checking ? 'spin' : ''}/>{tr(checking ? 'Проверяем…' : 'Проверить обновления')}</button><button className="primary" onClick={() => setTab('available')}><Download size={17}/>{tr("Установить движок")}</button></PageActions></div>
+    return <div className="content engine-content"><div className="toolbar"><div className="tabs"><button className={tab === 'installed' ? 'selected' : ''} onClick={() => setTab('installed')}>{tr("Установленные")}</button><button className={tab === 'available' ? 'selected' : ''} onClick={() => setTab('available')}>{tr("Доступные")}</button></div><PageActions><button disabled={checking || busy} onClick={() => void addExisting()}><FolderOpen size={17}/>{tr("Добавить установленный")}</button><button disabled={checking || busy} onClick={() => void check()}><RefreshCw size={17} className={checking ? 'spin' : ''}/>{tr(checking ? 'Проверяем…' : 'Проверить обновления')}</button><button className="primary" onClick={() => setTab('available')}><Download size={17}/>{tr("Установить движок")}</button></PageActions></div>
  {!busy&&<EngineResumeTasks busy={busy} legacy={pending} onResume={(id,path)=>void resume(id,path)} refreshKey={result} onRecover={destination=>void recover(destination)}/>}
  {recovering&&<EngineRecoveryProgress path={recovering} progress={progress} busy={busy} result={result} error={error} onClose={()=>{setRecovering(null);setProgress(null);setResult('');setError('');}}/>}
  {tr(error && !open && !recovering && <EnginePermissionError error={error}/>)}{tr(busy && !open && !recovering && <button className="engine-operation" onClick={() => { visible.current = true; setOpen(true); }}><RefreshCw className={progress?.paused?"":"spin"} size={17}/>{tr(progress?.paused?"На паузе":formatEnginePhase(progress?.phase || 'Операция с движком'))}{progress && engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</button>)}
- {tr(tab === 'installed' ? <div className="grid" onContextMenu={event => event.preventDefault()}>{tr(local.map(({ e, release }) => { const installed = release?.installed.find(i => i.path.toLowerCase() === e.path.toLowerCase()); return <div className="card engine" key={e.path} tabIndex={0} aria-label={tr(`Unreal Engine ${installed?.version || e.version}`)}><div className="ue-logo">{tr("UE")}</div><div><span className="eyebrow">{tr("UNREAL ENGINE")}</span><div className="engine-version-heading"><h3>{tr(installed?.version || e.version)}</h3>{tr(installed?.updateAvailable && <span className="engine-update-badge">{tr("Доступна ")}{tr(release?.build.split('-')[0])}</span>)}</div><p>{e.path}</p><small>{tr("Установлена")}</small></div><div className="card-actions"><button disabled={busy} className="primary" onClick={() => void launch(e.path)}><Rocket size={16}/>{tr("Запустить")}</button><button className="engine-icon-action" title={tr("Изменить")} aria-label={tr("Изменить")} disabled={busy} onClick={() => { if (release) select(release, e.path, true); else setError(tr("Войдите в Epic и проверьте список доступных движков.")); }}><SlidersHorizontal size={19}/></button><button disabled={busy} className="danger-text engine-icon-action" title={tr("Удалить навсегда")} aria-label={tr("Удалить навсегда")} onClick={() => setDeletion(e.path)}><Trash2 size={19}/></button>{tr(release && installed?.updateAvailable && <button disabled={busy} onClick={() => select(release, e.path)}><Download size={17}/>{tr("Обновить")}</button>)}</div>{tr(activeApp === release?.appName && progress && busy && <div className="engine-tile-progress"><progress aria-label={tr("Прогресс загрузки")} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><span>{tr(progress.paused?"На паузе":formatEnginePhase(progress.phase))}{engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</span></div>)}</div>; }))}</div> : <div className="fab-grid engine-available-grid">{tr(available.map(r => <EngineTile key={r.appName} version={r.build.split('-')[0]} installed={r.installed.length > 0} busy={busy} active={active && tab === 'available'} onInstall={() => select(r)}/>))}</div>)}
+ {tr(tab === 'installed' ? <div className="grid" onContextMenu={event => event.preventDefault()}>{tr(local.map(({ e, release }) => { const installed = release?.installed.find(i => i.path.toLowerCase() === e.path.toLowerCase()); return <div className="card engine" key={e.path} tabIndex={0} aria-label={tr(`Unreal Engine ${installed?.version || e.version}`)}><div className="ue-logo">{tr("UE")}</div><div><span className="eyebrow">{tr("UNREAL ENGINE")}</span><div className="engine-version-heading"><h3>{tr(installed?.version || e.version)}</h3>{tr(installed?.updateAvailable && <span className="engine-update-badge">{tr("Доступна ")}{tr(release?.build.split('-')[0])}</span>)}</div><p>{e.path}</p><small>{tr("Установлена")}</small></div><div className="card-actions"><button disabled={busy} className="primary" onClick={() => void launch(e.path)}><Rocket size={16}/>{tr("Запустить")}</button><button className="engine-icon-action" title={tr("Проверить файлы")} aria-label={tr("Проверить файлы")} disabled={busy} onClick={() => { if (release) select(release, e.path, false, true); else setError(tr("Войдите в Epic и проверьте список доступных движков.")); }}><RefreshCw size={19}/></button><button className="engine-icon-action" title={tr("Изменить")} aria-label={tr("Изменить")} disabled={busy} onClick={() => { if (release) select(release, e.path, true); else setError(tr("Войдите в Epic и проверьте список доступных движков.")); }}><SlidersHorizontal size={19}/></button><button disabled={busy} className="danger-text engine-icon-action" title={tr("Удалить навсегда")} aria-label={tr("Удалить навсегда")} onClick={() => setDeletion(e.path)}><Trash2 size={19}/></button>{tr(release && installed?.updateAvailable && <button disabled={busy} onClick={() => select(release, e.path)}><Download size={17}/>{tr("Обновить")}</button>)}</div>{tr(activeApp === release?.appName && progress && busy && <div className="engine-tile-progress"><progress aria-label={tr("Прогресс загрузки")} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><span>{tr(progress.paused?"На паузе":formatEnginePhase(progress.phase))}{engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</span></div>)}</div>; }))}</div> : <div className="engine-catalogue"><div className="tabs engine-channel-tabs" role="group" aria-label={tr("Канал выпусков движка")}><button className={channel === 'stable' ? 'selected' : ''} aria-pressed={channel === 'stable'} onClick={() => setChannel('stable')}>{tr("Основные релизы")}</button><button className={channel === 'preview' ? 'selected' : ''} aria-pressed={channel === 'preview'} onClick={() => setChannel('preview')}>{tr("Превью-версии")}</button></div><div className="fab-grid engine-available-grid">{tr(visibleReleases.map(r => <EngineTile key={r.appName} version={r.build.split('-')[0]} unverified={r.channel === 'unknown'} installed={r.installed.length > 0} busy={busy} active={active && tab === 'available'} onInstall={() => select(r)}/>))}</div>{!visibleReleases.length && !!releases.length && <p className="empty">{tr(channel === 'preview' ? 'Превью-версии сейчас недоступны.' : 'Основные релизы сейчас недоступны.')}</p>}</div>)}
  {tr(deletion && <EngineDelete path={deletion} onClose={() => setDeletion(null)} onDeleted={async () => { await onRefresh(); setPending(await invoke<{
         path: string;
         build: string;
     }[]>('engine_pending')); setReleases(await invoke<Release[]>('engine_catalog', { cachedOnly: true })); }}/>)}
  {tr(tab === 'available' && !releases.length && !checking && <p className="empty">{tr("Войдите в Epic и проверьте список доступных движков.")}</p>)}
- {tr(open && choice && active && createPortal(<div className="modal-backdrop engine-modal-backdrop"><section className={`modal engine-wizard${componentStep ? ' engine-component-step'+(parseEnginePermissionError(error)?' engine-permission-step':'') : installationStep && !result ? ' engine-progress-step' : ''}`} role="dialog" aria-modal="false" aria-label={tr(isModify ? 'Компоненты Unreal Engine' : isUpdate ? 'Обновление Unreal Engine' : 'Установка Unreal Engine')}>
-  <div className="modal-head"><div><span className="eyebrow">{tr("UNREAL ENGINE")}</span><h2>{tr(isModify ? 'Изменить компоненты' : isUpdate ? 'Обновление' : 'Установка')} {tr(isModify ? (choice.installed.find(i => i.path.toLowerCase() === path.toLowerCase())?.version || choice.version) : choice.build.split('-')[0])}</h2></div><button className="icon" onClick={close} aria-label={tr("Закрыть")}><X size={20}/></button></div>
+ {tr(open && choice && active && createPortal(<div className="modal-backdrop engine-modal-backdrop"><section className={`modal engine-wizard${componentStep ? ' engine-component-step'+(parseEnginePermissionError(error)?' engine-permission-step':'') : installationStep && !result ? ' engine-progress-step' : ''}`} role="dialog" aria-modal="false" aria-label={tr(isModify ? 'Компоненты Unreal Engine' : preview?.verify && !isUpdate ? 'Проверка Unreal Engine' : isUpdate ? 'Обновление Unreal Engine' : 'Установка Unreal Engine')}>
+  <div className="modal-head"><div><span className="eyebrow">{tr("UNREAL ENGINE")}</span><h2>{tr(isModify ? 'Изменить компоненты' : preview?.verify && !isUpdate ? 'Проверка и доустановка' : isUpdate ? 'Обновление' : 'Установка')} {tr(isModify ? (choice.installed.find(i => i.path.toLowerCase() === path.toLowerCase())?.version || choice.version) : choice.build.split('-')[0])}</h2></div><button className="icon" onClick={close} aria-label={tr("Закрыть")}><X size={20}/></button></div>
   {tr(!isUpdate && <div className="wizard-steps">{preview && !resuming && !installationStep && !result ? <button type="button" className="wizard-step-back" disabled={!canReturnToLocation} onClick={backToLocation}>{tr("1. Расположение")}</button> : <span className={!preview ? 'active' : ''}>{tr("1. Расположение")}</span>}<span className={preview && !installationStep ? 'active' : ''}>{tr("2. Компоненты")}</span><span className={installationStep ? 'active' : ''}>{tr("3. Установка")}</span></div>)}
-  {tr(!isUpdate && !preview && !result && <><label>{tr("Папка движка")}</label><div className="engine-path"><input value={path} placeholder={tr("Папка движка")} disabled={busy} onChange={e => setPath(e.target.value)}/><button disabled={busy} onClick={() => void browse()}><FolderOpen size={17}/>{tr("Выбрать")}</button></div><p className="muted">{tr("Новая номерная версия устанавливается в отдельную папку.")}</p><div className="wizard-footer"><button disabled={busy || !path.trim()} className="primary" onClick={() => void prepare()}>{tr("Далее")}</button></div></>)}
+  {tr(!isUpdate && !preview && !result && <><label>{tr("Папка движка")}</label><div className="engine-path"><input value={path} placeholder={tr("Папка движка")} disabled={busy} onChange={e => setPath(e.target.value)}/><button disabled={busy} onClick={() => void browse()}><FolderOpen size={17}/>{tr("Выбрать")}</button></div><p className="muted">{tr("Выберите папку для новой установки или папку уже установленного движка той же ветки.")}</p><div className="wizard-footer"><button disabled={busy || !path.trim()} className="primary" onClick={() => void prepare()}>{tr("Далее")}</button></div></>)}
   {tr(isUpdate && !preview && !busy && !result && error && <button onClick={() => void prepare()}>{tr("Повторить проверку")}</button>)}
   {tr(preview && (!isUpdate || isModify) && <p className="project-delete-path">{preview.path}</p>)}
   {tr(preview && !result && <>
+   {preview.verify && !installationStep && <p className="muted" role="status">{tr("Найдена установленная версия. Проверим файлы и доустановим недостающие компоненты. Локальные изменения будут показаны отдельно.")}</p>}
    {tr(!installationStep && (isUpdate && !isModify ? <div className="engine-update-size"><span>{tr("Размер загрузки")}</span><strong>{tr(size(preview.downloadBytes))}</strong><small>{tr("Установка обновится автоматически в своей папке.")}</small></div> : <><div className="engine-components"><label className="downloaded-filter"><input type="checkbox" checked disabled/>{tr("Основные файлы движка")}</label>{tr(preview.components.map(c => <label className="downloaded-filter" key={c.tag}><input type="checkbox" checked={c.selected} disabled={busy||resuming} onChange={e => void prepare(preview.components.filter(x => x.tag === c.tag ? e.target.checked : x.selected).map(x => x.tag))}/>{tr(c.label)}<small>{tr(size(c.bytes))}</small></label>))}</div><div className="update-summary">{isModify && <span>{tr(`Файлов к удалению: ${preview.removed}`)}</span>}<span>{tr("Скачать: до ")}{tr(size(preview.downloadBytes))}</span><span>{tr("Свободно: ")}{tr(size(preview.freeBytes))}</span></div></>))}
    {tr(preview.conflicts.length > 0 && <p className="error-text" role="alert">{tr("Обнаружены локальные изменения. Обновление остановлено.")}</p>)}
    {tr(!resuming && preview.requiredBytes > preview.freeBytes && <p role="alert" className="error-text">{tr("Недостаточно места. Требуется до ")}{tr(size(preview.requiredBytes))}{tr(".")}</p>)}
-   {tr(!busy && <div className="wizard-footer">{tr(canReturnToLocation && <button onClick={backToLocation}><ArrowLeft size={17}/>{tr("Назад")}</button>)}<button className="primary" disabled={!!preview.conflicts.length || !resuming && preview.requiredBytes > preview.freeBytes} onClick={() => void install()}><Download size={17}/>{tr(resuming?'Продолжить установку':isModify ? 'Применить' : isUpdate ? 'Обновить' : 'Скачать и установить')}</button></div>)}
+   {tr(!busy && <div className="wizard-footer">{tr(canReturnToLocation && <button onClick={backToLocation}><ArrowLeft size={17}/>{tr("Назад")}</button>)}<button className="primary" disabled={!!preview.conflicts.length || !resuming && preview.requiredBytes > preview.freeBytes} onClick={() => void install()}><Download size={17}/>{tr(resuming?'Продолжить установку':isModify ? 'Применить' : preview.verify && !isUpdate ? 'Проверить и доустановить' : isUpdate ? 'Обновить' : 'Скачать и установить')}</button></div>)}
   </>)}
   {tr(progress && <div className="engine-operation" role="status"><span><RefreshCw className={busy && !progress.paused ? 'spin' : ''} size={17}/>{tr(progress.paused?'На паузе':formatEnginePhase(progress.phase))}{engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</span><progress aria-label={tr("Прогресс загрузки")} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><div className="engine-progress-metrics">{progress.phase === 'Скачиваем движок' && <span>{tr("Скорость сети")}: {transferSize(progress.bytesPerSecond || 0)}{tr("/с")} · {tr("Получено по сети")}: {transferSize(progress.networkBytes)}</span>}{engineProgressMetrics(progress).map(row=><span key={row.label} className={row.currentFile?"engine-current-file":row.fileWork?"engine-file-work":undefined} title={row.currentFile?row.value:row.fileWork?progress.currentFile||undefined:undefined}>{tr(row.label)}{row.value?`: ${row.value}`:""}{row.fileProgress&&<progress className="engine-file-meter" aria-label={tr("Прогресс текущего файла")} aria-valuetext={row.fileProgress.text} max={100} value={row.fileProgress.value}/>}</span>)}</div><div className="engine-operation-actions"><EnginePauseButton paused={progress.paused} canPause={busy&&progress.canPause}/>{tr(busy && preview && ['Скачиваем движок','Собираем и проверяем файлы','Проверяем установленные файлы'].includes(progress.phase) && <button className="danger-text engine-stop-button" onClick={() => void invoke('engine_cancel')}><Square size={16}/>{tr("Остановить загрузку")}</button>)}</div></div>)}
   {tr(result && <><p role="status" style={{whiteSpace:'pre-line'}}>{result.split('\n').map(line=>tr(line)).join('\n')}</p><button className="primary" onClick={close}>{tr("Готово")}</button></>)}{tr(error && <EnginePermissionError error={error}/>)}

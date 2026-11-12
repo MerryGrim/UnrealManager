@@ -644,3 +644,6 @@ input[type=checkbox]{padding:0}
 :root[data-theme="light"] .fab-info-gallery.expanded{box-shadow:0 0 0 100vw #20314c77}
 :root[data-theme="light"] ::-webkit-scrollbar-thumb{background:#a2b1c5;border-color:var(--bg)}
 :root[data-theme="light"] ::-webkit-scrollbar-thumb:hover{background:#7e91aa}
+
+.engine-channel-tabs{margin:0 0 16px;flex-wrap:wrap}.engine-catalogue{min-width:0}
+.engine-channel-unverified{position:absolute;bottom:38px;left:10px;right:10px;font-size:11px;line-height:1.3;color:var(--muted);white-space:normal;text-align:center}

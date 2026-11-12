@@ -120,6 +120,7 @@ async function context(options={}) {
 }
 
 async function go(page,query='') {
+  await page.waitForLoadState('networkidle');
   await page.goto(baseUrl+query,{waitUntil:'load'});
   await page.waitForFunction(()=>globalThis.UM_TRANSLATIONS&&document.querySelector('#language')?.value);
   await page.evaluate(async()=>{
@@ -127,6 +128,14 @@ async function go(page,query='') {
     for(const image of document.images)image.loading='eager';
     await Promise.all(Array.from(document.images).map(image=>image.decode()));
   });
+}
+
+async function closeContext(value) {
+  // The favicon is outside document.images and can still be loading after
+  // locale assertions. Finish local requests before teardown so the strict
+  // network check measures page failures, not cancellation by this fixture.
+  await Promise.all(value.pages().filter(page=>!page.isClosed()).map(page=>page.waitForLoadState('networkidle')));
+  await value.close();
 }
 
 async function validateLocale(page,locale) {
@@ -240,7 +249,7 @@ async function main() {
       });
     }
   }
-  await matrixContext.close();
+  await closeContext(matrixContext);
 
   await check('batch-keyboard-anchors-fullsize-links-and-bounded-claims',async()=>{
     const value=await context({viewport:{width:1280,height:900}});
@@ -253,7 +262,7 @@ async function main() {
       const policyText=[copy.batchBenefitPacing,copy.batchWaitBody,copy.batchSafety].join(' ');assert(!/(?:official|Epic).{0,30}(?:only|hard limit|maximum).{0,12}\b10\b/i.test(policyText),'Do not describe the client grouping as an official Epic hard limit');
       const nativePath=path.resolve(__dirname,'../source/src-tauri/src/epic_redeem_batch.rs'),native=fs.readFileSync(nativePath,'utf8');assert(/INTER_REQUEST_DELAY\s*:\s*Duration\s*=\s*Duration::from_secs\(2\)/.test(native));assert(/batch_size:10,batch_pause:Duration::from_secs\(60\)/.test(native));
       return{nativePolicySource:{path:'source/src-tauri/src/epic_redeem_batch.rs',sha256:sha(Buffer.from(native)),twoSecondSpacing:true,clientGroupSize:10,clientPauseSeconds:60,scope:'Read-only source-default guard; no native/API execution or official quota claim.'},fullsizeLinks:7,keyboardBatchAnchors:2};
-    }finally{await value.close();}
+    }finally{await closeContext(value);}
   });
 
   await check('language-theme-persistence-system-and-deep-links',async()=>{
@@ -262,7 +271,7 @@ async function main() {
       const page=await value.newPage();await go(page);
       await page.locator('#language').selectOption('zh');await chooseTheme(page,'light');
       assert.deepEqual(await page.evaluate(()=>[localStorage.getItem('um.site.language'),localStorage.getItem('um.site.theme')]),['zh','light']);
-      await page.reload();await validateLocale(page,'zh');await validateTheme(page,'light');
+      await page.waitForLoadState('networkidle');await page.reload();await validateLocale(page,'zh');await validateTheme(page,'light');
       await go(page);await validateLocale(page,'zh');await validateTheme(page,'light');
       await go(page,'?lang=ko&theme=dark#screenshots');await validateLocale(page,'ko');await validateTheme(page,'dark');
       assert.deepEqual(await page.evaluate(()=>[localStorage.getItem('um.site.language'),localStorage.getItem('um.site.theme')]),['zh','light'],'deep link overrides do not silently overwrite saved preferences');
@@ -274,9 +283,9 @@ async function main() {
       await validateTheme(page,'light','system');
       await go(page);await validateLocale(page,'de');await validateTheme(page,'light','system');
       await page.emulateMedia({colorScheme:'dark'});await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
-      await page.reload();await validateLocale(page,'de');await validateTheme(page,'dark','system');
+      await page.waitForLoadState('networkidle');await page.reload();await validateLocale(page,'de');await validateTheme(page,'dark','system');
       await go(page,'?lang=__proto__&theme=invalid');await validateLocale(page,'en');await validateTheme(page,'dark','system');
-    } finally {await value.close();}
+    } finally {await closeContext(value);}
   });
 
   await check('keyboard-skip-navigation-and-theme-buttons',async()=>{
@@ -295,7 +304,7 @@ async function main() {
       assert(focus.style!=='none'&&focus.width>0,'theme button has visible keyboard focus');
       await page.keyboard.press('Enter');await validateTheme(page,'light');
       await page.locator('#theme button[data-theme-choice="dark"]').focus();await page.keyboard.press('Space');await validateTheme(page,'dark');
-    } finally {await value.close();}
+    } finally {await closeContext(value);}
   });
 
   await check('unavailable-storage-and-system-locale-fallback',async()=>{
@@ -305,11 +314,11 @@ async function main() {
       const page=await value.newPage();await go(page);await validateLocale(page,'ja');await validateTheme(page,'dark','system');
       await page.locator('#language').selectOption('fr');await chooseTheme(page,'light');
       await validateLocale(page,'fr');await validateTheme(page,'light');
-      await page.reload();await validateLocale(page,'fr');await validateTheme(page,'light');
-    } finally {await value.close();}
+      await page.waitForLoadState('networkidle');await page.reload();await validateLocale(page,'fr');await validateTheme(page,'light');
+    } finally {await closeContext(value);}
     const unsupported=await context({locale:'pt-BR'});
     try {const page=await unsupported.newPage();await go(page);await validateLocale(page,'en');}
-    finally {await unsupported.close();}
+    finally {await closeContext(unsupported);}
   });
 
   await check('network-and-console-clean',async()=>{

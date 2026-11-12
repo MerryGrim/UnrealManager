@@ -4,8 +4,12 @@ An independent, lightweight Unreal Engine manager for **Windows x64**.
 Manage engines, projects, Fab assets, Vault content and plugins in one desktop
 application, without a game storefront.
 
-**Version 0.9.12.** Download the installer or portable edition, or build from source.
-See the [0.9.12 change notes](source/CHANGELOG.md).
+**Version 0.9.13.** Download the installer or portable edition, or build from source.
+See the [0.9.13 change notes](source/CHANGELOG.md).
+
+**Upgrading from 0.9.12 or older:** install 0.9.13 manually once with Setup or
+the portable ZIP, preserving your existing profile. This release establishes a
+new update-signing identity; future releases can update 0.9.13 through the app.
 
 [Website & screenshots](https://merrygrim.github.io/UnrealManager/) ·
 [Build instructions](source/README.md) · [Verification](verification/README.md) ·
@@ -30,7 +34,10 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
 - Use one integrated header for navigation, account, theme and window controls,
   keeping the existing native minimize/maximize/close and Ask/Tray/Exit policy.
 - Choose a persistent light or dark app theme from the header or Interface settings.
-- Discover installed Unreal Engine versions and local `.uproject` files.
+- Discover installed Unreal Engine versions in bounded searches on fixed local
+  disks, including engines left after reinstalling Windows. Add another installed
+  engine by choosing its folder, without an Epic session. Discover local
+  `.uproject` files separately.
 - Configure and remember project scan folders, then refresh them and their
   subfolders with progress and Stop. Discovered paths are retained without a
   watcher; completion uses a short notification, and removing a scan folder does
@@ -56,6 +63,13 @@ Website languages: [Русский](https://merrygrim.github.io/UnrealManager/?l
   Owning a product does not prove that the key was used. Export does not add keys
   to application settings or history.
 - Install, verify, modify or remove engines with component selection.
+- Reuse an existing folder for the exact available build: verify selected files
+  by SHA-1 and download missing components, even without old Epic/UM metadata.
+  Unknown files remain in place and conflicting content blocks replacement.
+- Browse separate stable and preview engine groups. Explicit Epic metadata
+  determines the channel; unresolved entries show **Channel unconfirmed**.
+- Recheck prerequisite receipts after a Windows reinstall, including when
+  portable settings were copied from the previous system.
 - Check access rights before fresh engine installs, updates and resumes. A
   temporary headless UAC helper handles only the mandatory Epic registration
   record when needed; the application and Epic session remain in the original
@@ -105,12 +119,22 @@ Retained version 0.9.0 images show the earlier dark interface and do not depict 
 0.9.8 integrated header or light theme.
 Acceptance of the new batch-redemption workflow is recorded separately from those
 earlier account and transfer checks.
+
+For 0.9.13, 395 Rust tests passed, with 0 failures and 6 ignored tests. Engine UI
+and translation checks used synthetic native responses. The Windows x64 release,
+installer and portable package were built and their files checked; the app and
+Setup were not launched. No new real Epic transfer, user-engine modification or
+prerequisite execution was verified in this release check. See
+[existing-engine behavior and limits](source/ENGINE-DISCOVERY.md).
 GitHub application updates support installed and portable editions. **Settings → App updates** offers
 stable/beta channels, a startup check at most daily, manual checks, verified downloads
 and apply with restart. No update service or permanent helper is installed.
+Version 0.9.13 is a manual upgrade: it publishes no automatic-update manifest or
+payload, so an older updater skips it. Subsequent signed updates use the new
+identity embedded in 0.9.13.
 See [updater and release details](source/UPDATES.md).
 
-Version 0.9.12 retains conflict blocking. Optional overwrite/replacement with
+Version 0.9.13 retains conflict blocking. Optional overwrite/replacement with
 explicit confirmation and a backup is planned for a later update.
 
 ## Lightweight rendering
@@ -124,11 +148,11 @@ Software-rendering configuration is distinct from measured GPU activity on a
 particular machine. See the [runtime measurement procedure](verification/README.md).
 Windows desktop composition is outside the application's rendering policy.
 
-## Download 0.9.12
+## Download 0.9.13
 
-[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.12/UnrealManager-0.9.12-Windows-x64-Setup.exe) ·
-[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.12/UnrealManager-0.9.12-Windows-x64-Portable.zip) ·
-[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.12)
+[Windows x64 installer](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.13/UnrealManager-0.9.13-Windows-x64-Setup.exe) ·
+[Portable ZIP](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.13/UnrealManager-0.9.13-Windows-x64-Portable.zip) ·
+[Release notes and checksums](https://github.com/MerryGrim/UnrealManager/releases/tag/v0.9.13)
 
 The installer installs for the current user. For portable use, extract the ZIP to
 a writable directory and keep `portable.marker` beside `unreal-manager.exe`.

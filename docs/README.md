@@ -19,9 +19,9 @@ python -m http.server 4173 --bind 127.0.0.1 --directory docs
 
 Open `http://127.0.0.1:4173/`. Browser QA is covered by `verification/test-site.cjs` at repository root. Its requirements are development tools only.
 
-The page links to the Windows x64 installer and portable ZIP for `v0.9.12`, alongside release notes and SHA-256 checksums. Source and build instructions remain available as secondary actions. Publish the matching GitHub release assets before deploying a website revision with new download links.
+The page links to the Windows x64 installer and portable ZIP for `v0.9.13`, alongside release notes and SHA-256 checksums. Source and build instructions remain available as secondary actions. Publish the matching GitHub release assets before deploying a website revision with new download links.
 
-The page describes 0.9.12's sequential download-to-Vault queue, pending-item drag/keyboard priorities, explicit restart behavior, measured phase progress and optional Epic-registration warnings. Project copying remains a separate action. It also describes signed GitHub app updates for installed and portable copies, startup checks at most once daily, manual checks and a temporary apply helper. This website never performs an application update. Software-rendering configuration is distinguished from measured GPU activity. Demonstration screenshots are illustrative and do not establish clean-Windows compatibility or acceptance of every workflow.
+The current page describes 0.9.13's bounded engine discovery after a Windows reinstall, manual folder adoption, exact-build verification and missing-component installation, and separate stable/preview engine groups with unconfirmed-channel labels. The sequential Vault queue, explicit restart behavior and optional Epic-registration warnings remain. Project copying is a separate action. Version 0.9.13 requires one manual upgrade from 0.9.12 or older, preserving the profile; it embeds a new signing identity for subsequent app updates. Its release omits automatic-update manifests and payloads, so older updaters skip it. The website never performs an application update. Software-rendering configuration is distinguished from measured GPU activity. Demonstration screenshots are illustrative and do not establish clean-Windows compatibility or acceptance of every workflow.
 
 `verification/capture-public-screenshots.cjs` uses the real frontend with a fictional account, self-authored covers, synthetic `X:/Fixture/Demo` paths and simulated queue progress. It blocks external requests and never starts the native app. Its `--preview` flag writes fresh private preview images instead of website assets. The retained 0.9.0 gallery shows the earlier dark app appearance. The separate batch-redemption section uses fresh 0.9.8 renderer fixtures in dark and light themes; website theme controls do not alter screenshot pixels.
 
@@ -105,3 +105,23 @@ local TXT, including full keys, product names and distinct reasons. An owned
 product does not prove that a key was used. Full keys are not returned to the
 web interface for this export, and application settings/history do not retain
 them. Export is an explicit local file operation, not part of activation.
+
+Version 0.9.13 updates the download links and current feature copy in all nine
+site languages. Engine discovery on fixed local disks is bounded; manual folder
+adoption works without an Epic session. Exact-build verification reuses matching
+files and downloads missing selected components; conflicting or unrelated files
+are preserved. Stable/preview groups rely on explicit channel information and
+show unconfirmed channels honestly. Prerequisite receipts are checked against
+the Windows installation.
+
+The release's Rust suite passed 395 tests, with no failures and 6 ignored tests.
+Engine UI and locale checks used synthetic native responses. Windows x64 EXE,
+installer and portable packaging were checked, without launching the app or
+Setup. These results do not establish a real Epic transfer, user-engine update,
+prerequisite execution, clean-Windows lifecycle or measured GPU acceptance.
+Retained 0.9.8/0.9.0 screenshots keep their actual capture labels and pixels.
+
+The update copy explains the one-time manual upgrade from 0.9.12 or older to
+0.9.13 with the profile retained. A new signing identity is embedded in 0.9.13
+after loss of the previous private key. This release publishes no auto-update
+manifest/signature/payload; subsequent releases can use the new identity.

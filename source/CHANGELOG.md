@@ -1,5 +1,24 @@
 # Change notes
 
+## 0.9.13
+
+- One manual upgrade is required from 0.9.12 or older, using Setup or the portable ZIP with the existing profile retained. The previous private update-signing key was lost after a Windows reinstall. Version 0.9.13 embeds a new verification key for future updates; this manual release omits automatic-update manifests and payloads so older updaters skip it.
+- Discover restored engine folders on fixed local disks after a Windows reinstall, using validated engine files and bounded searches in common locations.
+- Add an installed engine manually without an Epic session; selecting an existing engine folder keeps that folder instead of appending another UE directory.
+- Accept the same available build without old Epic/UM metadata. Verify existing files by SHA-1 and install missing selected components. Preserve unrelated files and keep conflict blocking.
+- Separate stable releases and preview versions in the engine catalogue, using explicit Epic release metadata when available.
+- Recheck system prerequisites when their saved receipt belongs to another Windows installation.
+
+Validation: 395 Rust tests passed, 0 failed and 6 were ignored. Renderer tests
+covered existing-folder selection, offline adoption, component choices,
+stable/preview groups, verification progress and light/dark layouts using
+synthetic native responses. Translation coverage checks passed. The Windows x64
+release, installer and portable package were built; their files and hashes were
+checked. The application and Setup were not launched in this release check. No
+real Epic transfer, user-engine modification or prerequisite execution was
+performed for 0.9.13. These checks do not establish a complete clean-Windows
+installation. See [existing-engine behavior and limits](ENGINE-DISCOVERY.md).
+
 ## 0.9.12
 
 - Center the main window once during startup. Restoring an existing window from

@@ -1,3 +1,5 @@
+mod release_channel;
+mod engine_discovery;
 mod ui_locale;
 mod storage;
 mod content_kind;
@@ -88,121 +90,13 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
-fn engine_version_from_dir(path: &Path) -> String {
-    if let Ok(bytes)=fs::read(path.join("Engine/Build/Build.version")) {
-        if let Ok(value)=serde_json::from_slice::<serde_json::Value>(&bytes) {
-            if let (Some(major),Some(minor))=(value["MajorVersion"].as_u64(),value["MinorVersion"].as_u64()){return format!("{major}.{minor}");}
-        }
-    }
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Unreal Engine")
-        .trim_start_matches("UE_")
-        .to_string()
-}
-
-fn is_engine_root(path: &Path) -> bool {
-    let bin = path.join("Engine/Binaries/Win64");
-    bin.join("UnrealEditor.exe").is_file() || bin.join("UE4Editor.exe").is_file()
-}
-
-fn manifest_engine_paths() -> Vec<PathBuf> {
-    let base = std::env::var_os("PROGRAMDATA").map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-    let raw = fs::read_to_string(base.join("Epic/UnrealEngineLauncher/LauncherInstalled.dat"))
-        .unwrap_or_default();
-    let data: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
-    data["InstallationList"].as_array().into_iter().flatten()
-        .filter_map(|item| item["InstallLocation"].as_str().map(PathBuf::from)).collect()
-}
-
-#[cfg(windows)]
-fn registry_engine_paths() -> Vec<PathBuf> {
-    use winreg::enums::*;
-    use winreg::RegKey;
-
-    let mut out = Vec::new();
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let keys = [
-        r"SOFTWARE\EpicGames\Unreal Engine",
-        r"SOFTWARE\WOW6432Node\EpicGames\Unreal Engine",
-    ];
-
-    for key_name in keys {
-        if let Ok(key) = hklm.open_subkey(key_name) {
-            for version in key.enum_keys().flatten() {
-                if let Ok(sub) = key.open_subkey(&version) {
-                    let installed: Result<String, _> = sub.get_value("InstalledDirectory");
-                    if let Ok(p) = installed {
-                        out.push(PathBuf::from(p));
-                    }
-                }
-            }
-        }
-    }
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    if let Ok(key) = hkcu.open_subkey(r"Software\Epic Games\Unreal Engine\Builds") {
-        for (name, _) in key.enum_values().flatten() {
-            if let Ok(value) = key.get_value::<String, _>(&name) { out.push(PathBuf::from(value)); }
-        }
-    }
-    out
-}
-
-#[cfg(not(windows))]
-fn registry_engine_paths() -> Vec<PathBuf> { Vec::new() }
-
-fn common_engine_roots() -> Vec<PathBuf> {
-    let mut roots = vec![
-        PathBuf::from(r"C:\Program Files\Epic Games"),
-        PathBuf::from(r"C:\Epic Games"),
-        PathBuf::from(r"D:\Epic Games"),
-        PathBuf::from(r"D:\Unreal Engine"),
-        PathBuf::from(r"E:\Epic Games"),
-    ];
-    if let Some(home) = dirs::home_dir() {
-        roots.push(home.join("UnrealEngine"));
-    }
-    roots
+pub(crate) fn common_engine_roots() -> Vec<PathBuf> {
+    engine_discovery::common_roots()
 }
 
 #[tauri::command]
 fn scan_engines() -> Vec<EngineInstall> {
-    let mut candidates = registry_engine_paths();
-    candidates.extend(manifest_engine_paths());
-    candidates.extend(engine::managed_roots());
-    for root in common_engine_roots() {
-        if !root.exists() { continue; }
-        if is_engine_root(&root) {
-            candidates.push(root);
-            continue;
-        }
-        if let Ok(entries) = fs::read_dir(root) {
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.is_dir() && is_engine_root(&p) {
-                    candidates.push(p);
-                }
-            }
-        }
-    }
-
-    let mut seen = BTreeSet::new();
-    let mut result = Vec::new();
-    for path in candidates {
-        if !is_engine_root(&path) || path.join(".um-engine-update.json").exists() { continue; }
-        let canonical = path.canonicalize().unwrap_or(path.clone());
-        let key = canonical.to_string_lossy().to_lowercase();
-        if !seen.insert(key) { continue; }
-        result.push(EngineInstall {
-            name: path.file_name().and_then(|s| s.to_str()).unwrap_or("Unreal Engine").to_string(),
-            version: engine_version_from_dir(&path),
-            path: path_string(&path),
-            source: "Local installation".to_string(),
-        });
-    }
-    result.sort_by(|a,b| b.version.cmp(&a.version));
-    result
+    engine_discovery::scan()
 }
 
 fn project_roots() -> Vec<PathBuf> {
@@ -301,7 +195,7 @@ pub fn run() {
     let mut context=tauri::generate_context!();
     // Config paths must be relative in Tauri; the builder accepts our resolved absolute path.
     for window in &mut context.config_mut().app.windows {window.create=false;window.data_directory=None;}
-    let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![app_update_apply::app_update_ui_ready,app_updates::app_update_settings_get,app_updates::app_update_settings_set,app_updates::app_update_check,app_updates::app_update_download,app_updates::app_update_apply,window_behavior::close_behavior_get,window_behavior::close_behavior_set,window_behavior::window_close_action,download::download_limit_get, download::download_limit_set,project_association::project_association_get,project_association::project_association_set,storage::vault_storage_get,storage::vault_storage_set,storage::settings_read,storage::settings_write,storage::storage_info,storage::clear_cache,ui_locale::set_ui_language,open_author_profile,engine::install::engine_register_managed,engine::delete::engine_delete_preview, engine::delete::engine_delete, engine::engine_discard, engine::resume::engine_resume_forget, engine::resume::engine_resume_tasks, engine::resume::engine_resume_prepare, engine::resume::engine_resume_legacy_prepare, engine::install::engine_pending, engine::install::engine_recover, engine::install::engine_install, engine::install::engine_cancel, engine::install::engine_pause, engine::engine_catalog, engine::engine_prepare, engine::engine_launch, scan_engines, scan_projects, launch_project, project_actions::reveal_project, project_actions::choose_project_location, project_actions::project_delete_preview, project_actions::delete_project,
+    let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![app_update_apply::app_update_ui_ready,app_updates::app_update_settings_get,app_updates::app_update_settings_set,app_updates::app_update_check,app_updates::app_update_download,app_updates::app_update_apply,window_behavior::close_behavior_get,window_behavior::close_behavior_set,window_behavior::window_close_action,download::download_limit_get, download::download_limit_set,project_association::project_association_get,project_association::project_association_set,storage::vault_storage_get,storage::vault_storage_set,storage::settings_read,storage::settings_write,storage::storage_info,storage::clear_cache,ui_locale::set_ui_language,open_author_profile,engine::location::engine_resolve_location,engine::location::engine_adopt_location,engine::install::engine_register_managed,engine::delete::engine_delete_preview, engine::delete::engine_delete, engine::engine_discard, engine::resume::engine_resume_forget, engine::resume::engine_resume_tasks, engine::resume::engine_resume_prepare, engine::resume::engine_resume_legacy_prepare, engine::install::engine_pending, engine::install::engine_recover, engine::install::engine_install, engine::install::engine_cancel, engine::install::engine_pause, engine::engine_catalog, engine::engine_prepare, engine::engine_launch, scan_engines, scan_projects, launch_project, project_actions::reveal_project, project_actions::choose_project_location, project_actions::project_delete_preview, project_actions::delete_project,
         project_discovery::project_discovery_scan,project_discovery::project_discovery_cancel,
         project_scan_folders::list_scan_folders,project_scan_folders::set_scan_folders,project_scan_folders::refresh_projects,
         epic::epic_status, epic::epic_begin_login, epic_login::epic_cancel_login,

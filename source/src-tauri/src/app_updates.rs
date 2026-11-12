@@ -346,6 +346,25 @@ mod tests {
     }
     #[cfg(windows)]
     #[test]
+    fn manual_key_migration_release_is_not_offered_as_an_automatic_update() {
+        let manual = || GithubRelease {
+            tag_name: "v0.9.13".into(), draft: false, prerelease: false, body: None,
+            assets: vec![Asset {name:"UnrealManager-0.9.13-Windows-x64-Setup.exe".into(),
+                browser_download_url:asset_url("0.9.13","UnrealManager-0.9.13-Windows-x64-Setup.exe"),
+                size:123,state:"uploaded".into()}],
+        };
+        for channel in ["stable", "beta"] {
+            assert!(candidate(vec![manual()], "0.9.12", channel).unwrap().is_none());
+            let future = GithubRelease {
+                tag_name:"v0.9.14".into(),draft:false,prerelease:false,body:None,
+                assets:["update-manifest.json","update-manifest.sig"].into_iter().map(|name|
+                    Asset{name:name.into(),browser_download_url:asset_url("0.9.14",name),size:123,state:"uploaded".into()}).collect(),
+            };
+            assert_eq!(candidate(vec![manual(),future], "0.9.13", channel).unwrap().unwrap().tag_name,"v0.9.14");
+        }
+    }
+    #[cfg(windows)]
+    #[test]
     fn cng_signature_accepts_p1363_and_rejects_modified_bytes_wrong_key_and_truncation() {
         use windows_sys::Win32::Security::Cryptography::*;
         unsafe fn signed(data: &[u8]) -> (Vec<u8>,Vec<u8>) {

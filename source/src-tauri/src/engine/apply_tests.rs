@@ -269,7 +269,7 @@ impl Fixture {
             old: BTreeMap::new(), item: None, chunk_sizes: BTreeMap::new(), tags: BTreeMap::new(),
             info: Preview {
                 id: self.id.clone(), app_name: "UE_SYNTHETIC".into(), build: "synthetic-1".into(),
-                path: self.root().to_string_lossy().into_owned(), update: true,
+                path: self.root().to_string_lossy().into_owned(), update: true, verify:false,
                 components: Vec::<Component>::new(), bytes: 0, download_bytes: 0,
                 changed: 0, added: 0, removed: 0, required_bytes: 0, free_bytes: 0, conflicts: vec![],
             },

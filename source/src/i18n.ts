@@ -16,6 +16,7 @@ import projectDiscoveryMessages from './locales/project-discovery.json';
 import projectFolderMessages from './locales/project-folders.json';
 import redemptionMessages from './locales/redemption.json';
 import workspaceMessages from './locales/workspace.json';
+import engineDiscoveryMessages from './locales/engine-discovery.json';
 export type Language='ru'|'en'|'de'|'it'|'es'|'fr'|'zh'|'ja'|'ko';
 const supported=['ru','en','de','it','es','fr','zh','ja','ko'];
 const key='unreal-manager.language.v1';
@@ -36,6 +37,7 @@ for(const [locale,entries] of Object.entries(projectDiscoveryMessages))Object.as
 for(const [locale,entries] of Object.entries(projectFolderMessages))Object.assign(catalogs[locale],entries);
 for(const [locale,entries] of Object.entries(redemptionMessages))Object.assign(catalogs[locale],entries);
 for(const [locale,entries] of Object.entries(workspaceMessages))Object.assign(catalogs[locale],entries);
+for(const [locale,entries] of Object.entries(engineDiscoveryMessages))Object.assign(catalogs[locale],entries);
 const normalize=(s:string)=>s.replace(/\s+/g,' ').trim();
 const escape=(s:string)=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 const indexes=new Map<string,Map<string,string>>();

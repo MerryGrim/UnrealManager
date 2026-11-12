@@ -6,19 +6,35 @@ base64-encoded 64-byte IEEE P1363 signature. The public verification key is
 compiled from `src-tauri/update-public-key.json`. There is no signing key,
 background update service or development runtime in the distributed app.
 
-In 0.9.12, open **Settings → App updates** to select the stable/beta channel,
-check, download and apply an update. Beta.7 introduced the updater; beta.7 and
-newer can receive 0.9.12 without a separate manual installation. The stable
-0.9.12 release is available in both update channels. In beta.7, use
-**Settings → Unreal Manager updates → Check for updates**.
-Beta.6 requires one manual upgrade to beta.7 or newer.
+Version 0.9.13 requires one manual upgrade from 0.9.12 or older. The previous
+private update-signing key was lost after a Windows reinstall. Earlier apps
+cannot verify a replacement key, so use the 0.9.13 Setup in the existing
+installation location, or replace the portable application files while keeping
+`Data` and `portable.marker`. The existing profile is preserved.
+
+Version 0.9.13 embeds a new public verification key for future releases. Its
+GitHub release deliberately omits `update-manifest.json`, `update-manifest.sig`
+and `.umupdate`; older updaters therefore skip this manual release. From 0.9.13,
+**Settings → App updates** retains stable/beta channels, manual checks and signed
+download/apply for subsequent compatible releases, beginning with 0.9.14.
+Changing the key does not make a new signature acceptable to an earlier app.
+
+Version 0.9.13 discovers engines left on fixed local disks after a Windows
+reinstall and accepts an existing folder for the exact available build. It
+verifies selected files, installs missing components and preserves unrelated or
+conflicting files. Manual folder adoption works without an Epic session; file
+verification and downloads use the available Epic build. Stable and preview
+engine groups are separate, with unconfirmed channels labeled explicitly.
+Prerequisite receipts from another Windows installation no longer skip checks.
+The manual installed/portable upgrade preserves existing data folders. See
+[behavior and limits](ENGINE-DISCOVERY.md).
 
 Version 0.9.12 centers the main window on startup and opens key activation in a
 wizard within the existing application WebView: one key, a batch/TXT list or the
 official Epic page. Product/account review, explicit confirmation, ready-only
 activation and native pacing/recovery remain. The existing separate official
-Epic window and current session are reused. Installed and portable updates keep
-the same signing identity and preserve the existing data folders. The single-key
+Epic window and current session are reused. That release retained the previous
+signing identity and existing data folders. The single-key
 mode uses a one-line field and rejects pasted or dropped lists.
 
 The wizard can explicitly export already-used keys and keys for products already
@@ -39,14 +55,15 @@ The unpublished 0.9.10 candidate's selected-manifest safeguards remain: saved
 Vault packages are reused, and a corrected full project requires a fresh,
 explicitly selected destination. Conflicting files are not overwritten.
 Optional replacement with confirmation and a backup remains future work.
-An existing local 0.9.10 installation can update normally to 0.9.12 while keeping
-its profile and session; a new profile or another manual sign-in is not required.
+An existing local 0.9.10 installation uses the same one-time manual upgrade to
+0.9.13 while retaining its profile. The previous 0.9.11/0.9.12 release line used
+the original signing identity.
 
 Version 0.9.9 fixed batch key checks when Epic reports `content_already_owned`.
 That row is shown as already owned, checking continues, and explicit activation
 includes only ready rows. Unknown activation results are still not replayed.
-The same signing identity and installed/portable data-preservation rules apply;
-these updates do not require a new profile or a manual sign-in.
+Those older updates retained their signing identity and installed/portable data
+folders without requiring a new profile or a manual sign-in.
 
 ## Preparing release assets
 
@@ -73,19 +90,19 @@ cleanup checks passed. This verifies that limited registration-helper scenario;
 it does not establish a complete engine installation, clean-Windows compatibility
 or an installed/portable application-update transition.
 
-Use Windows and PowerShell 7. Reuse the existing signing key for this repository;
-do not create a replacement for a new release. `CREATE-UPDATE-KEY.ps1` is only for
-initial key creation before the first deployment of a distinct application. The private key is
-encrypted for the current Windows account with DPAPI and stored under the
-ignored `.release-secrets` directory. Keep that key; replacing the public key
-requires a separate migration for existing installations. Never upload the
-private key or its DPAPI file.
+Use Windows and PowerShell 7. Reuse the new signing identity established by
+0.9.13 for subsequent releases; do not create another replacement for each
+release. The 0.9.13 key change is an explicit migration after loss of the previous
+private key, with the manual upgrade described above. Keep the private key in
+private, protected storage and retain a recoverable backup. Never upload a
+private key or its DPAPI file. Replacing the public key again would require
+another migration for existing installations.
 
 Build the release EXE and Inno installer into a fresh staging directory, with
 the portable distribution in its `UnrealManager-Portable` subdirectory. Then:
 
 ```powershell
-.\PREPARE-UPDATE.ps1 -ReleaseDirectory '..\Releases\0.9.12\my-release'
+.\PREPARE-UPDATE.ps1 -ReleaseDirectory '..\Releases\0.9.14\my-release'
 ```
 
 Use `-PortableDirectory` for a different clean portable distribution folder,
@@ -94,13 +111,16 @@ location. The script requires all source version declarations, the app EXE
 and the installer product metadata to agree. Existing update outputs cause a
 failure; choose a new staging directory instead of replacing published files.
 
-Publish these assets together on the matching `v<version>` GitHub Release in
+For signed releases after the manual-only 0.9.13 migration, publish these assets
+together on the matching `v<version>` GitHub Release in
 `MerryGrim/UnrealManager`:
 
-0.9.12 is a normal non-prerelease SemVer version: use the stable manifest channel
-and the existing signing key. Existing beta-channel preferences remain valid;
-that channel also includes stable releases. Both channels require a strictly
-newer version and the matching verified release assets before an update is offered.
+For future normal non-prerelease SemVer releases, use the stable manifest channel
+and the signing identity embedded in 0.9.13. Existing beta-channel preferences
+remain valid; that channel also includes stable releases. Both channels require
+a strictly newer version and matching verified release assets before an update
+is offered. The manual-only 0.9.13 release is the exception: preparation outputs
+may be checked locally, but its update manifests and `.umupdate` are not published.
 
 - `UnrealManager-<version>-Windows-x64-Setup.exe`
 - `UnrealManager-<version>-Windows-x64-Portable.umupdate`

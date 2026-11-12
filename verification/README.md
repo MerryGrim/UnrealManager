@@ -1,5 +1,24 @@
 # Verification
 
+## 0.9.13 release checks
+
+The 0.9.13 Windows library suite completed with **395 passed, 0 failed and
+6 ignored** tests (`--test-threads=4`). Engine renderer checks covered offline
+folder adoption, existing-root selection, component choices, stable/preview
+groups, verification progress and light/dark layouts with synthetic native
+responses. Translation coverage checks passed. The Windows x64 release EXE,
+Inno installer and portable package were built and their files/hashes checked.
+The app and Setup were not launched in that packaging check. No new real Epic
+transfer, user-engine modification, prerequisite execution or measured GPU
+acceptance is established by these results.
+
+Version 0.9.13 is a manual-only signing-key migration. Its public release omits
+automatic-update manifests and `.umupdate`; checks of locally prepared signing
+outputs do not establish an older-client automatic-update transition. See
+[update migration details](../source/UPDATES.md).
+
+## Running checks
+
 Install the source project's locked dependencies with `npm ci` in `../source`.
 Use Node.js 22.12 or later and an existing Playwright package. If Playwright is
 outside the project, set `UM_PLAYWRIGHT_MODULE` to its package directory. The UI

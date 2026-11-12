@@ -765,6 +765,52 @@ pub(crate) async fn engine_assets(app:&tauri::AppHandle,state:&EpicState)->Resul
     Ok(owned_engine_packages(app,state).await?.into_iter().filter(|a|a.app_name.strip_prefix("UE_").is_some_and(|s|s.split('.').count()==2&&s.split('.').all(|x|!x.is_empty()&&x.chars().all(|c|c.is_ascii_digit())))).collect())
 }
 
+/// Resolve channel evidence for the assets already returned by engine_assets.
+/// The SDK bulk endpoint uses one metadata request for the usual engine catalog;
+/// no per-engine account refresh or manifest/chunk download is needed.
+pub(crate) async fn engine_release_channels(
+    _app: &tauri::AppHandle,
+    state: &EpicState,
+    assets: &[egs_api::api::types::epic_asset::EpicAsset],
+) -> BTreeMap<String, String> {
+    static CHANNEL_SYNC: Mutex<()> = Mutex::const_new(());
+    let _sync = CHANNEL_SYNC.lock().await;
+    let path = crate::storage::cache().join("engine-channels.json");
+    let mut cache = crate::release_channel::Cache::read(&path);
+    let mut channels = BTreeMap::new();
+    let mut missing = Vec::new();
+    for asset in assets.iter().take(256) {
+        let explicit = crate::release_channel::classify(&asset.app_name, &asset.build_version, &asset.label_name, None);
+        let channel = if explicit == "preview" { Some(explicit) } else { cache.get(asset) };
+        if let Some(channel) = channel {
+            channels.insert(asset.app_name.clone(), channel.to_string());
+        } else {
+            channels.insert(asset.app_name.clone(), "unknown".into());
+            missing.push(asset);
+        }
+    }
+    if missing.is_empty() { return channels; }
+    // Catalog metadata is public. Clone only the client state in memory, then
+    // release the account mutex before network I/O; no credentials enter cache.
+    let api = { state.0.lock().await.api.clone() };
+    let mut changed = false;
+    for batch in missing.chunks(64) {
+        let pairs: Vec<_> = batch.iter().map(|asset| (asset.namespace.as_str(), asset.catalog_item_id.as_str())).collect();
+        let Ok(Ok(metadata)) = tokio::time::timeout(Duration::from_secs(12), api.try_bulk_catalog_items(&pairs)).await else { break; };
+        for asset in batch {
+            let Some(info) = metadata.get(&asset.namespace).and_then(|items| items.get(&asset.catalog_item_id)) else { continue; };
+            if info.id != asset.catalog_item_id || info.namespace != asset.namespace { continue; }
+            let Ok(value) = serde_json::to_value(info) else { continue; };
+            let channel = crate::release_channel::classify(&asset.app_name, &asset.build_version, &asset.label_name, Some(&value));
+            channels.insert(asset.app_name.clone(), channel.into());
+            cache.insert(asset, channel);
+            changed = true;
+        }
+    }
+    if changed { cache.save(&path); }
+    channels
+}
+
 
 pub(crate) async fn engine_metadata(app: &tauri::AppHandle,state:&EpicState,app_name:&str)->Result<serde_json::Value,String>{
     let asset=engine_assets(app,state).await?.into_iter().find(|a|a.app_name==app_name).ok_or("Движок недоступен в аккаунте Epic")?;
