@@ -781,14 +781,9 @@ pub(crate) async fn engine_release_channels(
     let mut channels = BTreeMap::new();
     let mut missing = Vec::new();
     for asset in assets.iter().take(256) {
-        let explicit = crate::release_channel::classify(&asset.app_name, &asset.build_version, &asset.label_name, None);
-        let channel = if explicit != "unknown" { Some(explicit) } else { cache.get(asset) };
-        if let Some(channel) = channel {
-            channels.insert(crate::release_channel::fingerprint(asset), channel.to_string());
-        } else {
-            channels.insert(crate::release_channel::fingerprint(asset), "unknown".into());
-            missing.push(asset);
-        }
+        let (channel,needs_metadata) = crate::release_channel::initial_channel(asset,cache.get(asset));
+        channels.insert(crate::release_channel::fingerprint(asset), channel.to_string());
+        if needs_metadata {missing.push(asset);}
     }
     if missing.is_empty() { return channels; }
     // Catalog metadata is public. Clone only the client state in memory, then

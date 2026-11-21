@@ -1,5 +1,5 @@
 //! Release-channel evidence from Epic identifiers and catalog descriptors.
-//! A zero patch, Live label and +Release branch do not establish stability.
+//! A zero patch, Live label or +Release branch alone do not establish stability.
 use egs_api::api::types::epic_asset::EpicAsset;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,7 +15,126 @@ use std::{
 const MAX_CACHE_BYTES: u64 = 1024 * 1024;
 const MAX_RECORDS: usize = 1024;
 const MAX_AGE: u64 = 24 * 60 * 60;
-const EVIDENCE_VERSION: u32 = 1;
+const EVIDENCE_VERSION: u32 = 2;
+
+// Public app/build projection of the 38 Windows Live catalog entries observed
+// on 2026-11-21. No account identifiers, installation paths or credentials.
+#[cfg(test)]
+pub(crate) const OBSERVED_WINDOWS_LIVE_BUILDS: [(&str, &str); 38] = [
+    ("UE_4.0", "4.0.2-2034640+++depot+UE4-Releases+4.0-Windows"),
+    ("UE_4.1", "4.1.2-2109544+++depot+UE4-Releases+4.1-Windows"),
+    ("UE_4.2", "4.2.1-2101290+++depot+UE4-Releases+4.2-Windows"),
+    (
+        "UE_4.3",
+        "4.3.1-2226335+++depot+UE4-Releases+4.3-2023.1-Windows",
+    ),
+    (
+        "UE_4.4",
+        "4.4.3-2296771+++depot+UE4-Releases+4.4-2023.1-Windows",
+    ),
+    (
+        "UE_4.5",
+        "4.5.1-2336687+++depot+UE4-Releases+4.5-2023.1-Windows",
+    ),
+    (
+        "UE_4.6",
+        "4.6.1-2386410+++depot+UE4-Releases+4.6-2023.1-Windows",
+    ),
+    (
+        "UE_4.7",
+        "4.7.6-2513093+++depot+UE4-Releases+4.7-2023.1-Windows",
+    ),
+    (
+        "UE_4.8",
+        "4.8.3-2634408+++depot+UE4-Releases+4.8-2023.1-Windows",
+    ),
+    (
+        "UE_4.9",
+        "4.9.2-2707645+++depot+UE4-Releases+4.9-2023.1-Windows",
+    ),
+    (
+        "UE_4.10",
+        "4.10.4-2872498+++depot+UE4-Releases+4.10-2023.1-Windows",
+    ),
+    (
+        "UE_4.11",
+        "4.11.2-2946394+++UE4+Release-4.11-2023.1-Windows",
+    ),
+    (
+        "UE_4.12",
+        "4.12.5-3039270+++UE4+Release-4.12-2023.1-Windows",
+    ),
+    (
+        "UE_4.13",
+        "4.13.2-3172292+++UE4+Release-4.13-2023.1-Windows",
+    ),
+    (
+        "UE_4.14",
+        "4.14.3-3249277+++UE4+Release-4.14-2023.1-Windows",
+    ),
+    (
+        "UE_4.15",
+        "4.15.3-3450819+++UE4+Release-4.15-2023.1-Windows",
+    ),
+    (
+        "UE_4.16",
+        "4.16.3-3561208+++UE4+Release-4.16-2023.1-Windows",
+    ),
+    (
+        "UE_4.17",
+        "4.17.2-3658906+++UE4+Release-4.17-2023.1-Windows",
+    ),
+    (
+        "UE_4.18",
+        "4.18.3-3832480+++UE4+Release-4.18-2023.1-Windows",
+    ),
+    (
+        "UE_4.19",
+        "4.19.2-4033788+++UE4+Release-4.19-2023.1-Windows",
+    ),
+    (
+        "UE_4.20",
+        "4.20.3-4369336+++UE4+Release-4.20-2023.1-Windows",
+    ),
+    (
+        "UE_4.21",
+        "4.21.2-4753647+++UE4+Release-4.21-2023.1-Windows",
+    ),
+    (
+        "UE_4.22",
+        "4.22.3-7053642+++UE4+Release-4.22-2023.1-Windows",
+    ),
+    (
+        "UE_4.23",
+        "4.23.1-9631420+++UE4+Release-4.23-2023.1-Windows",
+    ),
+    (
+        "UE_4.24",
+        "4.24.3-11590370+++UE4+Release-4.24-2023.1a-Windows",
+    ),
+    (
+        "UE_4.25",
+        "4.25.4-14469661+++UE4+Release-4.25-2023.1a-Windows",
+    ),
+    (
+        "UE_4.26",
+        "4.26.2-15973114+++UE4+Release-4.26-2023.1a-Windows",
+    ),
+    (
+        "UE_4.27",
+        "4.27.2-18319896+++UE4+Release-4.27-2023.1a-Windows",
+    ),
+    ("UE_5.0", "5.0.3-20979098+++UE5+Release-5.0-2023.1a-Windows"),
+    ("UE_5.1", "5.1.1-23901901+++UE5+Release-5.1-2023.1a-Windows"),
+    ("UE_5.2", "5.2.1-26001984+++UE5+Release-5.2a-Windows"),
+    ("UE_5.3", "5.3.2-29314046+++UE5+Release-5.3a-Windows"),
+    ("UE_5.4", "5.4.4-35576357+++UE5+Release-5.4a-Windows"),
+    ("UE_5.5", "5.5.4-40574608+++UE5+Release-5.5-Windows"),
+    ("UE_5.6", "5.6.1-44394996+++UE5+Release-5.6-Windows"),
+    ("UE_5.7", "5.7.4-51494982+++UE5+Release-5.7-Windows"),
+    ("UE_5.8", "5.8.4-58902052+++UE5+Release-5.8-Windows"),
+    ("UE_5.9", "5.9.0-60738873+++UE5+Release-5.9-Windows"),
+];
 
 /// Some official Launcher builds omit all channel markers, including Preview 2.
 /// Match a published version AND changelist, never an entire numbered branch:
@@ -37,6 +156,90 @@ fn published_build(app: &str, build: &str) -> Option<&'static str> {
         ("UE_5.8", "5.8.4", 58_902_052) => Some("stable"),
         _ => None,
     }
+}
+
+/// Epic identifies a positive third version component as a HotFix, rather than
+/// an initial/preview release. Bound this fallback to already released branches
+/// and the matching Windows Live Launcher identity; neither an arbitrary numeric
+/// version nor a +Release branch by itself is positive release evidence.
+/// https://dev.epicgames.com/documentation/en-us/unreal-engine/install-unreal-engine#applyhotfixupdates
+/// https://www.unrealengine.com/blog/unreal-engine-4-27-released
+/// https://www.unrealengine.com/news/unreal-engine-5-8-is-now-available
+fn historical_windows_hotfix(app: &str, build: &str, label: &str) -> bool {
+    // Empty labels occur only when reading the public Windows Live catalog cache,
+    // whose previous schema omitted the label returned by Epic's asset endpoint.
+    if !matches!(label, "Live" | "") {
+        return false;
+    }
+    let Some((version, rest)) = build.split_once('-') else {
+        return false;
+    };
+    let Ok(version) = semver::Version::parse(version) else {
+        return false;
+    };
+    if version.patch == 0
+        || !version.pre.is_empty()
+        || !version.build.is_empty()
+        || !matches!((version.major, version.minor), (4, 0..=27) | (5, 0..=8))
+        || app != format!("UE_{}.{}", version.major, version.minor)
+    {
+        return false;
+    }
+    let Some((changelist, branch)) = rest.split_once("+++") else {
+        return false;
+    };
+    if changelist.is_empty()
+        || !changelist.bytes().all(|c| c.is_ascii_digit())
+        || !changelist.parse::<u64>().is_ok_and(|cl| cl > 0)
+    {
+        return false;
+    }
+    let Some(branch) = branch.strip_suffix("-Windows") else {
+        return false;
+    };
+    // These optional suffixes are Epic's redistributed historical Launcher builds.
+    let branch = branch
+        .strip_suffix("-2023.1a")
+        .or_else(|| branch.strip_suffix("-2023.1"))
+        .unwrap_or(branch);
+    let release = format!(
+        "UE{}+Release-{}.{}",
+        version.major, version.major, version.minor
+    );
+    branch == release
+        || branch == format!("{release}a")
+        || (version.major == 4 && branch == format!("depot+UE4-Releases+4.{}", version.minor))
+}
+
+fn identifier_channel(app: &str, build: &str, label: &str) -> Option<&'static str> {
+    if [app, build, label].into_iter().any(preview) {
+        Some("preview")
+    } else {
+        published_build(app, build)
+    }
+}
+
+/// Historical HotFix evidence survives an unavailable catalog request, but stays
+/// provisional until metadata is fetched. In particular it must not suppress a
+/// cached or fresh explicit Preview marker from Epic.
+pub(crate) fn initial_channel(asset: &EpicAsset, cached: Option<&str>) -> (&'static str, bool) {
+    let identifier = identifier_channel(&asset.app_name, &asset.build_version, &asset.label_name);
+    if identifier == Some("preview") || cached == Some("preview") {
+        return ("preview", false);
+    }
+    if let Some(channel) = identifier {
+        return (channel, false);
+    }
+    if cached == Some("stable") {
+        return ("stable", false);
+    }
+    let provisional = classify(
+        &asset.app_name,
+        &asset.build_version,
+        &asset.label_name,
+        None,
+    );
+    (provisional, cached.is_none())
 }
 
 fn words(value: &str) -> Vec<String> {
@@ -89,15 +292,14 @@ pub(crate) fn classify(
     label: &str,
     metadata: Option<&Value>,
 ) -> &'static str {
-    if [app, build, label].into_iter().any(preview) {
-        return "preview";
-    }
-    let published = published_build(app, build);
+    let published = identifier_channel(app, build, label);
     if published == Some("preview") {
         return "preview";
     }
+    let fallback =
+        published.or_else(|| historical_windows_hotfix(app, build, label).then_some("stable"));
     let Some(metadata) = metadata else {
-        return published.unwrap_or("unknown");
+        return fallback.unwrap_or("unknown");
     };
     let mut descriptors = Vec::new();
     if let Some(title) = metadata["title"].as_str() {
@@ -147,7 +349,7 @@ pub(crate) fn classify(
     }
     if explicit_stable
         || descriptors.iter().any(|value| stable_descriptor(value))
-        || published == Some("stable")
+        || fallback == Some("stable")
     {
         return "stable";
     }
@@ -263,6 +465,115 @@ impl Cache {
 mod tests {
     use super::*;
     #[test]
+    fn observed_windows_live_catalog_keeps_all_37_hotfixes_and_one_preview() {
+        let mut counts = BTreeMap::new();
+        for (app, build) in OBSERVED_WINDOWS_LIVE_BUILDS {
+            let expected = if app == "UE_5.9" { "preview" } else { "stable" };
+            assert_eq!(
+                classify(app, build, "Live", None),
+                expected,
+                "{app}: {build}"
+            );
+            assert_eq!(
+                classify(app, build, "", None),
+                expected,
+                "offline {app}: {build}"
+            );
+            *counts.entry(expected).or_insert(0) += 1;
+        }
+        assert_eq!(counts, BTreeMap::from([("preview", 1), ("stable", 37)]));
+    }
+    #[test]
+    fn historical_hotfix_fallback_requires_the_entire_bounded_launcher_identity() {
+        for (app, build, label) in [
+            ("UE_5.6", "5.6.0-44394996+++UE5+Release-5.6-Windows", "Live"),
+            ("UE_5.6", "5.6.1-0+++UE5+Release-5.6-Windows", "Live"),
+            ("UE_5.6", "5.6.1-x+++UE5+Release-5.6-Windows", "Live"),
+            (
+                "UE_5.6",
+                "5.6.1-18446744073709551616+++UE5+Release-5.6-Windows",
+                "Live",
+            ),
+            ("UE_5.6", "5.6.1-44394996+++UE5+Release-5.5-Windows", "Live"),
+            ("UE_5.6", "5.6.1-44394996+++UE4+Release-5.6-Windows", "Live"),
+            ("UE_5.5", "5.6.1-44394996+++UE5+Release-5.6-Windows", "Live"),
+            ("UE_5.6", "5.6.1-44394996+++UE5+Release-5.6-Mac", "Live"),
+            ("UE_5.6", "5.6.1-44394996+++UE5+Release-5.6-Windows", "Dev"),
+            (
+                "UE_5.6",
+                "5.6.1-44394996+++UE5+Release-5.6-custom-Windows",
+                "Live",
+            ),
+            (
+                "UE_5.6",
+                "5.6.1-44394996+++UE5+Release-5.6-2024.2-Windows",
+                "Live",
+            ),
+            (
+                "UE_5.6",
+                "5.6.1-44394996+++UE5+Release-5.6b-Windows",
+                "Live",
+            ),
+            ("UE_5.6", "5.6.1-44394996+++UE5+Release-5.6", "Live"),
+            ("UE_5.6", "5.6.1-44394996", "Live"),
+            ("UE_5.9", "5.9.1-70000000+++UE5+Release-5.9-Windows", "Live"),
+            (
+                "UE_5.10",
+                "5.10.1-70000000+++UE5+Release-5.10-Windows",
+                "Live",
+            ),
+            ("UE_6.0", "6.0.1-70000000+++UE6+Release-6.0-Windows", "Live"),
+            (
+                "UE_4.28",
+                "4.28.1-70000000+++UE4+Release-4.28-Windows",
+                "Live",
+            ),
+        ] {
+            assert_eq!(
+                classify(app, build, label, None),
+                "unknown",
+                "{app}: {build} ({label})"
+            );
+        }
+    }
+    #[test]
+    fn provisional_hotfix_still_fetches_metadata_and_preview_evidence_always_wins() {
+        let asset = EpicAsset {
+            app_name: "UE_5.6".into(),
+            build_version: "5.6.1-44394996+++UE5+Release-5.6-Windows".into(),
+            label_name: "Live".into(),
+            ..Default::default()
+        };
+        assert_eq!(initial_channel(&asset, None), ("stable", true));
+        assert_eq!(initial_channel(&asset, Some("unknown")), ("stable", false));
+        assert_eq!(initial_channel(&asset, Some("preview")), ("preview", false));
+        // If the request fails, the provisional stable result remains usable;
+        // successful positive Preview metadata overrides it before cache save.
+        let metadata = serde_json::json!({"customAttributes":{"IsPreview":{"value":"true"}}});
+        assert_eq!(
+            classify(
+                &asset.app_name,
+                &asset.build_version,
+                &asset.label_name,
+                Some(&metadata)
+            ),
+            "preview"
+        );
+        assert_eq!(
+            classify(&asset.app_name, &asset.build_version, "Preview", None),
+            "preview"
+        );
+        assert_eq!(
+            classify(
+                &asset.app_name,
+                "5.6.1-preview-44394996+++UE5+Release-5.6-Windows",
+                "Live",
+                None
+            ),
+            "preview"
+        );
+    }
+    #[test]
     fn official_exact_build_evidence_does_not_classify_entire_branches() {
         for (app, build, expected) in [
             (
@@ -297,7 +608,7 @@ mod tests {
             ),
             (
                 "UE_5.8",
-                "5.8.4-58902053+++UE5+Release-5.8-Windows",
+                "5.8.0-58902053+++UE5+Release-5.8-Windows",
                 "unknown",
             ),
         ] {
@@ -422,6 +733,9 @@ mod tests {
         assert_eq!(cache.get(&asset), None);
         cache.insert(&asset, "preview");
         assert_eq!(cache.get(&asset), Some("preview"));
+        cache.records.get_mut(&key).unwrap().evidence_version = EVIDENCE_VERSION - 1;
+        assert_eq!(cache.get(&asset), None);
+        cache.records.get_mut(&key).unwrap().evidence_version = EVIDENCE_VERSION;
         cache.records.get_mut(&key).unwrap().checked_at = now() + MAX_AGE;
         assert_eq!(cache.get(&asset), None);
         cache.records.get_mut(&key).unwrap().checked_at = now() - MAX_AGE;

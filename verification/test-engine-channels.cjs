@@ -9,6 +9,11 @@ const actualPreviewBuild = '5.9.0-60738873+++UE5+Release-5.9-Windows';
 const stable = entry('UE_5.8', '5.8.3-58210709', 'stable');
 const preview = entry('UE_5.9', actualPreviewBuild, 'preview');
 const unknown = entry('UE_5.7', '5.7.0-12345', 'unknown');
+// Representative engine_catalog(cachedOnly:true) IPC output after native old-cache
+// normalization. Released build strings match the native migration fixtures; the
+// future unknown row is synthetic. The renderer receives explicit channels and
+// does not repeat the native historical-release rule or mutate a live cache.
+const correctedLegacyCatalog = require('./fixtures/engine-catalog-legacy-ipc.json');
 
 (async () => {
   const bundle = await esbuild.build({stdin:{resolveDir:root, loader:'tsx', contents:`
@@ -58,6 +63,38 @@ const unknown = entry('UE_5.7', '5.7.0-12345', 'unknown');
     await finish(page,catalogue,index);
   }
   try {
+    {
+      const page=await open(correctedLegacyCatalog);
+      assert.equal(await group(page,'Основные релизы').getAttribute('aria-pressed'),'true');
+      for(const version of ['4.27.2','5.0.3','5.6.1'])await tile(page,version).waitFor();
+      assert.deepEqual(await page.locator('.engine-tile-version').allTextContents(),['5.6.1','5.0.3','4.27.2']);
+      assert.equal(await tile(page,'5.9.0').count(),0);assert.equal(await tile(page,'5.10.0').count(),0);
+      assert.equal(await page.locator('.engine-channel-unverified').count(),0);
+      await page.screenshot({path:path.join(outputDirectory,'engine-legacy-ipc-main.png'),animations:'disabled'});
+      check('Normalized old-cache IPC opens released UE 4.27, 5.0 and 5.6 builds in Main without frontend version guesses');
+      await group(page,'Превью-версии').click();await tile(page,'5.9.0').waitFor();
+      assert.equal(await page.locator('.engine-available-tile').count(),1);assert.equal(await page.locator('.engine-channel-unverified').count(),0);
+      await page.screenshot({path:path.join(outputDirectory,'engine-legacy-ipc-preview.png'),animations:'disabled'});
+      check('The same migrated cache keeps exact UE 5.9 Preview 2 out of Main and only in Preview');
+      await group(page,'Канал не подтверждён').click();await tile(page,'5.10.0').waitFor();
+      assert.equal(await page.locator('.engine-available-tile').count(),1);assert.equal(await page.locator('.engine-channel-unverified').count(),1);
+      check('A future build with unknown native channel remains separately labelled instead of inheriting older stable status');
+      await page.evaluate(()=>window.catalogRequests[0].reject('Synthetic legacy catalogue offline'));
+      await page.getByText('Synthetic legacy catalogue offline',{exact:true}).waitFor();await tile(page,'5.10.0').waitFor();
+      await group(page,'Основные релизы').click();
+      for(const version of ['4.27.2','5.0.3','5.6.1'])await tile(page,version).waitFor();
+      assert.equal(await page.locator('.engine-channel-unverified').count(),0);
+      check('Released old-cache rows stay available in Main while the fresh network request fails');
+      await refresh(page,correctedLegacyCatalog);
+      assert.equal(await group(page,'Основные релизы').getAttribute('aria-pressed'),'true');
+      assert.deepEqual(await page.locator('.engine-tile-version').allTextContents(),['5.6.1','5.0.3','4.27.2']);
+      await group(page,'Превью-версии').click();await tile(page,'5.9.0').waitFor();
+      await group(page,'Канал не подтверждён').click();await tile(page,'5.10.0').waitFor();
+      assert.equal(await page.locator('.engine-channel-unverified').count(),1);
+      assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.name==='engine_catalog'&&call.args.cachedOnly).length),1);
+      check('A successful refresh preserves all three native channel groups after migrated-cache offline startup');
+      await page.close();
+    }
     {
       const legacy=entry('UE_5.6','5.6.2-12345');
       const empty=entry('UE_5.5','5.5.4-12345','');

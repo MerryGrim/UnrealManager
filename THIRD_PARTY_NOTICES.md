@@ -20,7 +20,7 @@ their copyright and license notices.
 - Some transitive Rust packages use MPL-2.0, including cssparser,
   cssparser-macros, dtoa-short, option-ext, and selectors. Their original licenses
   continue to apply. Unmodified source packages matching Cargo.lock checksums
-  are attached to [0.9.15 as ThirdPartySources.zip](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.15/UnrealManager-0.9.15-ThirdPartySources.zip).
+  are attached to [0.9.16 as ThirdPartySources.zip](https://github.com/MerryGrim/UnrealManager/releases/download/v0.9.16/UnrealManager-0.9.16-ThirdPartySources.zip).
   The archive includes exact versions, SHA-256 values, original license notices
   and extraction instructions. The same sources are available via the exact
   <https://crates.io/> URLs in the notices.

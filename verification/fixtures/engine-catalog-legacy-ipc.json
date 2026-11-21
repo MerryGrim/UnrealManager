@@ -1,0 +1,37 @@
+[
+  {
+    "appName": "UE_4.27",
+    "version": "4.27",
+    "build": "4.27.2-18319896+++UE4+Release-4.27-2023.1a-Windows",
+    "channel": "stable",
+    "installed": []
+  },
+  {
+    "appName": "UE_5.0",
+    "version": "5.0",
+    "build": "5.0.3-20979098+++UE5+Release-5.0-2023.1a-Windows",
+    "channel": "stable",
+    "installed": []
+  },
+  {
+    "appName": "UE_5.6",
+    "version": "5.6",
+    "build": "5.6.1-44394996+++UE5+Release-5.6-Windows",
+    "channel": "stable",
+    "installed": []
+  },
+  {
+    "appName": "UE_5.9",
+    "version": "5.9",
+    "build": "5.9.0-60738873+++UE5+Release-5.9-Windows",
+    "channel": "preview",
+    "installed": []
+  },
+  {
+    "appName": "UE_5.10",
+    "version": "5.10",
+    "build": "5.10.0-70000000+++UE5+Release-5.10-Windows",
+    "channel": "unknown",
+    "installed": []
+  }
+]

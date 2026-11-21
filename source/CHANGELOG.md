@@ -1,5 +1,12 @@
 # Change notes
 
+## 0.9.16
+
+- Restore Windows Launcher hotfixes from the released UE 4.0–4.27 and
+  UE 5.0–5.8 series to the stable catalogue, including entries in old caches.
+- Keep confirmed preview builds, including UE 5.9 Preview 2, in the preview
+  catalogue.
+
 ## 0.9.15
 
 - Recognize UE 5.9 Preview 2 by its Epic-published changelist, including when

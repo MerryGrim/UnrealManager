@@ -180,7 +180,7 @@ fn newer(current: &str, latest: &str) -> bool {
 fn cached_catalog(path: &Path) -> Vec<EngineRelease> {
     let mut releases=fs::read(path).ok().and_then(|raw| serde_json::from_slice::<Vec<EngineRelease>>(&raw).ok()).unwrap_or_default();
     for release in &mut releases {
-        // Apply newly verified exact-build evidence even to the offline catalog.
+        // Apply current exact-build and historical HotFix evidence offline too.
         // In particular an old "stable"/"unknown" must not conceal Preview 2.
         let explicit=crate::release_channel::classify(&release.app_name,&release.build,"",None);
         if explicit=="preview" || (explicit=="stable" && release.channel!="preview") {release.channel=explicit.into();}
@@ -659,6 +659,23 @@ mod tests {
         super::save_catalog(&path,&entries).unwrap();
         let cached=super::cached_catalog(&path);
         assert_eq!(cached.iter().map(|item|item.channel.as_str()).collect::<Vec<_>>(),vec!["preview","stable","stable"]);
+        std::fs::remove_file(&path).unwrap();std::fs::remove_dir(&root).unwrap();
+    }
+    #[test]
+    fn offline_catalog_normalizes_all_observed_historical_windows_hotfixes() {
+        let root=std::env::temp_dir().join(format!("um-historical-catalog-test-{}",uuid::Uuid::new_v4()));
+        let path=root.join("engines.json");
+        let entries=crate::release_channel::OBSERVED_WINDOWS_LIVE_BUILDS.into_iter().map(|(app,build)|super::EngineRelease {
+            app_name:app.into(),version:app.trim_start_matches("UE_").into(),build:build.into(),channel:"unknown".into(),installed:vec![]
+        }).collect::<Vec<_>>();
+        super::save_catalog(&path,&entries).unwrap();
+        let cached=super::cached_catalog(&path);
+        assert_eq!(cached.iter().filter(|item|item.channel=="stable").count(),37);
+        assert_eq!(cached.iter().filter(|item|item.channel=="preview").count(),1);
+        let mut explicit_preview=entries.into_iter().find(|item|item.app_name=="UE_5.6").unwrap();
+        explicit_preview.channel="preview".into();
+        super::save_catalog(&path,&[explicit_preview]).unwrap();
+        assert_eq!(super::cached_catalog(&path)[0].channel,"preview");
         std::fs::remove_file(&path).unwrap();std::fs::remove_dir(&root).unwrap();
     }
     use super::*;

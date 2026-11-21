@@ -41,6 +41,12 @@ The catalogue recognizes that build in older local caches. Other builds from
 the same engine branch are evaluated independently. Metadata is cached by the
 asset, build, and label without storing credentials.
 
+When channel metadata is missing, the Windows Launcher catalogue also
+recognizes hotfixes from the released UE 4.0–4.27 and UE 5.0–5.8 series.
+The application name, version, changelist and Launcher branch must agree.
+[Epic documents the patch component as the hotfix number](https://dev.epicgames.com/documentation/en-us/unreal-engine/install-unreal-engine#apply-hotfix-updates).
+Explicit preview evidence takes precedence.
+
 Validation for 0.9.13: 395 Rust tests passed, with 0 failures and 6 ignored tests.
 The engine UI and translation checks passed using synthetic native responses.
 The Windows x64 release, installer and portable package were built and their
