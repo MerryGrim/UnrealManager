@@ -767,7 +767,8 @@ pub(crate) async fn engine_assets(app:&tauri::AppHandle,state:&EpicState)->Resul
 
 /// Resolve channel evidence for the assets already returned by engine_assets.
 /// The SDK bulk endpoint uses one metadata request for the usual engine catalog;
-/// no per-engine account refresh or manifest/chunk download is needed.
+/// no per-engine account refresh or manifest/chunk download is needed. Results
+/// use the complete asset fingerprint; one branch can have different builds.
 pub(crate) async fn engine_release_channels(
     _app: &tauri::AppHandle,
     state: &EpicState,
@@ -781,11 +782,11 @@ pub(crate) async fn engine_release_channels(
     let mut missing = Vec::new();
     for asset in assets.iter().take(256) {
         let explicit = crate::release_channel::classify(&asset.app_name, &asset.build_version, &asset.label_name, None);
-        let channel = if explicit == "preview" { Some(explicit) } else { cache.get(asset) };
+        let channel = if explicit != "unknown" { Some(explicit) } else { cache.get(asset) };
         if let Some(channel) = channel {
-            channels.insert(asset.app_name.clone(), channel.to_string());
+            channels.insert(crate::release_channel::fingerprint(asset), channel.to_string());
         } else {
-            channels.insert(asset.app_name.clone(), "unknown".into());
+            channels.insert(crate::release_channel::fingerprint(asset), "unknown".into());
             missing.push(asset);
         }
     }
@@ -802,7 +803,7 @@ pub(crate) async fn engine_release_channels(
             if info.id != asset.catalog_item_id || info.namespace != asset.namespace { continue; }
             let Ok(value) = serde_json::to_value(info) else { continue; };
             let channel = crate::release_channel::classify(&asset.app_name, &asset.build_version, &asset.label_name, Some(&value));
-            channels.insert(asset.app_name.clone(), channel.into());
+            channels.insert(crate::release_channel::fingerprint(asset), channel.into());
             cache.insert(asset, channel);
             changed = true;
         }

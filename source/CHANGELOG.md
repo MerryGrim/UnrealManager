@@ -1,5 +1,11 @@
 # Change notes
 
+## 0.9.15
+
+- Recognize UE 5.9 Preview 2 by its Epic-published changelist, including when
+  Unreal Manager opens a catalogue cached by an older version.
+- Put engines whose release channel is unconfirmed in a separate tab.
+
 ## 0.9.14
 
 - Pause, resume or cancel a running Fab download from Downloads. Drag it into

@@ -33,11 +33,13 @@ System prerequisite receipts are bound to the Windows installation using an opaq
 hash. A portable settings folder copied from another Windows installation cannot
 skip the prerequisites. Windows may request elevation for the official installers.
 
-The available catalogue has **Stable releases** and **Preview versions** groups.
-Channel detection uses explicit identifiers and Epic catalogue descriptors, never
-the `.0` patch number alone. If Epic does not confirm a channel, its tile remains
-accessible in the main group with **Channel unconfirmed**. Metadata is requested
-in batches and cached by the exact asset/build/label, without storing credentials.
+The available catalogue has **Stable releases**, **Preview versions**, and
+**Channel unconfirmed** groups. Channel detection uses explicit build identifiers,
+Epic catalogue descriptors, and verified changelists. Epic identified build
+`5.9.0-60738873` as [UE 5.9 Preview 2](https://forums.unrealengine.com/t/preview-2-unreal-engine-5-9-preview/2852840?page=3).
+The catalogue recognizes that build in older local caches. Other builds from
+the same engine branch are evaluated independently. Metadata is cached by the
+asset, build, and label without storing credentials.
 
 Validation for 0.9.13: 395 Rust tests passed, with 0 failures and 6 ignored tests.
 The engine UI and translation checks passed using synthetic native responses.

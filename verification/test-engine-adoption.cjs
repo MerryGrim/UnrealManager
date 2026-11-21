@@ -41,7 +41,9 @@ const { root, outputDirectory, esbuild, playwright, browserLaunchOptions } = req
     await page.getByRole('button',{name:'Доступные',exact:true}).click();
     const stable=page.getByRole('button',{name:'Установить Unreal Engine 5.8.3',exact:true});
     const preview=page.getByRole('button',{name:'Установить Unreal Engine 5.9.0',exact:true});
-    await stable.waitFor();assert.equal(await preview.count(),0);assert.equal(await page.getByText('Канал не подтверждён',{exact:true}).count(),1,'Unknown channel remains visible and explicitly unconfirmed');
+    await stable.waitFor();assert.equal(await preview.count(),0);assert.equal(await page.locator('.engine-channel-unverified').count(),0,'Unknown channels are separate from confirmed stable releases');
+    await page.getByRole('group',{name:'Канал выпусков движка',exact:true}).getByRole('button',{name:'Канал не подтверждён',exact:true}).click();
+    await page.getByRole('button',{name:'Установить Unreal Engine 5.7.0',exact:true}).waitFor();assert.equal(await page.locator('.engine-channel-unverified').count(),1);
     await page.getByRole('button',{name:'Превью-версии',exact:true}).click();await preview.waitFor();assert.equal(await stable.count(),0);
     await page.screenshot({path:outputDirectory+'/engine-preview-channel.png'});
     await page.getByRole('button',{name:'Основные релизы',exact:true}).click();await stable.dblclick();

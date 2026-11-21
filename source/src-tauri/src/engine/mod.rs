@@ -178,7 +178,15 @@ fn newer(current: &str, latest: &str) -> bool {
     matches!((cl(current),cl(latest)),(Some(a),Some(b)) if b>a)
 }
 fn cached_catalog(path: &Path) -> Vec<EngineRelease> {
-    fs::read(path).ok().and_then(|raw| serde_json::from_slice::<Vec<EngineRelease>>(&raw).ok()).unwrap_or_default()
+    let mut releases=fs::read(path).ok().and_then(|raw| serde_json::from_slice::<Vec<EngineRelease>>(&raw).ok()).unwrap_or_default();
+    for release in &mut releases {
+        // Apply newly verified exact-build evidence even to the offline catalog.
+        // In particular an old "stable"/"unknown" must not conceal Preview 2.
+        let explicit=crate::release_channel::classify(&release.app_name,&release.build,"",None);
+        if explicit=="preview" || (explicit=="stable" && release.channel!="preview") {release.channel=explicit.into();}
+        else if !matches!(release.channel.as_str(),"stable"|"preview"|"unknown") {release.channel="unknown".into();}
+    }
+    releases
 }
 fn save_catalog(path: &Path, releases: &[EngineRelease]) -> Result<(), String> {
     fs::create_dir_all(path.parent().ok_or("Некорректный путь кэша")?).map_err(io)?;
@@ -201,7 +209,7 @@ pub async fn engine_catalog(
         let assets=crate::epic::engine_assets(&app,&epic).await?;
         let channels=crate::epic::engine_release_channels(&app,&epic,&assets).await;
         for a in assets {
-            let channel=channels.get(&a.app_name).cloned().unwrap_or_else(||"unknown".into());
+            let channel=channels.get(&crate::release_channel::fingerprint(&a)).cloned().unwrap_or_else(||"unknown".into());
             fresh.push(EngineRelease {
                 version: a.app_name.trim_start_matches("UE_").into(),
                 app_name: a.app_name,
@@ -381,7 +389,8 @@ fn validate_installed_build(root:&Path,app_name:&str,build:&str)->Result<bool,St
     Ok(same_build(build,&installed,&changelist))
 }
 fn preview_build(build:&str)->bool{
-    let build=build.to_ascii_lowercase();["preview","earlyaccess","early-access","experimental","beta","alpha"].iter().any(|s|build.contains(s))
+    let app=build.split_once('-').and_then(|(version,_)|semver::Version::parse(version).ok()).map(|v|format!("UE_{}.{}",v.major,v.minor)).unwrap_or_default();
+    crate::release_channel::classify(&app,build,"",None)=="preview"
 }
 fn workspace_reserve(verify:bool,raw_size:usize,has_file_work:bool)->u64{
     if verify && !has_file_work {
@@ -638,6 +647,20 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&root).unwrap();
     }
+    #[test]
+    fn offline_catalog_corrects_old_preview_channel_without_relabeling_future_builds() {
+        let root=std::env::temp_dir().join(format!("um-preview-catalog-test-{}",uuid::Uuid::new_v4()));
+        let path=root.join("engines.json");
+        let entries=vec![
+            super::EngineRelease {app_name:"UE_5.9".into(),version:"5.9".into(),build:"5.9.0-60738873+++UE5+Release-5.9-Windows".into(),channel:"stable".into(),installed:vec![]},
+            super::EngineRelease {app_name:"UE_5.9".into(),version:"5.9".into(),build:"5.9.0-70000000+++UE5+Release-5.9-Windows".into(),channel:"stable".into(),installed:vec![]},
+            super::EngineRelease {app_name:"UE_5.8".into(),version:"5.8".into(),build:"5.8.4-58902052+++UE5+Release-5.8-Windows".into(),channel:"unknown".into(),installed:vec![]},
+        ];
+        super::save_catalog(&path,&entries).unwrap();
+        let cached=super::cached_catalog(&path);
+        assert_eq!(cached.iter().map(|item|item.channel.as_str()).collect::<Vec<_>>(),vec!["preview","stable","stable"]);
+        std::fs::remove_file(&path).unwrap();std::fs::remove_dir(&root).unwrap();
+    }
     use super::*;
     #[test]
     fn build_comparison() {
@@ -661,7 +684,8 @@ mod tests {
     #[test]
     fn channel_identity_keeps_stable_and_previews_distinct(){
         assert!(!preview_build("5.8.3-123+++UE5+Release-5.8"));
-        for build in ["5.9.0-123+++UE5+Preview-5.9","5.9.0-123-earlyaccess","5.9.0-beta.1"] {assert!(preview_build(build));}
+        for build in ["5.9.0-123+++UE5+Preview-5.9","5.9.0-123-earlyaccess","5.9.0-beta.1","5.9.0-60738873+++UE5+Release-5.9-Windows"] {assert!(preview_build(build));}
+        assert!(!preview_build("5.9.0-70000000+++UE5+Release-5.9-Windows"));
     }
     #[test]
     fn verification_only_reserves_metadata_instead_of_a_full_download_workspace(){

@@ -15,6 +15,29 @@ use std::{
 const MAX_CACHE_BYTES: u64 = 1024 * 1024;
 const MAX_RECORDS: usize = 1024;
 const MAX_AGE: u64 = 24 * 60 * 60;
+const EVIDENCE_VERSION: u32 = 1;
+
+/// Some official Launcher builds omit all channel markers, including Preview 2.
+/// Match a published version AND changelist, never an entire numbered branch:
+/// a later 5.9 final build must not inherit an earlier preview's channel.
+fn published_build(app: &str, build: &str) -> Option<&'static str> {
+    let (version, rest) = build.split_once('-')?;
+    let changelist = rest.split('+').next()?.parse::<u64>().ok()?;
+    match (app, version, changelist) {
+        // Epic Preview 2 build info, 2026-11-19 (CL and GitHub preview tag):
+        // https://forums.unrealengine.com/t/preview-2-unreal-engine-5-9-preview/2852840/42
+        ("UE_5.9", "5.9.0", 60_738_873) => Some("preview"),
+        // Epic's released hotfix plus the exact public crash-report build:
+        // https://forums.unrealengine.com/t/5-7-4-hotfix-released/2705041
+        // https://issues.unrealengine.com/issue/UE-282900
+        ("UE_5.7", "5.7.4", 51_494_982) => Some("stable"),
+        // Epic's released 5.8.4 hotfix; exact Windows Launcher Build.version:
+        // https://forums.unrealengine.com/t/ue-5-8-4-launcher-install-c-build-fails-with-ruleserror-fabtoolset-after-fab-plugin-0-0-22-is-installed/2846815
+        // https://forums.unrealengine.com/t/5-8-4-hotfix-released/2842775
+        ("UE_5.8", "5.8.4", 58_902_052) => Some("stable"),
+        _ => None,
+    }
+}
 
 fn words(value: &str) -> Vec<String> {
     value
@@ -69,8 +92,12 @@ pub(crate) fn classify(
     if [app, build, label].into_iter().any(preview) {
         return "preview";
     }
+    let published = published_build(app, build);
+    if published == Some("preview") {
+        return "preview";
+    }
     let Some(metadata) = metadata else {
-        return "unknown";
+        return published.unwrap_or("unknown");
     };
     let mut descriptors = Vec::new();
     if let Some(title) = metadata["title"].as_str() {
@@ -118,7 +145,10 @@ pub(crate) fn classify(
     if descriptors.iter().any(|value| preview(value)) {
         return "preview";
     }
-    if explicit_stable || descriptors.iter().any(|value| stable_descriptor(value)) {
+    if explicit_stable
+        || descriptors.iter().any(|value| stable_descriptor(value))
+        || published == Some("stable")
+    {
         return "stable";
     }
     "unknown"
@@ -143,6 +173,8 @@ pub(crate) struct Cache {
 struct Record {
     channel: String,
     checked_at: u64,
+    #[serde(default)]
+    evidence_version: u32,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -182,7 +214,12 @@ impl Cache {
     pub(crate) fn get(&self, asset: &EpicAsset) -> Option<&str> {
         self.records
             .get(&fingerprint(asset))
-            .filter(|r| now().saturating_sub(r.checked_at) < MAX_AGE)
+            .filter(|r| {
+                let current = now();
+                r.evidence_version == EVIDENCE_VERSION
+                    && r.checked_at <= current
+                    && current - r.checked_at < MAX_AGE
+            })
             .map(|r| r.channel.as_str())
     }
     pub(crate) fn insert(&mut self, asset: &EpicAsset, channel: &str) {
@@ -194,6 +231,7 @@ impl Cache {
             Record {
                 channel: channel.into(),
                 checked_at: now(),
+                evidence_version: EVIDENCE_VERSION,
             },
         );
         while self.records.len() > MAX_RECORDS {
@@ -224,6 +262,72 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn official_exact_build_evidence_does_not_classify_entire_branches() {
+        for (app, build, expected) in [
+            (
+                "UE_5.9",
+                "5.9.0-60738873+++UE5+Release-5.9-Windows",
+                "preview",
+            ),
+            (
+                "UE_5.8",
+                "5.8.4-58902052+++UE5+Release-5.8-Windows",
+                "stable",
+            ),
+            (
+                "UE_5.7",
+                "5.7.4-51494982+++UE5+Release-5.7-Windows",
+                "stable",
+            ),
+            (
+                "UE_5.9",
+                "5.9.0-60738874+++UE5+Release-5.9-Windows",
+                "unknown",
+            ),
+            (
+                "UE_5.9",
+                "5.9.1-60738873+++UE5+Release-5.9-Windows",
+                "unknown",
+            ),
+            (
+                "UE_5.8",
+                "5.9.0-60738873+++UE5+Release-5.9-Windows",
+                "unknown",
+            ),
+            (
+                "UE_5.8",
+                "5.8.4-58902053+++UE5+Release-5.8-Windows",
+                "unknown",
+            ),
+        ] {
+            assert_eq!(
+                classify(app, build, "Live", None),
+                expected,
+                "{app}: {build}"
+            );
+        }
+        let stable = serde_json::json!({"customAttributes":{"ReleaseChannel":{"value":"Stable"}}});
+        assert_eq!(
+            classify(
+                "UE_5.9",
+                "5.9.0-60738873+++UE5+Release-5.9",
+                "Live",
+                Some(&stable)
+            ),
+            "preview"
+        );
+        let preview = serde_json::json!({"title":"Unreal Engine Preview"});
+        assert_eq!(
+            classify(
+                "UE_5.8",
+                "5.8.4-58902052+++UE5+Release-5.8",
+                "Live",
+                Some(&preview)
+            ),
+            "preview"
+        );
+    }
     #[test]
     fn explicit_identifiers_detect_preview_and_early_access() {
         for (app, build, label) in [
@@ -302,5 +406,47 @@ mod tests {
         asset.build_version = "5.9.0-1".into();
         asset.label_name = "Other".into();
         assert_eq!(cache.get(&asset), None);
+    }
+    #[test]
+    fn stale_channel_records_and_future_timestamps_are_not_reused() {
+        let asset = EpicAsset {
+            app_name: "UE_5.9".into(),
+            build_version: "5.9.0-1".into(),
+            ..Default::default()
+        };
+        let key = fingerprint(&asset);
+        let mut cache: Cache = serde_json::from_value(
+            serde_json::json!({"records":{(key.clone()):{"channel":"stable","checked_at":now()}}}),
+        )
+        .unwrap();
+        assert_eq!(cache.get(&asset), None);
+        cache.insert(&asset, "preview");
+        assert_eq!(cache.get(&asset), Some("preview"));
+        cache.records.get_mut(&key).unwrap().checked_at = now() + MAX_AGE;
+        assert_eq!(cache.get(&asset), None);
+        cache.records.get_mut(&key).unwrap().checked_at = now() - MAX_AGE;
+        assert_eq!(cache.get(&asset), None);
+    }
+    #[test]
+    fn complete_asset_keys_keep_same_branch_preview_and_final_separate() {
+        let preview = EpicAsset {
+            app_name: "UE_5.9".into(),
+            build_version: "5.9.0-60738873+++UE5+Release-5.9-Windows".into(),
+            namespace: "ue".into(),
+            catalog_item_id: "fixture".into(),
+            label_name: "Live".into(),
+            ..Default::default()
+        };
+        let final_build = EpicAsset {
+            build_version: "5.9.0-70000000+++UE5+Release-5.9-Windows".into(),
+            ..preview.clone()
+        };
+        let channels = BTreeMap::from([
+            (fingerprint(&preview), "preview"),
+            (fingerprint(&final_build), "stable"),
+        ]);
+        assert_eq!(channels.len(), 2);
+        assert_eq!(channels[&fingerprint(&preview)], "preview");
+        assert_eq!(channels[&fingerprint(&final_build)], "stable");
     }
 }

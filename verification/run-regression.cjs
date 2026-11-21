@@ -4,7 +4,7 @@ const {spawnSync}=require('node:child_process');
 const selection=Object.freeze([
  'test-locale-catalogues.cjs','test-preferences.cjs','test-library-topics.cjs',
  'test-vault-all-kinds.cjs','test-vault-active-controls.cjs','test-fab-project-kind.cjs','test-beta5.cjs','test-resume-forget.cjs',
- 'test-engine-action-layout.cjs','test-beta4.cjs','test-engine-ui.cjs',
+ 'test-engine-action-layout.cjs','test-beta4.cjs','test-engine-ui.cjs','test-engine-channels.cjs',
  'test-engine-recovery-progress.cjs','test-app-updates.cjs','test-app-startup-ready.cjs','test-startup-window-failure.cjs',
  'test-accessibility-matrix.cjs','test-workspace-header.cjs','test-epic-auth-required.cjs','test-project-discovery.cjs','test-redemption-batch.cjs','test-redemption-wizard.cjs','test-redemption-bridge.cjs',
 ]);
