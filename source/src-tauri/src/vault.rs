@@ -8,7 +8,7 @@ pub mod project_update;
 pub mod transfers;
 const CHUNK_LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Default)]
-pub struct VaultState { plan: Mutex<Option<Plan>>, pub(crate) active: AtomicBool, pub(crate) cancel: AtomicBool, pub(crate) updating: AtomicBool, paused:AtomicBool, pause_generation:AtomicU64, pause_available:AtomicBool, channel:Mutex<Option<tauri::ipc::Channel<Progress>>>, progress_sink:Mutex<Option<std::sync::Arc<dyn Fn(Progress)+Send+Sync>>>, latest:Mutex<Option<Progress>>, rate:Mutex<Option<(Instant,u64,u64)>> }
+pub struct VaultState { plan: Mutex<Option<Plan>>, pub(crate) active: AtomicBool, pub(crate) cancel: AtomicBool, pub(crate) updating: AtomicBool, paused:AtomicBool, pause_generation:AtomicU64, pause_available:AtomicBool,pub(crate) control_gate:Mutex<()>,pub(crate) queue_control_open:AtomicBool, channel:Mutex<Option<tauri::ipc::Channel<Progress>>>, progress_sink:Mutex<Option<std::sync::Arc<dyn Fn(Progress)+Send+Sync>>>, latest:Mutex<Option<Progress>>, rate:Mutex<Option<(Instant,u64,u64)>> }
 #[derive(Clone,Serialize,Deserialize)]
 struct Plan { info: Package, #[serde(default)] intent:Option<transfers::Intent>, #[serde(with="crate::engine::resume::snapshot_files")] files: BTreeMap<String, FileManifestList> }
 #[derive(Clone, Serialize, Deserialize)]
@@ -26,9 +26,19 @@ fn normalize_plan_kind(plan:&mut Plan)->bool {
     let reset=plan.intent.as_ref().is_some_and(|intent|plan.info.kind=="Project"&&intent.mode=="install"&&(old!="Project"||project_intent_needs_destination(&plan.info,intent)));
     if reset{plan.intent=None;}reset
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all="camelCase")]
 pub struct Progress { pub(crate) phase: String, done: u64, total: u64, files_done: usize, files_total: usize, network_bytes: u64, bytes_per_second: u64, pub(crate) paused:bool, pub(crate) can_pause:bool }
+impl Progress{pub(crate) fn queue_pause(mut self,paused:bool)->Self{self.paused=paused;if paused{self.bytes_per_second=0;}self}}
+pub(crate) fn queue_pause_available(state:&VaultState)->bool{state.active.load(Ordering::SeqCst)&&state.pause_available.load(Ordering::SeqCst)}
+pub(crate) fn queue_pause_flag(state:&VaultState,paused:bool){if paused{state.pause_generation.fetch_add(1,Ordering::SeqCst);}state.paused.store(paused,Ordering::SeqCst);}
+pub(crate) fn queue_begin_control(state:&VaultState)->Result<(),String>{let _guard=state.control_gate.lock().map_err(|_|"Ошибка состояния загрузки")?;state.cancel.store(false,Ordering::SeqCst);state.queue_control_open.store(true,Ordering::SeqCst);Ok(())}
+pub(crate) fn queue_end_control(state:&VaultState){if let Ok(_guard)=state.control_gate.lock(){state.queue_control_open.store(false,Ordering::SeqCst);}}
+pub(crate) async fn queue_wait<T>(state:&VaultState,future:impl std::future::Future<Output=T>)->Result<T,String>{
+ if state.cancel.load(Ordering::SeqCst){return Err("Загрузка остановлена.".into());}
+ tokio::pin!(future);loop{tokio::select!{value=&mut future=>return Ok(value),_=tokio::time::sleep(Duration::from_millis(100))=>{if state.cancel.load(Ordering::SeqCst){return Err("Загрузка остановлена.".into());}}}}
+}
+#[cfg(test)]pub(crate) fn queue_test_state()->VaultState{let state=VaultState::default();state.active.store(true,Ordering::SeqCst);state.pause_available.store(true,Ordering::SeqCst);state.queue_control_open.store(true,Ordering::SeqCst);state}
 fn io_error(error: std::io::Error) -> String { format!("Ошибка файловой системы: {error}") }
 fn io_at(operation:&str,path:&Path,error:std::io::Error)->String{format!("Ошибка файловой системы ({operation}): {}: {error}",path.display())}
 fn digest(bytes: &[u8]) -> String { format!("{:x}", Sha1::digest(bytes)) }
@@ -224,7 +234,7 @@ async fn download_locked_from(state:&VaultState,id:&str,on_progress:Option<tauri
             if actual != *hash { return Err("Файлы Vault повреждены. Повторное скачивание не начато".into()); }
             done+=bytes;files+=1;transfers::emit(state,local_progress("Проверяем файлы Vault",done,plan.info.bytes,files,plan.info.files));
         }
-        transfers::checkpoint(state).await?;state.pause_available.store(false,Ordering::SeqCst);
+        transfers::begin_finalization(state).await?;
         if external{check_external_alias(&plan.info,&external_index()?)?;}
         else{
             no_links(destination)?;
@@ -272,7 +282,7 @@ async fn download_locked_from(state:&VaultState,id:&str,on_progress:Option<tauri
         done += file.size() as u64; completed += 1;
         if last_event.elapsed() >= Duration::from_millis(250) { emit("Загружаем и проверяем файлы", done, completed, network); last_event = Instant::now(); }
     }
-    transfers::checkpoint(state).await?;state.pause_available.store(false,Ordering::SeqCst);emit("Завершаем загрузку",done,completed,network);
+    transfers::begin_finalization(state).await?;emit("Завершаем загрузку",done,completed,network);
     no_links(destination)?;
     let record = serde_json::to_vec_pretty(&plan.info).map_err(|_| "Не удалось сохранить описание материала")?;
     no_links(&staging.join("files/package.um.json"))?;crate::storage::atomic(&staging.join("files/package.um.json"),&record)?;
@@ -1020,11 +1030,24 @@ fn queue_accept_package(info:&Package,prepared:&mut impl FnMut(&Package)->Result
  prepared(info)?;
  if transfers::has_saved_task(&info.id)?{return Err("Продолжите сохранённую загрузку в списке задач.".into());}Ok(())
 }
-pub(crate) async fn queue_download(app:&tauri::AppHandle,epic:&crate::epic::EpicState,state:&VaultState,request:&crate::vault_queue::Request,account:&str,mut prepared:impl FnMut(&Package)->Result<(),String>,sink:std::sync::Arc<dyn Fn(Progress)+Send+Sync>)->Result<Package,String>{
+pub(crate) async fn queue_download(app:&tauri::AppHandle,epic:&crate::epic::EpicState,state:&VaultState,request:&crate::vault_queue::Request,account:&str,resume_id:Option<&str>,mut prepared:impl FnMut(&Package,bool)->Result<(),String>,sink:std::sync::Arc<dyn Fn(Progress)+Send+Sync>)->Result<Package,String>{
  // Caller owns the same Vault lease as manual downloads and engine installation.
- let plan=prepare_locked(app,epic,&request.asset_id,&request.artifact_id,&request.selected_engine,Some(account)).await?;
- queue_accept_package(&plan.info,&mut prepared)?;
- if !Path::new(&plan.info.path).exists(){let required=plan.info.bytes.checked_add(plan.info.download_bytes).and_then(|n|n.checked_add(128*1024*1024)).ok_or("Материал слишком велик")?;if crate::engine::free(Path::new(&plan.info.path))?<required{return Err("Недостаточно свободного места.".into());}}
+ let saved=match resume_id{Some(id)=>transfers::queued_plan(request,id)?,None=>None};
+ let resuming=saved.is_some();
+ let plan=if let Some(plan)=saved{prepared(&plan.info,true)?;plan}else{
+  // Authentication may rotate and persist session tokens while preparing the
+  // manifest. Let that bounded operation finish; never drop it halfway through.
+  let plan=prepare_locked(app,epic,&request.asset_id,&request.artifact_id,&request.selected_engine,Some(account)).await?;
+  transfers::checkpoint(state).await?;
+  queue_accept_package(&plan.info,&mut |info|prepared(info,false))?;
+  // Persist ownership only after the no-prior-task check, before any save. A
+  // cancellation after merely publishing the ID cannot forget a manual task.
+  prepared(&plan.info,true)?;plan
+ };
+ // A resumed transfer already owns verified partial files/chunks. Requiring
+ // another full package's free space would prevent it from finishing; writes
+ // retain the existing resumable disk-full/error path instead.
+ if !resuming&&!Path::new(&plan.info.path).exists(){let required=plan.info.bytes.checked_add(plan.info.download_bytes).and_then(|n|n.checked_add(128*1024*1024)).ok_or("Материал слишком велик")?;if crate::engine::free(Path::new(&plan.info.path))?<required{return Err("Недостаточно свободного места.".into());}}
  let id=plan.info.id.clone();*state.plan.lock().map_err(|_|"Ошибка состояния загрузки")?=Some(plan);
  *state.progress_sink.lock().map_err(|_|"Ошибка состояния загрузки")?=Some(sink);
  let result=download_locked(state,&id,None).await;

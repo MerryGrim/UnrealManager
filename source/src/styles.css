@@ -542,9 +542,22 @@ input[type=checkbox]{padding:0}
 .vault-queue-info .error-text{margin-top:10px}
 .vault-queue-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 .vault-queue-active{margin-bottom:12px}
+.vault-queue-active .transfer-main{display:grid;grid-template-columns:104px minmax(0,1fr);gap:16px 20px}
+.vault-queue-active .transfer-art{grid-row:1/3;align-self:start}
+.vault-queue-active-actions{grid-column:2;display:flex;align-items:flex-start;justify-content:flex-end;gap:10px;min-width:0}
+.vault-queue-transfer-controls{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;border:0;margin:0;padding:0;min-inline-size:0}
+.vault-queue-transfer-controls button{min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.vault-queue-active-grip{display:flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;touch-action:none;cursor:grab;border:1px solid var(--border);border-radius:9px}
+.vault-queue-active-grip[aria-disabled=true]{opacity:.45;cursor:default}
+.vault-queue-control-status{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.vault-queue-active .vault-queue-control-status{grid-column:2;margin:0}
+.vault-transfer-card>.vault-queue-control-status{margin:0;padding:0 22px 16px}
+.vault-queue-drop-end{display:flex;align-items:center;justify-content:center;gap:10px;min-height:52px;margin-top:10px;padding:12px;border:1px dashed var(--border);border-radius:10px;color:var(--muted);font-size:13px;text-align:center}
+.vault-queue-drop-end svg{flex-shrink:0}
 .vault-queue-draft select{width:100%;margin-top:8px}
 @media(max-width:650px){.vault-queue-row{grid-template-columns:22px minmax(0,1fr)}.vault-queue-actions{grid-column:2;justify-content:flex-start}}
 @media(max-width:650px){.vault-transfer-card .transfer-main{grid-template-columns:64px minmax(0,1fr);gap:12px;padding:16px}.vault-transfer-card .transfer-art{grid-row:1;width:64px;height:64px}.vault-transfer-card .transfer-buttons{grid-column:1/-1}.vault-transfer-card .transfer-buttons>button:not(.icon),.vault-transfer-card .engine-pause-controls{flex:1;min-width:140px}.vault-transfer-card .engine-pause-controls button{width:100%}.vault-operation-actions{justify-content:flex-start}}
+@media(max-width:650px){.vault-queue-active .transfer-main{grid-template-columns:64px minmax(0,1fr);gap:12px;padding:16px}.vault-queue-active .transfer-art{grid-row:1;width:64px;height:64px}.vault-queue-active-actions,.vault-queue-active .vault-queue-control-status{grid-column:1/-1}.vault-queue-transfer-controls{flex:1;justify-content:flex-start}.vault-queue-transfer-controls button{flex:1 1 130px}.vault-transfer-card>.vault-queue-control-status{padding:0 16px 12px}}
 
 /* Projects: finite, user-started discovery; no decorative animation or fake percent. */
 .projects-discovery-status{margin:0 0 18px;padding:17px 19px;background:var(--panel);border:1px solid var(--border);border-radius:12px;min-width:0}.projects-discovery-heading{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap}.projects-discovery-heading strong{font-size:13px;font-weight:600;line-height:1.5;overflow-wrap:anywhere}.projects-discovery-heading button{min-height:36px;flex-shrink:0}

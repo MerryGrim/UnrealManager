@@ -48,6 +48,7 @@ type Progress = {
     bytesPerSecond: number;
     paused?:boolean;
     canPause?:boolean;
+    canCancel?:boolean;
 };
 type Preview = {
     projectFile?: string | null;
@@ -77,7 +78,9 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     const[pendingDownloads,setPendingDownloads]=useState<VaultTask[]>([]);
     const[restoringDownload,setRestoringDownload]=useState(false);
     const transferLock=useRef(false);
-    const refreshPending=async()=>{try{setPendingDownloads(await invoke<VaultTask[]>('vault_resume_tasks')||[]);}catch(e){setError(String(e));}};
+    const cancelLock=useRef(false);
+    const pendingGeneration=useRef(0);
+    const refreshPending=async()=>{const generation=++pendingGeneration.current;try{const tasks=await invoke<VaultTask[]>('vault_resume_tasks')||[];if(generation===pendingGeneration.current)setPendingDownloads(tasks);}catch(e){if(generation===pendingGeneration.current)setError(String(e));}};
     const [history, setHistory] = useState(readDownloadHistory);
     const [historyError, setHistoryError] = useState('');
     useEffect(() => { if (!history.initialized)
@@ -131,6 +134,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
         mode: 'vault' | 'install' | null;
     } | null>(null);
     const [installing, setInstalling] = useState(false);
+    const [stoppingDownload, setStoppingDownload] = useState(false);
     const [picking, setPicking] = useState(false);
     const discardPrepared = () => {
         draftGeneration.current++;
@@ -173,6 +177,9 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     const acceptQueue = (next: VaultQueueSnapshot) => {
         if (!next || next.revision < queueRef.current.revision) return;
         const metadataChanged = next.revision !== queueRef.current.revision;
+        const removed = metadataChanged ? queueRef.current.items.filter(item => item.packageId && !next.items.some(current => current.id === item.id)) : [];
+        const cancelledPackages = new Set(removed.filter(item => item.controlPending === 'cancel').map(item => item.packageId));
+        if (cancelledPackages.size) setPendingDownloads(current => current.filter(task => !cancelledPackages.has(task.id)));
         queueRef.current = {...next, completed: null};
         setQueue(queueRef.current);
         if (next.completed) {
@@ -180,7 +187,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
             void refresh();
             void refreshPending();
         }
-        else if (metadataChanged && next.items.some(item => item.packageId && (item.status === 'interrupted' || item.status === 'needsAction'))) void refreshPending();
+        else if (metadataChanged && (removed.length || next.items.some(item => item.packageId && (item.status === 'interrupted' || item.status === 'needsAction')))) void refreshPending();
     };
     useEffect(() => {
         let alive = true;
@@ -199,6 +206,13 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
             try {acceptQueue(await invoke<VaultQueueSnapshot>('vault_queue_get'));} catch {}
             return false;
         } finally {queueLock.current = false; setQueueBusy(false);}
+    };
+    const stopDownload = async () => {
+        if (cancelLock.current || !activeDownload || installing || progress?.canCancel === false) return;
+        cancelLock.current = true;
+        setStoppingDownload(true);
+        try {await invoke('vault_cancel');}
+        catch (e) {cancelLock.current = false;setStoppingDownload(false);setError(String(e));}
     };
     useEffect(() => { void refresh();void refreshPending(); }, []);
     const syncEpic = async () => {
@@ -345,6 +359,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     };
     const runDownload=async(context:{item:FabItem;plan:VaultPackage;artifact:string;projectEngine:string;target:string;projectName:string;mode:'vault'|'install'|null;updateId?:string})=>{
         if(transferLock.current)return;transferLock.current=true;
+        cancelLock.current=false;setStoppingDownload(false);
         const {plan,artifact,projectEngine,target,projectName,mode,updateId}=context;
         const selected = {...context.item, kind: plan.kind};
         setActiveDownload({ item: selected, plan, artifact, projectEngine, target, projectName, mode });
@@ -386,6 +401,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
             setProgress(null);
             setActiveDownload(null);
             setInstalling(false);
+            cancelLock.current=false;setStoppingDownload(false);
             transferLock.current=false;await refreshPending();
         }
     };
@@ -472,7 +488,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
     const supportedEngines = (installItem?.engines || selected?.engineVersions || []).map(engineVersion);
     const validProjectEngine = /^\d+\.\d+(?:\.\d+)?$/.test(projectEngine);
     const projectEngineField = <label className="wizard-field">{tr("Движок для нового проекта")}<input aria-label={tr("Движок для нового проекта")} list="project-engine-options" placeholder={tr("Например, 5.8")} value={projectEngine} disabled={busy} onChange={e => { setProjectEngine(e.target.value); setPlan(null); setPreview(null); }}/><datalist id="project-engine-options">{tr([...new Set([...engines.map(e => e.version), ...supportedEngines])].sort((a, b) => b.localeCompare(a, undefined, { numeric: true })).map(v => <option key={v} value={v}/>))}</datalist><small className="muted">{tr("Можно указать любую версию UE.")}{tr(validProjectEngine && !supportedEngines.includes(projectEngine) ? ' Автор не заявил поддержку этой версии; совместимость не гарантирована.' : '')}</small></label>;
-    const status = <>{tr(progress && <div className="library-loading" role="status"><Download size={24}/><div className="download-progress"><strong>{tr(progress.paused?'На паузе':progress.phase)}</strong><progress max={Math.max(1, progress.total)} value={progress.total ? progress.done : undefined}/><p>{tr("Обработано")}: {tr(size(progress.done))}{progress.total > 0 && <>{tr(" из ")}{tr(size(progress.total))}</>}{tr(" · Файлы ")}{tr(progress.filesDone)}{tr(" / ")}{tr(progress.filesTotal)}</p><small>{tr("По сети: ")}{tr(size(progress.networkBytes))}{tr(" · ")}{tr(size(progress.bytesPerSecond))}{tr("/с")}</small><div className="vault-operation-actions">{!installing&&<VaultPauseButton paused={progress.paused} canPause={progress.canPause}/>}<button disabled={installing} onClick={() => invoke('vault_cancel').catch(e => setError(String(e)))}>{tr("Остановить загрузку")}</button></div></div></div>)}<EpicAuthError error={error}/>{tr(message && <p role="status" className="vault-success">{tr(message)}</p>)}</>;
+    const status = <>{tr(progress && <div className="library-loading" role="status"><Download size={24}/><div className="download-progress"><strong>{tr(progress.paused?'На паузе':progress.phase)}</strong><progress max={Math.max(1, progress.total)} value={progress.total ? progress.done : undefined}/><p>{tr("Обработано")}: {tr(size(progress.done))}{progress.total > 0 && <>{tr(" из ")}{tr(size(progress.total))}</>}{tr(" · Файлы ")}{tr(progress.filesDone)}{tr(" / ")}{tr(progress.filesTotal)}</p><small>{tr("По сети: ")}{tr(size(progress.networkBytes))}{tr(" · ")}{tr(size(progress.bytesPerSecond))}{tr("/с")}</small><div className="vault-operation-actions">{!installing&&!stoppingDownload&&<VaultPauseButton paused={progress.paused} canPause={progress.canPause}/>}<button disabled={installing || stoppingDownload || !activeDownload || progress.canCancel === false} onClick={() => void stopDownload()}>{tr("Остановить загрузку")}</button></div>{stoppingDownload && <p role="status">{tr('Останавливаем загрузку…')}</p>}</div></div>)}<EpicAuthError error={error}/>{tr(message && <p role="status" className="vault-success">{tr(message)}</p>)}</>;
     const epicSettings = <section className="epic-vault-settings"><h3>{tr("Vault от Epic Games Launcher")}</h3>
     <p className="muted">{tr("Подключите папку VaultCache. Скачанные материалы остаются в ней и доступны для добавления в проект.")}</p>
     <label htmlFor="epic-vault-path">{tr("Папка VaultCache")}</label><div className="epic-vault-controls"><input id="epic-vault-path" aria-label={tr("Папка Epic VaultCache")} placeholder={tr("Папка Epic VaultCache")} value={epicDirectory} disabled={busy} onChange={e => setEpicDirectory(e.target.value)}/><button disabled={busy} onClick={async()=>{try{const path=await invoke<string|null>('choose_project_location',{folder:true});if(path)setEpicDirectory(path);}catch(e){setError(String(e));}}}><FolderOpen size={17}/>{tr('Выбрать папку')}</button><button onClick={syncEpic} disabled={busy || !epicDirectory.trim()}><RefreshCw size={17} className={epicScan ? 'spin' : ''}/>{tr(epicScan ? 'Проверяем…' : 'Синхронизировать')}</button></div>
@@ -482,7 +498,7 @@ export function useVault(projects: UnrealProject[], onProjectsChanged: () => Pro
   </section>;
     return {queue, queueActive, queuedCount, pendingProgress:Object.fromEntries(pendingDownloads.map(t=>[t.assetId,{id:t.assetId,taskId:t.id,percent:Math.min(100,Math.floor(t.done/Math.max(1,t.total)*100)),phase:t.phase==='На паузе'?'На паузе':'Ожидает продолжения'}])), select, openUpdate, openProjectUpdate, updateTransfers, busy, items, epicSettings, refresh, openInstall, notice: status,
         tileProgress: activeDownload && progress ? { id: activeDownload.item.id, percent: Math.min(100, Math.max(0, Math.floor(progress.done / Math.max(1, progress.total) * 100))), phase: progress.paused?'На паузе':progress.phase } : queueActive?.progress ? {id:queueActive.assetId,percent:Math.min(100,Math.floor(queueActive.progress.done/Math.max(1,queueActive.progress.total)*100)),phase:queueActive.progress.paused?'На паузе':queueActive.progress.phase} : null,
-        view: <DownloadsView queue={queue} queueBusy={queueBusy} queueError={queueError} onQueuePaused={paused=>void queueCommand('vault_queue_set_paused',{paused})} onQueueReorder={(ids,expectedRevision)=>void queueCommand('vault_queue_reorder',{ids,expectedRevision})} onQueueRemove={(id,expectedRevision)=>void queueCommand('vault_queue_remove',{id,expectedRevision})} onQueueRetry={(id,expectedRevision)=>void queueCommand('vault_queue_retry',{id,expectedRevision})} restoring={restoringDownload} pending={pendingDownloads} onResume={id=>void resumeDownload(id)} onForget={forgetDownload} engineDownload={engineDownload} active={activeDownload} progress={progress} installing={installing} records={history.records} error={error} historyError={historyError} onClear={id => setHistory(current => clearDownloadHistory(current, id))} onStop={() => void invoke('vault_cancel').catch(e => setError(String(e)))} onDetails={() => { if (activeDownload)
+        view: <DownloadsView queue={queue} queueBusy={queueBusy} queueError={queueError} onQueuePaused={paused=>void queueCommand('vault_queue_set_paused',{paused})} onQueueReorder={(ids,expectedRevision)=>void queueCommand('vault_queue_reorder',{ids,expectedRevision})} onQueueRemove={(id,expectedRevision)=>void queueCommand('vault_queue_remove',{id,expectedRevision})} onQueueRetry={(id,expectedRevision)=>void queueCommand('vault_queue_retry',{id,expectedRevision})} onQueuePauseActive={(id,paused,expectedRevision)=>void queueCommand('vault_queue_pause_active',{id,paused,expectedRevision})} onQueueCancelActive={(id,expectedRevision)=>void queueCommand('vault_queue_cancel_active',{id,expectedRevision})} onQueueDeferActive={(id,beforeId,expectedRevision)=>void queueCommand('vault_queue_defer_active',{id,beforeId,expectedRevision})} restoring={restoringDownload} pending={pendingDownloads} onResume={id=>void resumeDownload(id)} onForget={forgetDownload} engineDownload={engineDownload} active={activeDownload} progress={progress} installing={installing} stopping={stoppingDownload} records={history.records} error={error} historyError={historyError} onClear={id => setHistory(current => clearDownloadHistory(current, id))} onStop={() => void stopDownload()} onDetails={() => { if (activeDownload)
             select(activeDownload.item); }} onUse={item => item.kind === 'Plugin' ? onPlugins() : openInstall(item)} busy={busy} available={items}/>,
         dialog: <>{tr(updateRequest && <ProjectUpdateDialog items={items} projects={projects} engines={engines} initial={updateRequest.item} initialNewId={updateRequest.newId} busy={busy} onBusy={setBusy} onClose={() => setUpdateRequest(null)} onDone={async () => { await refresh(); await onProjectsChanged(); }}/>)}{tr(selected && <ModalFocusScope onClose={closeSelected}><section className="login-dialog vault-dialog" role="dialog" aria-modal="true" aria-label={selected.title}><div className="section-head"><h2>{selected.title}</h2><button onClick={closeSelected} aria-label={tr("Закрыть загрузку")}><X /></button></div>
       <div className="asset-details"><FabCover item={selected}/><div><p>{tr({ Asset: 'Ассет', Plugin: 'Плагин', Project: 'Проект' }[selected.kind] || selected.kind)}{tr(" · ")}{tr(selected.source)}</p><p>{tr(selected.categories.join(' · '))}</p><p>{tr("Версии UE: ")}{tr(selected.engineVersions.join(', ') || 'Не указаны')}</p></div></div>

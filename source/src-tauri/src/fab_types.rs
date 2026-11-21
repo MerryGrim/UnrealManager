@@ -142,15 +142,25 @@ fn distribution_kind(value: &str) -> Option<&'static str> {
 }
 fn metadata_kind(value: &serde_json::Value) -> Option<String> {
     if value["assetFormatType"]["code"].as_str()? != "unreal-engine" { return None; }
-    let root=value.get("distributionMethod").filter(|value|!value.is_null());
-    let nested=value.pointer("/techDetails/gameSystem/distributionMethod").filter(|value|!value.is_null());
-    let root=match root {Some(value)=>Some(distribution_kind(value.as_str()?)?),None=>None};
-    let nested=match nested {Some(value)=>Some(distribution_kind(value.as_str()?)?),None=>None};
-    match (root,nested) {
-        (Some(root),Some(nested)) if root!=nested=>None,
-        (Some(kind),_)|(_,Some(kind))=>Some(kind.into()),
-        _=>None,
+    let mut found=None;
+    let mut methods=Vec::new();
+    if let Some(method)=value.get("distributionMethod"){methods.push(method);}
+    if let Some(details)=value.get("techDetails").filter(|details|!details.is_null()) {
+        let details=details.as_object()?;
+        if details.len()>64{return None;}
+        // Fab stores distributionMethod in the listing's direct technical
+        // category (for example tutorialsExamples or toolAndPlugin), not only
+        // gameSystem. Never infer it from descriptions or nested examples.
+        for category in details.values().filter_map(serde_json::Value::as_object) {
+            if let Some(method)=category.get("distributionMethod"){methods.push(method);}
+        }
     }
+    for method in methods.into_iter().filter(|method|!method.is_null()) {
+        let kind=distribution_kind(method.as_str()?)?;
+        if found.is_some_and(|old|old!=kind){return None;}
+        found=Some(kind);
+    }
+    found.map(str::to_owned)
 }
 fn valid_base(base: &str) -> bool {
     if base == FAB { return true; }
@@ -316,6 +326,33 @@ mod tests {
         assert_eq!(metadata_kind(&value).as_deref(),Some("Asset"));
         let mut unknown=value.clone();unknown["distributionMethod"]="future_unknown".into();assert!(metadata_kind(&unknown).is_none());
         let mut absent=value;absent["techDetails"]["gameSystem"]["distributionMethod"]=serde_json::Value::Null;assert!(metadata_kind(&absent).is_none());
+    }
+    fn category_metadata(category:&str,method:&str)->serde_json::Value{
+        let mut details=serde_json::Map::new();
+        for name in ["animation","audio","brush","decal","gameSystem","gameTemplate","hdri","material","spritesAndFlipbooks","threeDModel","toolAndPlugin","tutorialsExamples","ui","vfx"]{details.insert(name.into(),serde_json::Value::Null);}
+        details.insert(category.into(),serde_json::json!({"distributionMethod":method}));
+        serde_json::json!({"assetFormatType":{"code":"unreal-engine"},"techDetails":details})
+    }
+    #[test]fn public_category_shapes_confirm_projects_packs_and_plugins_without_old_game_system_field(){
+        for(category,method,expected)in [("tutorialsExamples","complete_project","Project"),("tutorialsExamples","asset_pack","Asset"),("toolAndPlugin","code_plugin","Plugin"),("gameTemplate","complete_project","Project")]{
+            assert_eq!(metadata_kind(&category_metadata(category,method)).as_deref(),Some(expected));
+        }
+    }
+    #[test]fn category_distribution_fields_remain_bounded_explicit_and_consistent(){
+        let mut value=category_metadata("tutorialsExamples","complete_project");
+        value["techDetails"]["gameTemplate"]=serde_json::json!({"distributionMethod":"complete_project"});assert_eq!(metadata_kind(&value).as_deref(),Some("Project"));
+        value["techDetails"]["toolAndPlugin"]=serde_json::json!({"distributionMethod":"code_plugin"});assert!(metadata_kind(&value).is_none());
+        for method in [serde_json::json!("unknown"),serde_json::json!(17),serde_json::json!({"code":"complete_project"})]{let mut invalid=category_metadata("tutorialsExamples","complete_project");invalid["techDetails"]["audio"]=serde_json::json!({"distributionMethod":method});assert!(metadata_kind(&invalid).is_none());}
+        let nested=serde_json::json!({"assetFormatType":{"code":"unreal-engine"},"techDetails":{"tutorialsExamples":{"example":{"distributionMethod":"complete_project"}}},"description":"complete_project"});assert!(metadata_kind(&nested).is_none());
+        let mut too_many=category_metadata("tutorialsExamples","complete_project");for index in 0..65{too_many["techDetails"][format!("extra{index}")]=serde_json::Value::Null;}assert!(metadata_kind(&too_many).is_none());
+    }
+    #[tokio::test]async fn category_shape_sync_resolves_and_caches_all_three_explicit_types(){
+        let fixture=Fixture::new();let listener=TcpListener::bind("127.0.0.1:0").unwrap();let endpoint=format!("http://{}",listener.local_addr().unwrap());
+        let server=std::thread::spawn(move||{for _ in 0..3{let(mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();let mut request=[0;8192];let n=stream.read(&mut request).unwrap();let request=String::from_utf8_lossy(&request[..n]);let(category,method)=if request.contains("000000000001"){("tutorialsExamples","complete_project")}else if request.contains("000000000002"){("tutorialsExamples","asset_pack")}else{("toolAndPlugin","code_plugin")};let body=category_metadata(category,method).to_string();write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();}});
+        let client=reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();let original:Vec<_>=(1..=3).map(|n|item(&format!("category-{n}"),&format!("00000000-0000-0000-0000-{n:012}"))).collect();let mut items=original.clone();
+        let stats=enrich_at(&client,"synthetic",ACCOUNT,&mut items,&fixture.0,&endpoint,|_,_,_|{}).await;server.join().unwrap();
+        assert_eq!((stats.total,stats.done,stats.unresolved,stats.fetched,stats.legacy_fetched),(3,3,0,3,0));assert_eq!(items.iter().map(|item|item.kind.as_str()).collect::<Vec<_>>(),vec!["Project","Asset","Plugin"]);assert!(items.iter().all(|item|item.catalog_kind=="Asset"));
+        let mut cached=original;let second=enrich_at(&client,"synthetic",ACCOUNT,&mut cached,&fixture.0,&endpoint,|_,_,_|{}).await;assert_eq!((second.cached,second.fetched,second.unresolved),(3,0,0));
     }
     #[test] fn exact_listing_origin_and_stable_artifact_fingerprint() {
         assert_eq!(listing_uid(&format!("https://www.fab.com/en-US/listings/{UID}?ref=test")).as_deref(), Some(UID));

@@ -1,9 +1,11 @@
 import {tr,getLocale} from './i18n';
-import {ChevronRight} from 'lucide-react';
+import {ChevronRight, Square} from 'lucide-react';
+import {useRef, useState} from 'react';
+import {invoke} from '@tauri-apps/api/core';
 import logo from './assets/um-logo.svg';
 import {EnginePauseButton} from './EnginePauseButton';
-export type EngineProgress = {phase:string;done:number;total:number;percent:number;processedBytes?:number;totalBytes?:number;filesDone?:number;filesTotal?:number;processingBytesPerSecond?:number;currentFile?:string|null;currentFileStage?:'readOld'|'readNew'|'readBoth'|'replace'|'resumeCheck';currentFileDone?:number;currentFileTotal?:number;readBytes?:number;filesPerSecond?:number;readBytesPerSecond?:number;paused?:boolean;canPause?:boolean};
-export type EngineTransfer = EngineProgress & {networkBytes:number;bytesPerSecond:number;title:string};
+export type EngineProgress = {phase:string;done:number;total:number;percent:number;processedBytes?:number;totalBytes?:number;filesDone?:number;filesTotal?:number;processingBytesPerSecond?:number;currentFile?:string|null;currentFileStage?:'readOld'|'readNew'|'readBoth'|'replace'|'resumeCheck';currentFileDone?:number;currentFileTotal?:number;readBytes?:number;filesPerSecond?:number;readBytesPerSecond?:number;paused?:boolean;canPause?:boolean;canStop?:boolean};
+export type EngineTransfer = EngineProgress & {networkBytes:number;bytesPerSecond:number;title:string;taskId?:string};
 export const transferSize=(bytes:number)=>`${(bytes/1048576).toLocaleString(getLocale(),{maximumFractionDigits:1})} ${tr('МБ')}`;
 export const formatEnginePhase=(phase:string)=>phase.startsWith('Fab: ')?`Fab: ${tr(phase.slice(5))}`:tr(phase);
 const countLabels:Record<string,string>={
@@ -64,6 +66,25 @@ export function engineProgressMetrics(progress:EngineProgress):EngineMetric[] {
  }
  return rows;
 }
+export function EngineStopButton({id}: {id: string}) {
+ const requested = useRef(false);
+ const [stopping, setStopping] = useState(false);
+ const [error, setError] = useState('');
+ async function stop() {
+  if (requested.current) return;
+  requested.current = true;
+  setStopping(true);
+  setError('');
+  try {
+   await invoke('engine_cancel', {id});
+  } catch (error) {
+   requested.current = false;
+   setStopping(false);
+   setError(String(error));
+  }
+ }
+ return <div className="engine-pause-controls"><button className="danger-text engine-stop-button" disabled={stopping} onClick={() => void stop()}><Square size={16}/>{tr(stopping ? 'Останавливаем загрузку…' : 'Остановить загрузку')}</button>{error && <span className="error-text" role="alert">{tr(error)}</span>}</div>;
+}
 export function EngineTransferCard({progress,onOpen}:{progress:EngineTransfer;onOpen:()=>void}){
- return <article className="transfer-card engine-transfer-card"><div className="transfer-main"><div className="transfer-art"><img src={logo} alt=""/></div><div className="transfer-info"><h3>{progress.title}</h3><p>{progress.paused?tr('На паузе'):formatEnginePhase(progress.phase)}</p><div className="transfer-meter"><progress aria-label={tr('Прогресс загрузки')} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><strong>{enginePercentText(progress)}</strong></div></div><div className="transfer-buttons"><EnginePauseButton paused={progress.paused} canPause={progress.canPause}/><button onClick={onOpen}>{tr('Открыть установку движка')}<ChevronRight size={17}/></button></div></div><div className="transfer-metrics"><div><small>{tr('Скорость сети')}</small><b>{transferSize(progress.bytesPerSecond)}{tr('/с')}</b></div><div><small>{tr('Получено по сети')}</small><b>{transferSize(progress.networkBytes)}</b></div><div><small>{tr('Состояние')}</small><b>{progress.paused?tr('На паузе'):formatEnginePhase(progress.phase)}</b></div>{engineProgressMetrics(progress).map(row=><div key={row.label} className={row.currentFile?'engine-current-file':row.fileWork?'engine-file-work':undefined}><small title={row.fileWork?progress.currentFile||undefined:undefined}>{tr(row.label)}</small>{row.value&&<b title={row.currentFile?row.value:undefined}>{row.value}</b>}{row.fileProgress&&<progress className="engine-file-meter" aria-label={tr('Прогресс текущего файла')} aria-valuetext={row.fileProgress.text} max={100} value={row.fileProgress.value}/>}</div>)}</div></article>;
+ return <article className="transfer-card engine-transfer-card"><div className="transfer-main"><div className="transfer-art"><img src={logo} alt=""/></div><div className="transfer-info"><h3>{progress.title}</h3><p>{progress.paused?tr('На паузе'):formatEnginePhase(progress.phase)}</p><div className="transfer-meter"><progress aria-label={tr('Прогресс загрузки')} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><strong>{enginePercentText(progress)}</strong></div></div><div className="transfer-buttons"><EnginePauseButton paused={progress.paused} canPause={progress.canPause}/>{progress.taskId && progress.canStop && <EngineStopButton key={progress.taskId} id={progress.taskId}/>}<button onClick={onOpen}>{tr('Открыть установку движка')}<ChevronRight size={17}/></button></div></div><div className="transfer-metrics"><div><small>{tr('Скорость сети')}</small><b>{transferSize(progress.bytesPerSecond)}{tr('/с')}</b></div><div><small>{tr('Получено по сети')}</small><b>{transferSize(progress.networkBytes)}</b></div><div><small>{tr('Состояние')}</small><b>{progress.paused?tr('На паузе'):formatEnginePhase(progress.phase)}</b></div>{engineProgressMetrics(progress).map(row=><div key={row.label} className={row.currentFile?'engine-current-file':row.fileWork?'engine-file-work':undefined}><small title={row.fileWork?progress.currentFile||undefined:undefined}>{tr(row.label)}</small>{row.value&&<b title={row.currentFile?row.value:undefined}>{row.value}</b>}{row.fileProgress&&<progress className="engine-file-meter" aria-label={tr('Прогресс текущего файла')} aria-valuetext={row.fileProgress.text} max={100} value={row.fileProgress.value}/>}</div>)}</div></article>;
 }

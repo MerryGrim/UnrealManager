@@ -25,6 +25,30 @@ fn save_at(base:&Path,plan:&Plan)->Result<(),String>{
  crate::storage::atomic(&owned(base,&plan.info.id,"json")?,&serde_json::to_vec(&task).map_err(|e|e.to_string())?)
 }
 fn load_at(base:&Path,id:&str)->Result<Plan,String>{let mut plan:Plan=crate::engine::resume::read_compressed(&owned(base,id,"zlib")?)?;if plan.info.id!=id{return Err("Задача Vault не совпадает с записью".into());}normalize_plan_kind(&mut plan);Ok(plan)}
+const QUEUE_SCOPE:&str="Сохранённая загрузка не соответствует заданию очереди. Файлы сохранены.";
+fn queue_binding(plan:&Plan,request:&crate::vault_queue::Request,id:&str,vault:&Path)->Result<(),String>{
+ if plan.intent.is_some()||!plan.info.source.is_empty()||plan.info.id!=id||plan.info.asset_id!=request.asset_id||plan.info.artifact_id!=request.artifact_id||plan.info.selected_engine!=request.selected_engine||Path::new(&plan.info.path)!=vault.join(id){return Err(QUEUE_SCOPE.into());}Ok(())
+}
+fn queued_at(base:&Path,request:&crate::vault_queue::Request,id:&str,vault:&Path)->Result<Option<Plan>,String>{
+ let json=owned(base,id,"json")?;let compressed=owned(base,id,"zlib")?;
+ if !json.exists()&&!compressed.exists(){return Ok(None);}
+ // Check the original intent before normalizing old project-kind metadata:
+ // a queue request never acquires a manual project's installation intention.
+ let mut plan:Plan=crate::engine::resume::read_compressed(&compressed)?;
+ queue_binding(&plan,request,id,vault)?;normalize_plan_kind(&mut plan);Ok(Some(plan))
+}
+pub(super) fn queued_plan(request:&crate::vault_queue::Request,id:&str)->Result<Option<Plan>,String>{
+ let plan=queued_at(&directory(),request,id,&crate::storage::vault())?;if let Some(plan)=&plan{validate(plan)?;}Ok(plan)
+}
+pub(crate) fn forget_queued(request:&crate::vault_queue::Request,id:&str,vault:&Path)->Result<(),String>{
+ forget_queued_at(&directory(),request,id,vault)
+}
+fn forget_queued_at(base:&Path,request:&crate::vault_queue::Request,id:&str,vault:&Path)->Result<(),String>{
+ if queued_at(base,request,id,vault)?.is_none(){return Ok(());}
+ // Forget only the exact saved transfer metadata after its worker has exited.
+ // Completed packages, partial files, chunks and project data remain untouched.
+ for ext in ["json","zlib"]{let path=owned(base,id,ext)?;if path.exists(){fs::remove_file(path).map_err(io_error)?;}}Ok(())
+}
 #[derive(Deserialize)]struct SavedPackageInfo{info:Package}
 // Decode only saved metadata with bounded total work. The potentially large
 // chunk map is skipped by serde; nothing is persisted during a library read.
@@ -95,13 +119,25 @@ pub(super) fn network(state:&VaultState,bytes:u64){if state.rate.lock().ok().and
 pub(super) async fn checkpoint(state:&VaultState)->Result<(),String>{
  loop{if state.cancel.load(Ordering::SeqCst){return Err(STOPPED.into());}if !state.paused.load(Ordering::SeqCst){return Ok(());}tokio::time::sleep(Duration::from_millis(100)).await;}
 }
+pub(super) async fn begin_finalization(state:&VaultState)->Result<(),String>{
+ loop{
+  checkpoint(state).await?;
+  // Serialize acceptance of active-task controls with the final commit gate.
+  // Release this lock before any progress callback can enter the queue mutex.
+  let _guard=state.control_gate.lock().map_err(|_|"Ошибка состояния загрузки")?;
+  if state.cancel.load(Ordering::SeqCst){return Err(STOPPED.into());}
+  if state.paused.load(Ordering::SeqCst){continue;}
+  state.queue_control_open.store(false,Ordering::SeqCst);state.pause_available.store(false,Ordering::SeqCst);return Ok(());
+ }
+}
 #[tauri::command]
 pub fn vault_pause(state:tauri::State<'_,VaultState>,paused:bool)->Result<(),String>{
+ let guard=state.control_gate.lock().map_err(|_|"Ошибка состояния загрузки")?;
  if !state.active.load(Ordering::SeqCst)||!state.pause_available.load(Ordering::SeqCst){return Err("На этом этапе пауза недоступна.".into());}
- if paused{state.pause_generation.fetch_add(1,Ordering::SeqCst);}state.paused.store(paused,Ordering::SeqCst);status(&state);Ok(())
+ if paused{state.pause_generation.fetch_add(1,Ordering::SeqCst);}state.paused.store(paused,Ordering::SeqCst);drop(guard);status(&state);Ok(())
 }
 pub(super) struct Scope<'a>(pub &'a VaultState);
-impl Drop for Scope<'_>{fn drop(&mut self){self.0.paused.store(false,Ordering::SeqCst);self.0.pause_available.store(false,Ordering::SeqCst);if let Ok(mut c)=self.0.channel.lock(){*c=None;}if let Ok(mut f)=self.0.progress_sink.lock(){*f=None;}}}
+impl Drop for Scope<'_>{fn drop(&mut self){crate::vault::queue_end_control(self.0);self.0.paused.store(false,Ordering::SeqCst);self.0.pause_available.store(false,Ordering::SeqCst);if let Ok(mut c)=self.0.channel.lock(){*c=None;}if let Ok(mut f)=self.0.progress_sink.lock(){*f=None;}}}
 pub(super) struct Temporary(pub PathBuf);
 impl Drop for Temporary {fn drop(&mut self){let _=fs::remove_file(&self.0);}}
 
@@ -176,6 +212,41 @@ pub(super) fn cleanup(stage:&Path,id:&str)->Result<(),String>{
  struct ChunkFixture{root:PathBuf,parent:PathBuf}
  impl ChunkFixture{fn new()->Self{let parent=std::env::var_os("UM_TEMP_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);no_links(&parent).unwrap();fs::create_dir_all(&parent).unwrap();let root=parent.join(format!("um-chunk-recovery-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();Self{root,parent}}}
  impl Drop for ChunkFixture{fn drop(&mut self){if self.root.parent()==Some(self.parent.as_path())&&no_links(&self.root).is_ok(){let _=fs::remove_dir_all(&self.root);}}}
+ fn queue_fixture(f:&ChunkFixture)->(PathBuf,PathBuf,crate::vault_queue::Request,Plan){
+  let base=f.root.join("Tasks");let vault=f.root.join("Vault");let id=digest(b"queue fixture package");
+  let request=crate::vault_queue::Request{asset_id:"fixture-asset".into(),artifact_id:"fixture-artifact".into(),selected_engine:"5.7".into(),title:"Queue fixture".into()};
+  let info=Package{id:id.clone(),asset_id:request.asset_id.clone(),artifact_id:request.artifact_id.clone(),selected_engine:request.selected_engine.clone(),title:request.title.clone(),kind:"Asset".into(),build_version:"fixture".into(),source:String::new(),engines:vec!["5.7".into()],bytes:0,download_bytes:0,files:0,path:vault.join(&id).to_string_lossy().into_owned(),hashes:BTreeMap::new()};
+  (base,vault,request,Plan{info,intent:None,files:BTreeMap::new()})
+ }
+ #[test]fn queued_transfer_resume_keeps_exact_saved_plan_and_cancellation_forgets_only_its_metadata(){
+  let f=ChunkFixture::new();let(base,vault,request,plan)=queue_fixture(&f);save_at(&base,&plan).unwrap();
+  let partial=vault.join(".partial").join(&plan.info.id).join("chunks/fixture.part");fs::create_dir_all(partial.parent().unwrap()).unwrap();fs::write(&partial,b"downloaded prefix").unwrap();
+  let other=base.join(format!("{}.json",digest(b"other request")));fs::write(&other,b"other task metadata").unwrap();
+  let restored=queued_at(&base,&request,&plan.info.id,&vault).unwrap().unwrap();assert_eq!(serde_json::to_vec(&restored).unwrap(),serde_json::to_vec(&plan).unwrap());
+  forget_queued_at(&base,&request,&plan.info.id,&vault).unwrap();assert!(!owned(&base,&plan.info.id,"json").unwrap().exists());assert!(!owned(&base,&plan.info.id,"zlib").unwrap().exists());assert_eq!(fs::read(partial).unwrap(),b"downloaded prefix");assert_eq!(fs::read(other).unwrap(),b"other task metadata");
+ }
+ #[test]fn queued_resume_and_cancel_refuse_manual_intents_or_mismatched_scope_without_changing_metadata(){
+  let f=ChunkFixture::new();let(base,vault,request,mut plan)=queue_fixture(&f);
+  for mode in ["vault","install"]{
+   plan.intent=Some(Intent{mode:mode.into(),project:"X:/Fixture/Game.uproject".into(),project_name:"Game".into(),engine_version:"5.7".into(),update_id:None});save_at(&base,&plan).unwrap();let original=fs::read(owned(&base,&plan.info.id,"zlib").unwrap()).unwrap();
+   assert!(queued_at(&base,&request,&plan.info.id,&vault).is_err());assert!(forget_queued_at(&base,&request,&plan.info.id,&vault).is_err());assert_eq!(fs::read(owned(&base,&plan.info.id,"zlib").unwrap()).unwrap(),original);
+  }
+  plan.intent=None;save_at(&base,&plan).unwrap();let original=fs::read(owned(&base,&plan.info.id,"zlib").unwrap()).unwrap();
+  for field in ["asset","artifact","engine","vault"]{
+   let mut mismatched=request.clone();let mut target=vault.clone();match field{"asset"=>mismatched.asset_id="another".into(),"artifact"=>mismatched.artifact_id="another".into(),"engine"=>mismatched.selected_engine="5.8".into(),_=>target=f.root.join("OtherVault")}
+   assert!(forget_queued_at(&base,&mismatched,&plan.info.id,&target).is_err());assert_eq!(fs::read(owned(&base,&plan.info.id,"zlib").unwrap()).unwrap(),original);
+  }
+ }
+ #[tokio::test]async fn accepted_cancel_prevents_commit_gate_and_closed_gate_disables_late_controls(){
+  let state=crate::vault::queue_test_state();state.cancel.store(true,Ordering::SeqCst);
+  assert!(begin_finalization(&state).await.is_err());assert!(state.queue_control_open.load(Ordering::SeqCst));assert!(state.pause_available.load(Ordering::SeqCst));
+  state.cancel.store(false,Ordering::SeqCst);begin_finalization(&state).await.unwrap();assert!(!state.queue_control_open.load(Ordering::SeqCst));assert!(!state.pause_available.load(Ordering::SeqCst));
+ }
+ #[tokio::test]async fn metadata_wait_yields_to_stop_without_waiting_for_network_timeout(){
+  let state=std::sync::Arc::new(VaultState::default());let worker=state.clone();
+  let task=tokio::spawn(async move{crate::vault::queue_wait(&worker,std::future::pending::<()>()).await});
+  tokio::task::yield_now().await;state.cancel.store(true,Ordering::SeqCst);assert!(tokio::time::timeout(Duration::from_secs(1),task).await.unwrap().unwrap().is_err());
+ }
  fn accept_request(server:&std::net::TcpListener)->(std::net::TcpStream,String){
   server.set_nonblocking(true).unwrap();let start=Instant::now();let mut stream=loop{match server.accept(){Ok((s,_))=>break s,Err(e)if e.kind()==std::io::ErrorKind::WouldBlock&&start.elapsed()<Duration::from_secs(5)=>std::thread::sleep(Duration::from_millis(5)),Err(e)=>panic!("Fixture accept: {e}")}};
   stream.set_nonblocking(false).unwrap();stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();let mut bytes=vec![];let mut b=[0];while !bytes.ends_with(b"\r\n\r\n"){assert!(bytes.len()<8192);stream.read_exact(&mut b).unwrap();bytes.push(b[0]);}(stream,String::from_utf8(bytes).unwrap().to_lowercase())

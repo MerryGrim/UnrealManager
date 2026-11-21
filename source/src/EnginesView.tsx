@@ -1,4 +1,4 @@
-import {type EngineTransfer, type EngineProgress, transferSize, formatEnginePhase, enginePercentText, engineProgressPercent, engineProgressMetrics} from './EngineTransferCard';
+import {type EngineTransfer, type EngineProgress, EngineStopButton, transferSize, formatEnginePhase, enginePercentText, engineProgressPercent, engineProgressMetrics} from './EngineTransferCard';
 import {EngineResumeTasks} from './EngineResumeTasks';
 import {EnginePauseButton} from './EnginePauseButton';
 import {EnginePermissionError,parseEnginePermissionError} from './EnginePermissionError';
@@ -7,7 +7,7 @@ import { tr, getLocale } from './i18n';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Channel, invoke } from '@tauri-apps/api/core';
-import { Download, FolderOpen, RefreshCw, Rocket, X, Trash2, SlidersHorizontal, Square, ArrowLeft } from 'lucide-react';
+import { Download, FolderOpen, RefreshCw, Rocket, X, Trash2, SlidersHorizontal, ArrowLeft } from 'lucide-react';
 import { EngineDelete } from './EngineDelete';
 import { EngineTile } from './EngineTile';
 import { PageActions } from './PageActions';
@@ -150,7 +150,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
         if(now-sampleTime>=500){speed=Math.max(0,p.networkBytes-sampleBytes)*1000/(now-sampleTime);processingSpeed=Math.max(0,(p.processedBytes||0)-sampleProcessed)*1000/(now-sampleTime);sampleTime=now;sampleBytes=p.networkBytes;sampleProcessed=p.processedBytes||0;}
         if(p.phase!=='Скачиваем движок'||p.paused)speed=0;if(p.paused)processingSpeed=0;
         const current={...p,bytesPerSecond:speed,processingBytesPerSecond:processingSpeed};setProgress(current);
-        onProgress({...current,title:`Unreal Engine ${preview.build.split('-')[0]}`});
+        onProgress({...current,taskId:preview.id,title:`Unreal Engine ${preview.build.split('-')[0]}`});
     }; try {
         setResult(await invoke<string>('engine_install', { id: preview.id, onProgress: channel }));
         await onRefresh();
@@ -255,7 +255,7 @@ export function EnginesView({ engines, onRefresh, onProgress, active = true }: {
    {tr(!resuming && preview.requiredBytes > preview.freeBytes && <p role="alert" className="error-text">{tr("Недостаточно места. Требуется до ")}{tr(size(preview.requiredBytes))}{tr(".")}</p>)}
    {tr(!busy && <div className="wizard-footer">{tr(canReturnToLocation && <button onClick={backToLocation}><ArrowLeft size={17}/>{tr("Назад")}</button>)}<button className="primary" disabled={!!preview.conflicts.length || !resuming && preview.requiredBytes > preview.freeBytes} onClick={() => void install()}><Download size={17}/>{tr(resuming?'Продолжить установку':isModify ? 'Применить' : preview.verify && !isUpdate ? 'Проверить и доустановить' : isUpdate ? 'Обновить' : 'Скачать и установить')}</button></div>)}
   </>)}
-  {tr(progress && <div className="engine-operation" role="status"><span><RefreshCw className={busy && !progress.paused ? 'spin' : ''} size={17}/>{tr(progress.paused?'На паузе':formatEnginePhase(progress.phase))}{engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</span><progress aria-label={tr("Прогресс загрузки")} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><div className="engine-progress-metrics">{progress.phase === 'Скачиваем движок' && <span>{tr("Скорость сети")}: {transferSize(progress.bytesPerSecond || 0)}{tr("/с")} · {tr("Получено по сети")}: {transferSize(progress.networkBytes)}</span>}{engineProgressMetrics(progress).map(row=><span key={row.label} className={row.currentFile?"engine-current-file":row.fileWork?"engine-file-work":undefined} title={row.currentFile?row.value:row.fileWork?progress.currentFile||undefined:undefined}>{tr(row.label)}{row.value?`: ${row.value}`:""}{row.fileProgress&&<progress className="engine-file-meter" aria-label={tr("Прогресс текущего файла")} aria-valuetext={row.fileProgress.text} max={100} value={row.fileProgress.value}/>}</span>)}</div><div className="engine-operation-actions"><EnginePauseButton paused={progress.paused} canPause={busy&&progress.canPause}/>{tr(busy && preview && ['Скачиваем движок','Собираем и проверяем файлы','Проверяем установленные файлы'].includes(progress.phase) && <button className="danger-text engine-stop-button" onClick={() => void invoke('engine_cancel')}><Square size={16}/>{tr("Остановить загрузку")}</button>)}</div></div>)}
+  {tr(progress && <div className="engine-operation" role="status"><span><RefreshCw className={busy && !progress.paused ? 'spin' : ''} size={17}/>{tr(progress.paused?'На паузе':formatEnginePhase(progress.phase))}{engineProgressPercent(progress)!==undefined ? ` · ${enginePercentText(progress)}` : ''}</span><progress aria-label={tr("Прогресс загрузки")} aria-valuetext={enginePercentText(progress)} max={100} value={engineProgressPercent(progress)}/><div className="engine-progress-metrics">{progress.phase === 'Скачиваем движок' && <span>{tr("Скорость сети")}: {transferSize(progress.bytesPerSecond || 0)}{tr("/с")} · {tr("Получено по сети")}: {transferSize(progress.networkBytes)}</span>}{engineProgressMetrics(progress).map(row=><span key={row.label} className={row.currentFile?"engine-current-file":row.fileWork?"engine-file-work":undefined} title={row.currentFile?row.value:row.fileWork?progress.currentFile||undefined:undefined}>{tr(row.label)}{row.value?`: ${row.value}`:""}{row.fileProgress&&<progress className="engine-file-meter" aria-label={tr("Прогресс текущего файла")} aria-valuetext={row.fileProgress.text} max={100} value={row.fileProgress.value}/>}</span>)}</div><div className="engine-operation-actions"><EnginePauseButton paused={progress.paused} canPause={busy&&progress.canPause}/>{busy && preview && progress.canStop && <EngineStopButton key={preview.id} id={preview.id}/>}</div></div>)}
   {tr(result && <><p role="status" style={{whiteSpace:'pre-line'}}>{result.split('\n').map(line=>tr(line)).join('\n')}</p><button className="primary" onClick={close}>{tr("Готово")}</button></>)}{tr(error && <EnginePermissionError error={error}/>)}
  </section></div>, document.querySelector('.workspace-main') || document.body))}
 

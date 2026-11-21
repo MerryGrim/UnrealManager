@@ -26,6 +26,7 @@ pub struct Progress {
     files_total: u64,
     paused: bool,
     can_pause: bool,
+    can_stop: bool,
     #[serde(skip_serializing_if="Option::is_none")]
     current_file: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -50,7 +51,15 @@ fn fab_progress(value:&serde_json::Value,engine_network:u64,received:&std::sync:
 }
 pub(crate) struct Busy<'a>(pub(crate) &'a AtomicBool);
 struct PauseScope<'a>(&'a EngineState);
-impl Drop for PauseScope<'_>{fn drop(&mut self){self.0.pause_available.store(false,Ordering::SeqCst);self.0.paused.store(false,Ordering::SeqCst);}}
+impl Drop for PauseScope<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut task) = self.0.stoppable_task.lock() {
+            *task = None;
+        }
+        self.0.pause_available.store(false, Ordering::SeqCst);
+        self.0.paused.store(false, Ordering::SeqCst);
+    }
+}
 impl Drop for Busy<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
@@ -221,13 +230,21 @@ fn idle_checkpoint_due(last:Instant)->bool{
     last.elapsed()>=Duration::from_secs(1)
 }
 #[tauri::command]
-pub fn engine_cancel(state: tauri::State<'_, EngineState>) {
+pub fn engine_cancel(state: tauri::State<'_, EngineState>, id: String) -> Result<(), String> {
+    let mut task = state.stoppable_task.lock().map_err(|_| "Ошибка состояния")?;
+    if task.as_deref() != Some(&id) {
+        return Err("На этом этапе остановка недоступна.".into());
+    }
     state.cancel.store(true, Ordering::SeqCst);
+    state.pause_available.store(false, Ordering::SeqCst);
     state.paused.store(false, Ordering::SeqCst);
+    *task = None;
+    Ok(())
 }
 #[tauri::command]
 pub fn engine_pause(state:tauri::State<'_,EngineState>,paused:bool)->Result<(),String>{
-    if !state.active.load(Ordering::SeqCst)||!state.pause_available.load(Ordering::SeqCst){return Err("На этом этапе пауза недоступна".into());}
+    let _control = state.stoppable_task.lock().map_err(|_| "Ошибка состояния")?;
+    if !state.active.load(Ordering::SeqCst)||state.cancel.load(Ordering::SeqCst)||!state.pause_available.load(Ordering::SeqCst){return Err("На этом этапе пауза недоступна".into());}
     state.paused.store(paused,Ordering::SeqCst);Ok(())
 }
 fn pause_checkpoint(paused:Option<&AtomicBool>,mut report:impl FnMut()){
@@ -245,41 +262,58 @@ fn cancelled(state: &EngineState) -> Result<(), String> {
         Ok(())
     }
 }
+async fn download_step<F: std::future::Future>(future: F, paused: &AtomicBool, cancel: &AtomicBool) -> Result<Option<F::Output>, String> {
+    tokio::pin!(future);
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("Загрузка остановлена".into());
+        }
+        if paused.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        tokio::select! {
+            result = &mut future => return Ok(Some(result)),
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+}
 async fn chunk(client: reqwest::Client, url: reqwest::Url, cancel: std::sync::Arc<AtomicBool>, paused:std::sync::Arc<AtomicBool>, meter: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Result<Vec<u8>, String> {
-    for attempt in 0..3 {
+    let mut attempt = 0;
+    'download: while attempt < 3 {
         wait_async(&paused,&cancel).await?;
-        if cancel.load(Ordering::SeqCst) { return Err("Проверка остановлена".into()); }
-        let response = tokio::time::timeout(Duration::from_secs(90), client.get(url.clone()).send()).await;
-        if let Ok(Ok(mut r)) = response {
-            if r.status().is_success() {
+        let request = tokio::time::timeout(Duration::from_secs(90), client.get(url.clone()).send());
+        let Some(response) = download_step(request, &paused, &cancel).await? else { continue };
+        if let Ok(Ok(mut response)) = response {
+            if response.status().is_success() {
                 let mut bytes = Vec::new();
-                let mut failed = false;
                 loop {
-                    wait_async(&paused,&cancel).await?;
-                    match tokio::time::timeout(Duration::from_secs(90), r.chunk()).await {
-                        Ok(Ok(Some(b))) => {
-                            if bytes.len() + b.len() > 64 * 1024 * 1024 {
+                    let read = tokio::time::timeout(Duration::from_secs(90), response.chunk());
+                    // A pause closes the current HTTP response. Completed blocks are
+                    // already in the stage and an interrupted block uses no retry.
+                    let Some(read) = download_step(read, &paused, &cancel).await? else { continue 'download };
+                    match read {
+                        Ok(Ok(Some(data))) => {
+                            if bytes.len() + data.len() > 64 * 1024 * 1024 {
                                 return Err("Блок слишком велик".into());
                             }
-                            crate::download::throttle(b.len(), &cancel).await?;
-                            meter.fetch_add(b.len() as u64, Ordering::SeqCst);
-                            bytes.extend_from_slice(&b);
+                            meter.fetch_add(data.len() as u64, Ordering::SeqCst);
+                            let throttle = crate::download::throttle(data.len(), &cancel);
+                            let Some(result) = download_step(throttle, &paused, &cancel).await? else { continue 'download };
+                            result?;
+                            bytes.extend_from_slice(&data);
                         }
-                        Ok(Ok(None)) => break,
-                        _ => {
-                            failed = true;
-                            break;
+                        Ok(Ok(None)) => {
+                            crate::vault::decode_chunk(&bytes)?;
+                            return Ok(bytes);
                         }
+                        _ => break,
                     }
-                }
-                if !failed {
-                    crate::vault::decode_chunk(&bytes)?;
-                    return Ok(bytes);
                 }
             }
         }
-        if attempt < 2 {
-            tokio::time::sleep(Duration::from_secs(1 + attempt)).await;
+        attempt += 1;
+        if attempt < 3 {
+            let _ = download_step(tokio::time::sleep(Duration::from_secs(attempt)), &paused, &cancel).await?;
         }
     }
     Err("Не удалось скачать блок движка. Повторите загрузку.".into())
@@ -836,6 +870,8 @@ pub async fn engine_install(
     let progress_task_id=plan.info.id.clone();
     let emit = |phase: &str, done: u64, total: u64, network_bytes: u64| {
         super::resume::report(&progress_task_id,phase,done,total);
+        let can_stop = phase != "Проверяем права доступа"
+            && state.stoppable_task.lock().is_ok_and(|task| task.is_some());
         let _ = on_progress.send(Progress {
             phase: phase.into(),
             done,
@@ -849,9 +885,10 @@ pub async fn engine_install(
             processed_bytes: if phase=="Собираем и проверяем файлы" {done}else{0},
             total_bytes: if phase=="Собираем и проверяем файлы" {total}else{0},
             files_done: if phase==TASK_VALIDATION_PHASE{done}else{0}, files_total: if phase==TASK_VALIDATION_PHASE{total}else{0},
-            paused:state.paused.load(Ordering::SeqCst),can_pause:state.pause_available.load(Ordering::SeqCst),..Default::default()
+            paused:state.paused.load(Ordering::SeqCst),can_pause:state.pause_available.load(Ordering::SeqCst),can_stop,..Default::default()
         });
     };
+    *state.stoppable_task.lock().map_err(|_| "Ошибка состояния")? = Some(progress_task_id.clone());
     emit(TASK_VALIDATION_PHASE, 0, 0, 0);
     let saved_ops=super::resume::load_operations(&stage)?.map(|ops|ops.into_iter().filter(|o|!o.name.starts_with(".egstore/")).collect::<Vec<_>>());
     let ops = if let Some(ops)=saved_ops {ops} else {
@@ -866,7 +903,7 @@ pub async fn engine_install(
                 total:snapshot.total,
                 percent:snapshot.done.saturating_mul(100)/snapshot.total.max(1),
                 network_bytes: 0,
-                processed_bytes:snapshot.processed_bytes,total_bytes:0,files_done:snapshot.done,files_total:snapshot.total,paused:false,can_pause:false,
+                processed_bytes:snapshot.processed_bytes,total_bytes:0,files_done:snapshot.done,files_total:snapshot.total,paused:false,can_pause:false,can_stop:!cancel.load(Ordering::SeqCst),
                 current_file:snapshot.current_file,files_per_second:Some(snapshot.files_per_second),read_bytes_per_second:Some(snapshot.read_bytes_per_second),..Default::default()
             });
         });
@@ -897,7 +934,7 @@ pub async fn engine_install(
             for part in &file.file_chunk_parts {chunks.entry(part.guid.clone()).or_insert(part.link.clone().ok_or("Нет адреса блока")?);}
         }
         if task_validation_last.elapsed()>=Duration::from_millis(250)||index+1==ops.len(){
-            let mut p=validation_progress(TASK_VALIDATION_PHASE,index as u64+1,ops.len() as u64,0,0,false);p.can_pause=false;
+            let mut p=validation_progress(TASK_VALIDATION_PHASE,index as u64+1,ops.len() as u64,0,0,false);p.can_pause=false;p.can_stop=true;
             super::resume::report(&plan.info.id,TASK_VALIDATION_PHASE,p.done,p.total);let _=on_progress.send(p);task_validation_last=Instant::now();
         }
     }
@@ -929,7 +966,8 @@ pub async fn engine_install(
     state.pause_available.store(true,Ordering::SeqCst);
     let validation_stage=stage.clone();let validation_cancel=state.cancel.clone();let validation_pause=state.paused.clone();let validation_suspend=state.suspend.clone();
     let validation_channel=on_progress.clone();let validation_id=plan.info.id.clone();
-    let (mut done,pending)=tauri::async_runtime::spawn_blocking(move||validate_cached_chunks(&validation_stage,chunks,&validation_cancel,&validation_pause,&validation_suspend,|p|{
+    let (mut done,pending)=tauri::async_runtime::spawn_blocking(move||validate_cached_chunks(&validation_stage,chunks,&validation_cancel,&validation_pause,&validation_suspend,|mut p|{
+        p.can_stop = !validation_cancel.load(Ordering::SeqCst);
         super::resume::report(&validation_id,&p.phase,p.done,p.total);let _=validation_channel.send(p);
     })).await.map_err(|_|"Проверка прервана")??;
     emit("Скачиваем движок", done, total, meter.load(Ordering::SeqCst));
@@ -965,9 +1003,15 @@ pub async fn engine_install(
     let assembly_plan=plan.clone();let assembly_stage=stage.clone();let assembly_ops=ops.clone();let assembly_cancel=state.cancel.clone();let assembly_channel=on_progress.clone();let assembly_pause=state.paused.clone();
     tauri::async_runtime::spawn_blocking(move||assemble_files_controlled(&assembly_plan,&assembly_stage,&assembly_ops,&assembly_cancel,Some(&assembly_pause),|done,files_done,files_total|{
         super::resume::report(&assembly_id,"Собираем и проверяем файлы",done,bytes);
-        let _=assembly_channel.send(Progress{phase:"Собираем и проверяем файлы".into(),done,total:bytes,percent:done*100/bytes.max(1),network_bytes:network,processed_bytes:done,total_bytes:bytes,files_done,files_total,paused:assembly_pause.load(Ordering::SeqCst),can_pause:true,..Default::default()});
+        let _=assembly_channel.send(Progress{phase:"Собираем и проверяем файлы".into(),done,total:bytes,percent:done*100/bytes.max(1),network_bytes:network,processed_bytes:done,total_bytes:bytes,files_done,files_total,paused:assembly_pause.load(Ordering::SeqCst),can_pause:!assembly_cancel.load(Ordering::SeqCst),can_stop:!assembly_cancel.load(Ordering::SeqCst),..Default::default()});
     })).await.map_err(|_|"Сборка прервана")??;}
-    cancelled(&state)?;
+    // Close the stop window and check the last request under the same lock.
+    // The installation journal must not begin after acknowledging a stop.
+    {
+        let mut task = state.stoppable_task.lock().map_err(|_| "Ошибка состояния")?;
+        *task = None;
+        cancelled(&state)?;
+    }
     emit("Устанавливаем движок", 0, ops.len() as u64, network);
     let copy = plan.clone();
     let stage_copy = stage.clone();
@@ -1686,6 +1730,20 @@ mod transaction_tests {
         let paused = AtomicBool::new(true);
         let cancel = AtomicBool::new(true);
         assert!(tokio::time::timeout(Duration::from_secs(1), wait_async(&paused, &cancel)).await.unwrap().is_err());
+    }
+    #[tokio::test]
+    async fn stalled_engine_download_yields_to_pause_and_can_resume() {
+        let paused = AtomicBool::new(false);
+        let cancel = AtomicBool::new(false);
+        let request = download_step(std::future::pending::<()>(), &paused, &cancel);
+        let pause = async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            paused.store(true, Ordering::SeqCst);
+        };
+        let (result, _) = tokio::join!(tokio::time::timeout(Duration::from_secs(2), request), pause);
+        assert_eq!(result.unwrap().unwrap(), None);
+        paused.store(false, Ordering::SeqCst);
+        assert_eq!(download_step(std::future::ready(42), &paused, &cancel).await.unwrap(), Some(42));
     }
     #[test]
     fn paused_assembly_resumes_and_can_be_cancelled() {

@@ -12,6 +12,7 @@ const VAULT:&str="Папка Vault изменилась. Удалите зада
 const PARTIAL:&str="Продолжите сохранённую загрузку в списке задач.";
 const NO_MANUAL_MATCH:&str="No matching interrupted queue request.";
 const SAVE_ERROR:&str="Не удалось сохранить очередь. Существующие задачи сохранены.";
+const CANCEL_ERROR:&str="Не удалось удалить запись сохранённой загрузки. Файлы сохранены. Повторите отмену.";
 fn failed_entry(entry:&mut Entry,partial:bool,error:&str){
  entry.status=if partial{Status::Interrupted}else{Status::NeedsAction};
  entry.error=Some(if error==crate::epic::AUTH_REQUIRED{crate::epic::AUTH_REQUIRED}else if partial||error==PARTIAL{PARTIAL}else if error==VAULT{VAULT}else if error==ACCOUNT{ACCOUNT}else if error=="Недостаточно свободного места."{"Недостаточно свободного места."}else{"Не удалось выполнить загрузку. Повторите попытку."}.into());
@@ -25,9 +26,12 @@ pub struct Request{pub asset_id:String,pub artifact_id:String,pub selected_engin
 #[derive(Clone,Copy,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 enum Status{Pending,Preparing,Downloading,NeedsAction,Interrupted}
+#[derive(Clone,Copy,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
+enum Control{Defer,Cancel}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
-struct Entry{id:String,request:Request,requested_vault_path:String,account_key:String,status:Status,package_id:Option<String>,error:Option<String>}
+struct Entry{id:String,request:Request,requested_vault_path:String,account_key:String,status:Status,package_id:Option<String>,error:Option<String>,#[serde(default,skip_serializing_if="Option::is_none")]control:Option<Control>,#[serde(default)]resume_saved:bool,#[serde(default)]owned_transfer:bool,#[serde(default,skip_serializing_if="Option::is_none")]saved_progress:Option<Progress>}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 struct Disk{schema:u32,revision:u64,items:Vec<Entry>}
@@ -36,7 +40,7 @@ struct Inner{disk:Disk,paused:bool,user_paused:bool,stopping:bool,error:Option<S
 pub struct QueueState{inner:Mutex<Inner>,path:PathBuf}
 #[derive(Clone,Serialize)]
 #[serde(rename_all="camelCase")]
-pub struct QueueItem{id:String,#[serde(flatten)]request:Request,requested_vault_path:String,status:Status,package_id:Option<String>,error:Option<String>,progress:Option<Progress>}
+pub struct QueueItem{id:String,#[serde(flatten)]request:Request,requested_vault_path:String,status:Status,package_id:Option<String>,error:Option<String>,progress:Option<Progress>,control_pending:Option<Control>,can_defer:bool,can_cancel:bool}
 #[derive(Clone,Serialize)]
 #[serde(rename_all="camelCase")]
 pub struct Snapshot{revision:u64,paused:bool,active_id:Option<String>,items:Vec<QueueItem>,error:Option<String>,completed:Option<Package>}
@@ -59,12 +63,21 @@ fn read_disk(path:&Path)->Result<Disk,String>{
  if file.metadata().map_err(|_|BAD)?.len()>MAX_BYTES{return Err(BAD.into());}
  let mut bytes=vec![];file.take(MAX_BYTES+1).read_to_end(&mut bytes).map_err(|_|BAD)?;if bytes.len()as u64>MAX_BYTES{return Err(BAD.into());}
  let mut d:Disk=serde_json::from_slice(&bytes).map_err(|_|BAD)?;validate(&d)?;
- for e in &mut d.items{if matches!(e.status,Status::Preparing|Status::Downloading){e.status=Status::Interrupted;e.error=Some(PARTIAL.into());}}
+ for e in &mut d.items{if matches!(e.status,Status::Preparing|Status::Downloading){match e.control{
+  Some(Control::Defer)=>{e.status=Status::Pending;e.resume_saved=e.owned_transfer&&e.package_id.is_some();e.control=None;e.error=None;},
+  Some(Control::Cancel)=>{e.status=Status::Pending;e.error=None;},
+  None=>{e.status=Status::Interrupted;e.error=Some(PARTIAL.into());}
+ }}}
  Ok(d)
 }
 fn snapshot(i:&Inner)->Snapshot{
  let active=i.disk.items.iter().find(|e|matches!(e.status,Status::Preparing|Status::Downloading)).map(|e|e.id.clone());
- Snapshot{revision:i.disk.revision,paused:i.paused,active_id:active.clone(),items:i.disk.items.iter().map(|e|QueueItem{id:e.id.clone(),request:e.request.clone(),requested_vault_path:e.requested_vault_path.clone(),status:e.status,package_id:e.package_id.clone(),error:e.error.clone(),progress:if active.as_ref()==Some(&e.id){i.progress.clone()}else{None}}).collect(),error:i.error.clone(),completed:None}
+ Snapshot{revision:i.disk.revision,paused:i.paused,active_id:active.clone(),items:i.disk.items.iter().map(|e|{
+  let progress=if active.as_ref()==Some(&e.id){i.progress.clone().or_else(||e.saved_progress.clone())}else{e.saved_progress.clone()};
+  let control=active.as_ref()==Some(&e.id)&&e.control.is_none()&&(e.status==Status::Preparing||progress.as_ref().is_none_or(|p|p.can_pause));
+  let can_defer=control&&i.disk.items.iter().any(|other|other.id!=e.id&&other.status==Status::Pending&&other.control.is_none());
+  QueueItem{id:e.id.clone(),request:e.request.clone(),requested_vault_path:e.requested_vault_path.clone(),status:e.status,package_id:e.package_id.clone(),error:e.error.clone(),progress,control_pending:e.control,can_defer,can_cancel:control}
+ }).collect(),error:i.error.clone(),completed:None}
 }
 impl QueueState{
  fn load(path:PathBuf)->Self{let result=read_disk(&path);let error=result.as_ref().err().cloned();let disk=result.unwrap_or_default();let restored=!disk.items.is_empty();Self{path,inner:Mutex::new(Inner{disk,paused:true,user_paused:restored,stopping:false,error,progress:None,last_emit:None})}}
@@ -73,13 +86,39 @@ impl QueueState{
   self.transact(false,change)
  }
  fn transact(&self,finishing:bool,change:impl FnOnce(&mut Disk,&mut bool,&mut bool)->Result<(),String>)->Result<Snapshot,String>{
+  self.transact_commit(finishing,change,|_|{})
+ }
+ fn transact_commit(&self,finishing:bool,change:impl FnOnce(&mut Disk,&mut bool,&mut bool)->Result<(),String>,committed:impl FnOnce(&mut Inner))->Result<Snapshot,String>{
   let mut i=self.inner.lock().map_err(|_|BAD)?;if let Some(e)=&i.error{return Err(e.clone());}if i.stopping&&!finishing{return Err("Программа уже завершает работу.".into());}
   let mut d=i.disk.clone();let(mut paused,mut user_paused)=(i.paused,i.user_paused);change(&mut d,&mut paused,&mut user_paused)?;d.revision=d.revision.checked_add(1).ok_or(BAD)?;validate(&d)?;
   let bytes=serde_json::to_vec(&d).map_err(|_|BAD)?;if bytes.len()as u64>MAX_BYTES{return Err(BAD.into());}
   crate::vault::no_links(&self.path)?;crate::engine::install::atomic(&self.path,&bytes).map_err(|_|"Не удалось сохранить очередь. Существующие задачи сохранены.")?;
-  i.disk=d;i.paused=paused;i.user_paused=user_paused;if !i.disk.items.iter().any(|e|matches!(e.status,Status::Preparing|Status::Downloading)){i.progress=None;i.last_emit=None;}Ok(snapshot(&i))
+  i.disk=d;i.paused=paused;i.user_paused=user_paused;committed(&mut i);if !i.disk.items.iter().any(|e|matches!(e.status,Status::Preparing|Status::Downloading)){i.progress=None;i.last_emit=None;}Ok(snapshot(&i))
  }
- fn eligible(&self)->bool{self.inner.lock().map(|i|!i.stopping&&!i.paused&&i.error.is_none()&&i.disk.items.first().is_some_and(|e|e.status==Status::Pending)).unwrap_or(false)}
+ fn eligible(&self)->bool{self.inner.lock().map(|i|!i.stopping&&i.error.is_none()&&!i.disk.items.iter().any(active)&&
+  (i.disk.items.iter().any(|e|e.control==Some(Control::Cancel))||!i.paused&&i.disk.items.first().is_some_and(|e|e.status==Status::Pending))).unwrap_or(false)}
+ fn request_control(&self,vault:&VaultState,id:&str,expected:u64,control:Control,before:Option<&str>)->Result<Snapshot,String>{
+  let _gate=vault.control_gate.lock().map_err(|_|BAD)?;
+  if !vault.queue_control_open.load(Ordering::SeqCst){return Err("На этом этапе остановка недоступна.".into());}
+  let progress=self.inner.lock().map_err(|_|BAD)?.progress.clone();
+  self.transact_commit(false,|d,_,_|{
+   let index=active_index(d,id,expected)?;
+   if control==Control::Defer {
+    if before.is_some_and(|target|target==id||!d.items.iter().any(|e|e.id==target&&e.status==Status::Pending&&e.control.is_none())){return Err(STALE.into());}
+    let mut entry=d.items.remove(index);entry.control=Some(control);entry.saved_progress=progress.clone();
+    let position=before.and_then(|target|d.items.iter().position(|e|e.id==target)).unwrap_or(d.items.len());
+    if !d.items[..position].iter().any(|e|e.status==Status::Pending&&e.control.is_none()){return Err("Верните загрузку после другого задания очереди.".into());}
+    d.items.insert(position,entry);
+   }else{d.items[index].control=Some(control);d.items[index].saved_progress=progress.clone();}
+   Ok(())
+  },|_|vault.cancel.store(true,Ordering::SeqCst))
+ }
+ fn pause_active(&self,vault:&VaultState,id:&str,expected:u64,paused:bool)->Result<Snapshot,String>{
+  let _gate=vault.control_gate.lock().map_err(|_|BAD)?;
+  self.transact_commit(false,|d,_,_|{active_index(d,id,expected)?;if !crate::vault::queue_pause_available(vault){return Err("На этом этапе пауза недоступна.".into());}Ok(())},|i|{
+   crate::vault::queue_pause_flag(vault,paused);i.progress=i.progress.take().map(|p|p.queue_pause(paused));
+  })
+ }
  fn manual_completed(&self,id:&str,asset:&str,package_path:&Path,vault:&Path)->Option<Snapshot>{
   // Only verified native download success reaches this seam. A package in an
   // external/previous Vault cannot complete a request bound to the current one.
@@ -94,7 +133,7 @@ impl QueueState{
   }
  }
  fn progress(&self,app:&tauri::AppHandle,id:&str,p:Progress){
-  let result=self.inner.lock().ok().and_then(|mut i|{if i.disk.items.first().is_none_or(|e|e.id!=id||e.status!=Status::Downloading){return None;}let force=i.progress.as_ref().is_none_or(|old|old.phase!=p.phase||old.paused!=p.paused||old.can_pause!=p.can_pause);i.progress=Some(p);if !force&&i.last_emit.is_some_and(|t|t.elapsed()<std::time::Duration::from_millis(250)){return None;}i.last_emit=Some(std::time::Instant::now());Some(snapshot(&i))});
+  let result=self.inner.lock().ok().and_then(|mut i|{if !i.disk.items.iter().any(|e|e.id==id&&e.status==Status::Downloading){return None;}let force=i.progress.as_ref().is_none_or(|old|old.phase!=p.phase||old.paused!=p.paused||old.can_pause!=p.can_pause);i.progress=Some(p);if !force&&i.last_emit.is_some_and(|t|t.elapsed()<std::time::Duration::from_millis(250)){return None;}i.last_emit=Some(std::time::Instant::now());Some(snapshot(&i))});
   if let Some(s)=result{emit(app,s);}
  }
 }
@@ -109,15 +148,48 @@ pub(crate) fn manual_download_completed(app:&tauri::AppHandle,package:&Package,a
  }
 }
 fn revision(d:&Disk,expected:u64)->Result<(),String>{if d.revision!=expected{Err(STALE.into())}else{Ok(())}}
+fn active(e:&Entry)->bool{matches!(e.status,Status::Preparing|Status::Downloading)}
+fn active_index(d:&Disk,id:&str,expected:u64)->Result<usize,String>{revision(d,expected)?;d.items.iter().position(|e|e.id==id&&active(e)&&e.control.is_none()).ok_or_else(||STALE.into())}
 fn enqueue(d:&mut Disk,paused:&mut bool,user_paused:bool,request:Request,path:String,account:String)->Result<(),String>{
  if !valid_request(&request){return Err("Некорректное задание очереди.".into());}if d.items.len()>=LIMIT{return Err("Очередь заполнена.".into());}
  if d.items.iter().any(|e|e.request.asset_id==request.asset_id&&e.request.artifact_id==request.artifact_id&&e.request.selected_engine==request.selected_engine&&e.account_key==account&&e.requested_vault_path==path){return Err("Эта версия уже добавлена в очередь.".into());}
- d.items.push(Entry{id:uuid::Uuid::new_v4().to_string(),request,requested_vault_path:path,account_key:account,status:Status::Pending,package_id:None,error:None});if !user_paused{*paused=false;}Ok(())
+ d.items.push(Entry{id:uuid::Uuid::new_v4().to_string(),request,requested_vault_path:path,account_key:account,status:Status::Pending,package_id:None,error:None,control:None,resume_saved:false,owned_transfer:false,saved_progress:None});if !user_paused{*paused=false;}Ok(())
 }
 fn reorder(d:&mut Disk,ids:&[String],expected:u64)->Result<(),String>{
  revision(d,expected)?;let pending=d.items.iter().filter(|e|e.status==Status::Pending).map(|e|e.id.clone()).collect::<BTreeSet<_>>();
  if ids.len()!=pending.len()||ids.iter().collect::<BTreeSet<_>>().len()!=ids.len()||ids.iter().any(|id|!pending.contains(id)){return Err(STALE.into());}
  let ordered=ids.iter().map(|id|d.items.iter().find(|e|e.id==*id).unwrap().clone()).collect::<Vec<_>>();let mut next=ordered.into_iter();for e in &mut d.items{if e.status==Status::Pending{*e=next.next().unwrap();}}Ok(())
+}
+fn claim(d:&mut Disk,paused:bool)->Result<Entry,String>{
+ if d.items.iter().any(active){return Err(STALE.into());}
+ let index=d.items.iter().position(|e|e.control==Some(Control::Cancel))
+  .or_else(||if !paused&&d.items.first().is_some_and(|e|e.status==Status::Pending){Some(0)}else{None}).ok_or(STALE)?;
+ let e=&mut d.items[index];e.status=Status::Preparing;e.error=None;Ok(e.clone())
+}
+fn settle(d:&mut Disk,id:&str,outcome:Result<Package,String>,progress:Option<Progress>,partial:bool,forget:impl FnOnce(&Entry)->Result<(),String>)->Result<Option<Package>,String>{
+ let index=d.items.iter().position(|e|e.id==id).ok_or(STALE)?;
+ match outcome{
+  // Once the final commit gate has closed, completion wins over a late control.
+  Ok(package)=>{d.items.remove(index);Ok(Some(package))},
+  Err(error)=>{let e=&mut d.items[index];match e.control{
+   Some(Control::Cancel)=>{if forget(e).is_ok(){d.items.remove(index);}else{e.control=None;e.status=Status::NeedsAction;e.resume_saved=partial;e.error=Some(CANCEL_ERROR.into());}},
+   Some(Control::Defer)=>{e.control=None;e.status=Status::Pending;e.resume_saved=e.owned_transfer&&partial;e.error=None;e.saved_progress=progress.or_else(||e.saved_progress.clone());},
+   None=>failed_entry(e,partial,&error),
+  }Ok(None)}
+ }
+}
+fn forget_transfer(e:&Entry)->Result<(),String>{
+ if e.owned_transfer{if let Some(id)=&e.package_id{crate::vault::transfers::forget_queued(&e.request,id,Path::new(&e.requested_vault_path))?;}}Ok(())
+}
+fn settle_ordered(d:&mut Disk,paused:&mut bool,user_paused:&mut bool,id:&str,outcome:Result<Package,String>,progress:Option<Progress>,partial:bool,forget:impl FnOnce(&Entry)->Result<(),String>)->Result<Option<Package>,String>{
+ let deferred=d.items.iter().any(|e|e.id==id&&e.control==Some(Control::Defer));
+ let completed=settle(d,id,outcome,progress,partial,forget)?;
+ if deferred&&d.items.iter().position(|e|e.id==id&&e.status==Status::Pending).is_some_and(|index|!d.items[..index].iter().any(|e|e.status==Status::Pending&&e.control.is_none())){
+  // Predecessors can be removed while this worker is stopping. Do not restart
+  // the same transfer immediately when its requested place becomes the head.
+  *paused=true;*user_paused=true;
+ }
+ Ok(completed)
 }
 #[tauri::command]
 pub fn vault_queue_get(state:tauri::State<'_,QueueState>)->Result<Snapshot,String>{state.get()}
@@ -129,7 +201,20 @@ pub async fn vault_queue_enqueue(app:tauri::AppHandle,state:tauri::State<'_,Queu
 }
 #[tauri::command]
 pub fn vault_queue_remove(app:tauri::AppHandle,state:tauri::State<'_,QueueState>,id:String,expected_revision:u64)->Result<Snapshot,String>{
- let s=state.transaction(|d,_,_|{revision(d,expected_revision)?;let e=d.items.iter().find(|e|e.id==id).ok_or(STALE)?;if matches!(e.status,Status::Preparing|Status::Downloading){return Err("Сначала остановите активную загрузку.".into());}d.items.retain(|e|e.id!=id);Ok(())})?;Ok(changed(&app,s))
+ let s=state.transaction(|d,_,_|{revision(d,expected_revision)?;let e=d.items.iter_mut().find(|e|e.id==id).ok_or(STALE)?;if active(e){return Err("Сначала остановите активную загрузку.".into());}
+  if e.owned_transfer&&e.resume_saved&&e.package_id.is_some(){e.control=Some(Control::Cancel);e.status=Status::Pending;e.error=None;}else{d.items.retain(|e|e.id!=id);}Ok(())})?;Ok(changed(&app,s))
+}
+#[tauri::command]
+pub fn vault_queue_pause_active(app:tauri::AppHandle,state:tauri::State<'_,QueueState>,vault:tauri::State<'_,VaultState>,id:String,paused:bool,expected_revision:u64)->Result<Snapshot,String>{
+ let _operation=crate::app_updates::operation()?;let s=state.pause_active(&vault,&id,expected_revision,paused)?;Ok(changed(&app,s))
+}
+#[tauri::command]
+pub fn vault_queue_cancel_active(app:tauri::AppHandle,state:tauri::State<'_,QueueState>,vault:tauri::State<'_,VaultState>,id:String,expected_revision:u64)->Result<Snapshot,String>{
+ let _operation=crate::app_updates::operation()?;let s=state.request_control(&vault,&id,expected_revision,Control::Cancel,None)?;Ok(changed(&app,s))
+}
+#[tauri::command]
+pub fn vault_queue_defer_active(app:tauri::AppHandle,state:tauri::State<'_,QueueState>,vault:tauri::State<'_,VaultState>,id:String,before_id:Option<String>,expected_revision:u64)->Result<Snapshot,String>{
+ let _operation=crate::app_updates::operation()?;let s=state.request_control(&vault,&id,expected_revision,Control::Defer,before_id.as_deref())?;Ok(changed(&app,s))
 }
 #[tauri::command]
 pub fn vault_queue_reorder(app:tauri::AppHandle,state:tauri::State<'_,QueueState>,ids:Vec<String>,expected_revision:u64)->Result<Snapshot,String>{let s=state.transaction(|d,_,_|reorder(d,&ids,expected_revision))?;Ok(changed(&app,s))}
@@ -146,31 +231,35 @@ async fn run_one(app:&tauri::AppHandle)->bool{
  if !queue.eligible()||crate::app_updates::applying()||engine.active.load(Ordering::SeqCst)||crate::vault::queue_plan_reserved(&vault){return false;}
  let Ok(_operation)=crate::app_updates::operation()else{return false;};
  let Some(_lease)=crate::vault::queue_lease(&vault,&engine)else{return false;};
+ // Reset before publishing the claimed ID: a control accepted immediately after
+ // claim must never be erased by initialization of this transfer.
+ if crate::vault::queue_begin_control(&vault).is_err(){return false;}
  let mut claimed=None;
- let s=queue.transaction(|d,paused,_|{if *paused||d.items.first().is_none_or(|e|e.status!=Status::Pending){return Err(STALE.into());}let e=&mut d.items[0];e.status=Status::Preparing;e.error=None;claimed=Some(e.clone());Ok(())});
- let s=match s{Ok(s)=>s,Err(error)=>{if error!=STALE{if let Ok(mut i)=queue.inner.lock(){if !i.stopping{i.paused=true;i.error=Some("Не удалось сохранить очередь. Существующие задачи сохранены.".into());emit(app,snapshot(&i));}}}return false;}};emit(app,s);let entry=claimed.unwrap();
- vault.cancel.store(false,Ordering::SeqCst);
+ let s=queue.transaction(|d,paused,_|{claimed=Some(claim(d,*paused)?);Ok(())});
+ let s=match s{Ok(s)=>s,Err(error)=>{crate::vault::queue_end_control(&vault);if error!=STALE{if let Ok(mut i)=queue.inner.lock(){if !i.stopping{i.paused=true;i.error=Some("Не удалось сохранить очередь. Существующие задачи сохранены.".into());emit(app,snapshot(&i));}}}return false;}};emit(app,s);let entry=claimed.unwrap();
  let outcome=async{
+  if entry.control==Some(Control::Cancel){return Err("Загрузка отменена.".into());}
   if Path::new(&entry.requested_vault_path)!=crate::storage::vault(){return Err(VAULT.to_string());}
-  let epic=app.state::<crate::epic::EpicState>();if crate::epic::queue_account(app,&epic).await?!=entry.account_key{return Err(ACCOUNT.into());}
+  let epic=app.state::<crate::epic::EpicState>();if crate::vault::queue_wait(&vault,crate::epic::queue_account(app,&epic)).await??!=entry.account_key{return Err(ACCOUNT.into());}
   let sink_app=app.clone();let sink_id=entry.id.clone();
-  crate::vault::queue_download(app,&epic,&vault,&entry.request,&entry.account_key,|package|{
-   let s=queue.transaction(|d,_,_|{let e=d.items.iter_mut().find(|e|e.id==entry.id).ok_or(STALE)?;e.package_id=Some(package.id.clone());e.status=Status::Downloading;Ok(())})?;emit(app,s);Ok(())
+  crate::vault::queue_download(app,&epic,&vault,&entry.request,&entry.account_key,if entry.resume_saved&&entry.owned_transfer{entry.package_id.as_deref()}else{None},|package,owned|{
+   let s=queue.transaction(|d,_,_|{let e=d.items.iter_mut().find(|e|e.id==entry.id).ok_or(STALE)?;if e.control.is_some(){return Err("Загрузка остановлена.".into());}e.package_id=Some(package.id.clone());e.owned_transfer=owned;e.status=Status::Downloading;Ok(())})?;emit(app,s);Ok(())
   },std::sync::Arc::new(move|p|sink_app.state::<QueueState>().progress(&sink_app,&sink_id,p))).await
  }.await;
+ crate::vault::queue_end_control(&vault);
  crate::vault::discard_plan(&vault);
+ let last_progress=queue.inner.lock().ok().and_then(|i|i.progress.clone());
  let mut completed=None;
- let result=queue.transact(true,|d,_,_|{
-  let e=d.items.iter_mut().find(|e|e.id==entry.id).ok_or(STALE)?;
-  match outcome{Ok(package)=>{completed=Some(package);d.items.retain(|e|e.id!=entry.id);},Err(error)=>{
-   let partial=e.package_id.as_ref().is_some_and(|id|crate::vault::transfers::has_saved_task(id).unwrap_or(true));
-   failed_entry(e,partial,&error);
-  }}Ok(())});
+ let result=queue.transact(true,|d,paused,user_paused|{
+  let e=d.items.iter().find(|e|e.id==entry.id).ok_or(STALE)?;
+  let partial=e.package_id.as_ref().is_some_and(|id|crate::vault::transfers::has_saved_task(id).unwrap_or(true));
+  completed=settle_ordered(d,paused,user_paused,&entry.id,outcome,last_progress,partial,forget_transfer)?;Ok(())});
  match result{Ok(mut s)=>{s.completed=completed;emit(app,s);true},Err(_)=>{if let Ok(mut i)=queue.inner.lock(){i.paused=true;i.error=Some("Не удалось сохранить очередь. Существующие задачи сохранены.".into());emit(app,snapshot(&i));}false}}
 }
 pub(crate) fn setup(app:&tauri::AppHandle){
  app.manage(QueueState::load(crate::storage::settings().join("vault-queue.json")));
  let handle=app.clone();tauri::async_runtime::spawn(async move{loop{WAKE.notified().await;while run_one(&handle).await{}}});
+ wake();
 }
 
 #[cfg(test)]mod tests{
@@ -178,6 +267,74 @@ pub(crate) fn setup(app:&tauri::AppHandle){
  fn root()->PathBuf{std::env::temp_dir().join(format!("um-queue-{}",uuid::Uuid::new_v4()))}
  fn request(id:&str)->Request{Request{asset_id:format!("asset-{id}"),artifact_id:format!("artifact-{id}"),selected_engine:"5.7".into(),title:format!("Synthetic {id}")}}
  fn add(q:&QueueState,id:&str)->Snapshot{q.transaction(|d,p,u|enqueue(d,p,*u,request(id),"X:/Fixture/Vault".into(),"a".repeat(64))).unwrap()}
+ fn active_queue(path:PathBuf)->(QueueState,VaultState,Snapshot){
+  let q=QueueState::load(path);for id in ["one","two","three"]{add(&q,id);}
+  let s=q.transaction(|d,_,_|{d.items[0].status=Status::Downloading;d.items[0].package_id=Some("b".repeat(40));d.items[0].owned_transfer=true;Ok(())}).unwrap();
+  q.inner.lock().unwrap().progress=Some(serde_json::from_value(serde_json::json!({"phase":"Загружаем и проверяем файлы","done":40,"total":100,"filesDone":1,"filesTotal":3,"networkBytes":60,"bytesPerSecond":20,"paused":false,"canPause":true})).unwrap());
+  (q,crate::vault::queue_test_state(),s)
+ }
+ #[test]fn active_defer_preserves_progress_orders_following_dispatch_and_rejects_stale_controls(){
+  let f=AuthQueueFixture::new();let(q,vault,s)=active_queue(f.root.join("q.json"));let id=s.items[0].id.clone();let second=s.items[1].id.clone();let third=s.items[2].id.clone();
+  let before=fs::read(&q.path).unwrap();
+  for (id,rev,target) in [(id.as_str(),s.revision-1,None),(second.as_str(),s.revision,None),(id.as_str(),s.revision,Some(second.as_str()))]{assert!(q.request_control(&vault,id,rev,Control::Defer,target).is_err());assert_eq!(fs::read(&q.path).unwrap(),before);assert!(!vault.cancel.load(Ordering::SeqCst));}
+  let waiting=q.request_control(&vault,&id,s.revision,Control::Defer,Some(&third)).unwrap();
+  assert_eq!(waiting.items.iter().map(|e|e.id.as_str()).collect::<Vec<_>>(),vec![second.as_str(),id.as_str(),third.as_str()]);assert!(vault.cancel.load(Ordering::SeqCst));assert!(waiting.items[1].control_pending==Some(Control::Defer));assert!(!q.eligible());
+  assert_eq!(serde_json::to_value(waiting.items[1].progress.as_ref().unwrap()).unwrap()["done"],40);
+  assert!(q.request_control(&vault,&id,s.revision,Control::Cancel,None).is_err());
+  let progress=q.inner.lock().unwrap().progress.clone();
+  let pending=q.transact(true,|d,_,_|{assert!(settle(d,&id,Err("stopped".into()),progress,true,|_|panic!("Defer must not forget metadata")).unwrap().is_none());Ok(())}).unwrap();
+  assert!(pending.active_id.is_none());assert!(pending.items[1].status==Status::Pending);assert!(q.inner.lock().unwrap().disk.items[1].resume_saved);assert!(q.eligible());
+  let restored=QueueState::load(q.path.clone());let restored_snapshot=restored.get().unwrap();assert!(restored_snapshot.paused);assert_eq!(restored_snapshot.items.iter().map(|e|e.id.as_str()).collect::<Vec<_>>(),vec![second.as_str(),id.as_str(),third.as_str()]);
+  restored.transaction(|d,p,u|{*p=false;*u=false;assert_eq!(claim(d,false)?.id,second);Ok(())}).unwrap();
+ }
+ #[test]fn active_controls_are_exact_id_revision_and_phase_guarded_and_pause_snapshot_is_immediate(){
+  let f=AuthQueueFixture::new();let(q,vault,s)=active_queue(f.root.join("q.json"));let id=&s.items[0].id;let before=fs::read(&q.path).unwrap();
+  for (target,rev) in [(&s.items[1].id,s.revision),(id,s.revision-1)]{assert!(q.pause_active(&vault,target,rev,true).is_err());assert_eq!(fs::read(&q.path).unwrap(),before);}
+  let paused=q.pause_active(&vault,id,s.revision,true).unwrap();let p=serde_json::to_value(paused.items[0].progress.as_ref().unwrap()).unwrap();assert_eq!(p["paused"],true);assert_eq!(p["bytesPerSecond"],0);assert_eq!(p["done"],40);
+  let resumed=q.pause_active(&vault,id,paused.revision,false).unwrap();assert!(!resumed.items[0].progress.as_ref().unwrap().paused);
+  crate::vault::queue_end_control(&vault);let before=fs::read(&q.path).unwrap();assert!(q.request_control(&vault,id,resumed.revision,Control::Cancel,None).is_err());assert_eq!(fs::read(&q.path).unwrap(),before);assert!(!vault.cancel.load(Ordering::SeqCst));
+ }
+ #[test]fn only_job_cannot_defer_and_cancel_removes_only_its_owned_request_after_stop(){
+  let f=AuthQueueFixture::new();let q=QueueState::load(f.root.join("q.json"));let s=add(&q,"one");let id=s.items[0].id.clone();let s=q.transaction(|d,_,_|{d.items[0].status=Status::Preparing;Ok(())}).unwrap();
+  let vault=crate::vault::queue_test_state();assert!(!s.items[0].can_defer);assert!(s.items[0].can_cancel);assert!(q.request_control(&vault,&id,s.revision,Control::Defer,None).is_err());assert!(!vault.cancel.load(Ordering::SeqCst));
+  let stop=q.request_control(&vault,&id,s.revision,Control::Cancel,None).unwrap();assert!(stop.active_id.is_some());assert!(stop.items[0].control_pending==Some(Control::Cancel));
+  let mut forgotten=0;q.transact(true,|d,_,_|{settle(d,&id,Err("stopped".into()),None,false,|e|{assert_eq!(e.id,id);forgotten+=1;Ok(())})?;Ok(())}).unwrap();assert_eq!(forgotten,1);assert!(q.get().unwrap().items.is_empty());
+ }
+ #[test]fn persisted_defer_resumes_in_place_while_persisted_cancel_cleans_metadata_without_starting_paused_queue(){
+  let f=AuthQueueFixture::new();let(q,vault,s)=active_queue(f.root.join("q.json"));let id=s.items[0].id.clone();let second=s.items[1].id.clone();
+  q.request_control(&vault,&id,s.revision,Control::Defer,None).unwrap();drop(q);
+  let restored=QueueState::load(f.root.join("q.json"));let s=restored.get().unwrap();assert_eq!(s.items[2].id,id);assert!(s.items[2].status==Status::Pending);assert!(restored.inner.lock().unwrap().disk.items[2].resume_saved);assert!(s.paused);assert!(!restored.eligible());
+  restored.transaction(|d,_,_|{d.items[2].control=Some(Control::Cancel);Ok(())}).unwrap();assert!(restored.eligible());
+  restored.transaction(|d,p,_|{assert!(*p);let entry=claim(d,*p)?;assert_eq!(entry.id,id);settle(d,&id,Err("cancel".into()),None,true,|_|Ok(()))?;Ok(())}).unwrap();
+  let s=restored.get().unwrap();assert!(s.paused);assert_eq!(s.items[0].id,second);assert_eq!(s.items.len(),2);assert!(!restored.eligible());
+ }
+ #[test]fn cancellation_cleanup_failure_preserves_actionable_request_and_other_entries(){
+  let f=AuthQueueFixture::new();let(q,vault,s)=active_queue(f.root.join("q.json"));let id=s.items[0].id.clone();q.request_control(&vault,&id,s.revision,Control::Cancel,None).unwrap();let other=serde_json::to_vec(&q.inner.lock().unwrap().disk.items[1]).unwrap();
+  let result=q.transact(true,|d,_,_|{settle(d,&id,Err("cancel".into()),None,true,|_|Err("fixture failure".into()))?;Ok(())}).unwrap();
+  assert!(result.items[0].status==Status::NeedsAction);assert_eq!(result.items[0].error.as_deref(),Some(CANCEL_ERROR));assert_eq!(result.items[0].package_id,Some("b".repeat(40)));assert_eq!(serde_json::to_vec(&q.inner.lock().unwrap().disk.items[1]).unwrap(),other);assert!(!q.eligible());
+ }
+ #[test]fn package_id_publication_alone_cannot_authorize_forgetting_or_resuming_a_prior_manual_transfer(){
+  let f=AuthQueueFixture::new();let(q,vault,s)=active_queue(f.root.join("q.json"));let id=s.items[0].id.clone();
+  let s=q.transaction(|d,_,_|{d.items[0].owned_transfer=false;Ok(())}).unwrap();
+  q.request_control(&vault,&id,s.revision,Control::Defer,None).unwrap();
+  q.transact(true,|d,_,_|{settle(d,&id,Err(PARTIAL.into()),None,true,forget_transfer)?;Ok(())}).unwrap();
+  let e=q.inner.lock().unwrap().disk.items.iter().find(|e|e.id==id).unwrap().clone();assert!(!e.resume_saved);assert!(!e.owned_transfer);
+  // This ID has no task file in this fixture. The ownership guard returns before
+  // looking at any task store, preserving an indistinguishable manual transfer.
+  assert!(forget_transfer(&e).is_ok());
+ }
+ #[test]fn legacy_schema_defaults_new_control_and_ownership_fields_without_starting_saved_work(){
+  let f=AuthQueueFixture::new();let q=QueueState::load(f.root.join("q.json"));add(&q,"one");let mut value=serde_json::to_value(&q.inner.lock().unwrap().disk).unwrap();
+  for entry in value["items"].as_array_mut().unwrap(){for field in ["control","resumeSaved","ownedTransfer","savedProgress"]{entry.as_object_mut().unwrap().remove(field);}}
+  fs::write(&q.path,serde_json::to_vec(&value).unwrap()).unwrap();let restored=QueueState::load(q.path.clone());let i=restored.inner.lock().unwrap();assert!(i.error.is_none());assert!(!i.disk.items[0].owned_transfer);assert!(!i.disk.items[0].resume_saved);assert!(i.paused);
+ }
+ #[test]fn removing_defer_predecessors_while_stopping_pauses_instead_of_restarting_same_transfer(){
+  let f=AuthQueueFixture::new();let(q,vault,s)=active_queue(f.root.join("q.json"));let id=s.items[0].id.clone();q.request_control(&vault,&id,s.revision,Control::Defer,None).unwrap();
+  q.transaction(|d,_,_|{d.items.retain(|e|e.id==id);Ok(())}).unwrap();
+  let s=q.transact(true,|d,p,u|{settle_ordered(d,p,u,&id,Err("stopped".into()),None,true,|_|panic!("Defer never forgets"))?;Ok(())}).unwrap();
+  assert!(s.paused);assert!(s.items[0].status==Status::Pending);assert!(q.inner.lock().unwrap().user_paused);assert!(!q.eligible());
+  q.transaction(|_,p,u|{*p=false;*u=false;Ok(())}).unwrap();assert!(q.eligible());
+ }
  struct AuthQueueFixture{root:PathBuf,parent:PathBuf}
  impl AuthQueueFixture{fn new()->Self{let parent=std::env::temp_dir();let path=root();crate::vault::no_links(&path).unwrap();fs::create_dir(&path).unwrap();Self{root:path,parent}}}
  impl Drop for AuthQueueFixture{fn drop(&mut self){if self.root.parent()!=Some(self.parent.as_path())||crate::vault::no_links(&self.root).is_err(){return;}let Ok(entries)=fs::read_dir(&self.root)else{return};let entries=entries.collect::<Result<Vec<_>,_>>();let Ok(entries)=entries else{return};if entries.iter().any(|e|e.file_name()!="q.json"||!e.file_type().is_ok_and(|t|t.is_file())||crate::vault::no_links(&e.path()).is_err()){return;}for e in entries{let _=fs::remove_file(e.path());}let _=fs::remove_dir(&self.root);}}

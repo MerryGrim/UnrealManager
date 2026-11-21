@@ -26,6 +26,7 @@ pub struct EngineState {
     pub(crate) cancel: std::sync::Arc<AtomicBool>,
     pub(crate) paused: std::sync::Arc<AtomicBool>,
     pause_available: AtomicBool,
+    stoppable_task: Mutex<Option<String>>,
     pub(crate) suspend: std::sync::Arc<AtomicBool>,
     pub(crate) resumable: AtomicBool,
 }

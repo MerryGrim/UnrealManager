@@ -1,5 +1,16 @@
 # Change notes
 
+## 0.9.14
+
+- Pause, resume or cancel a running Fab download from Downloads. Drag it into
+  the queue or send it to the end to let another download start. Deferred jobs
+  reuse their saved download progress.
+- Stop an engine download from Downloads before installation begins. A paused
+  engine download keeps its completed blocks and can resume after a long pause.
+- Read Fab's distribution method from the technical details for each listing
+  category, including tutorials, examples and tools, when refreshing types.
+- Enable signed in-app upgrades from 0.9.13 for installed and portable editions.
+
 ## 0.9.13
 
 - One manual upgrade is required from 0.9.12 or older, using Setup or the portable ZIP with the existing profile retained. The previous private update-signing key was lost after a Windows reinstall. Version 0.9.13 embeds a new verification key for future updates; this manual release omits automatic-update manifests and payloads so older updaters skip it.
